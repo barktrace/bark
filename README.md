@@ -62,6 +62,16 @@ owner.
 
 ## Docker and Dokploy
 
+Published multi-architecture images are available from GitHub Container
+Registry:
+
+```sh
+docker pull ghcr.io/barktrace/bark:latest
+```
+
+Every push to `main` publishes `latest`, `main`, and `sha-<commit>` tags.
+Version tags such as `v1.2.3` additionally publish `1.2.3` and `1.2`.
+
 The image needs one persistent mount at `/data` and listens on port `8080`.
 For Dokploy, deploy this repository with its Dockerfile, attach a persistent
 volume to `/data`, configure an HTTP health check on `/readyz`, and add the

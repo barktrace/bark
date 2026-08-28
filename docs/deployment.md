@@ -1,5 +1,16 @@
 # Deployment
 
+## Published image
+
+The `main` branch is published for AMD64 and ARM64 as
+`ghcr.io/barktrace/bark:latest`. A version tag such as `v1.2.3` publishes
+`1.2.3` and `1.2` image tags. Pull requests build the image without publishing
+it.
+
+```sh
+docker pull ghcr.io/barktrace/bark:latest
+```
+
 Barktrace ships as one image. The final image contains the Go server, embedded
 dashboard, SQLite support, and a built-in healthcheck; Node is used only by the
 build stage.
