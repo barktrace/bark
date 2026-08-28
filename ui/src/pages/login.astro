@@ -1,0 +1,41 @@
+---
+import Layout from '../layouts/Layout.astro';
+---
+
+<Layout title="Sign in">
+  <main class="login-shell">
+    <section class="login-brand" aria-label="Product introduction">
+      <a class="wordmark" href="/ui/" aria-label="Barktrace"><img src="/ui/brand-mark.svg" alt="" /><span class="wordmark-text">barktrace<b>.</b></span></a>
+      <div class="login-brand-copy">
+        <p class="eyebrow">Lean error tracking</p>
+        <h1>Follow every<br />failure.</h1>
+        <p>Errors and releases in one focused, self-hosted workspace—compatible with the SDKs your team already uses.</p>
+      </div>
+      <div class="login-proof"><span>SQLite native</span><span>One container</span><span>OIDC secured</span></div>
+    </section>
+    <section class="login-form-side">
+      <div class="login-card">
+        <p class="eyebrow">Welcome back</p>
+        <h2>Sign in to your workspace</h2>
+        <p class="muted">Your account is created automatically after your identity provider verifies your email.</p>
+        <a class="button" id="login" href="/auth/oidc/start">Continue with SSO</a>
+        <p class="error" id="error" hidden role="alert">Authentication failed. Please try again.</p>
+        <p class="login-security">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 10V7a4 4 0 0 1 8 0v3" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>
+          Password authentication is disabled. Access is managed by your organization’s OIDC provider.
+        </p>
+      </div>
+    </section>
+  </main>
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const error = document.querySelector('#error');
+    if (params.has('error') && error instanceof HTMLElement) error.hidden = false;
+    fetch('/auth/config')
+      .then((response) => response.json())
+      .then((config) => {
+        const login = document.querySelector('#login');
+        if (login) login.textContent = `Continue with ${config.provider_name ?? 'SSO'}`;
+      });
+  </script>
+</Layout>

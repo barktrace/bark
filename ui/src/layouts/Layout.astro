@@ -1,0 +1,24 @@
+---
+import '../styles/global.css';
+
+interface Props {
+  title: string;
+}
+
+const { title } = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width" />
+    <meta name="theme-color" content="#111310" />
+    <meta name="description" content="Barktrace — lean, self-hosted error tracking." />
+    <link rel="icon" href="/ui/favicon.svg" type="image/svg+xml" />
+    <title>{title} · Barktrace</title>
+  </head>
+  <body>
+    <slot />
+  </body>
+</html>

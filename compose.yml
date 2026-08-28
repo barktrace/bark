@@ -1,0 +1,34 @@
+services:
+  barktrace:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      BARKTRACE_PUBLIC_URL: ${BARKTRACE_PUBLIC_URL}
+      BARKTRACE_DEFAULT_ORG_NAME: ${BARKTRACE_DEFAULT_ORG_NAME:-Default}
+      BARKTRACE_DEFAULT_ORG_SLUG: ${BARKTRACE_DEFAULT_ORG_SLUG:-default}
+      BARKTRACE_AUTO_PROVISION: ${BARKTRACE_AUTO_PROVISION:-true}
+      BARKTRACE_SESSION_LIFETIME_HOURS: ${BARKTRACE_SESSION_LIFETIME_HOURS:-720}
+      OIDC_ISSUER_URL: ${OIDC_ISSUER_URL}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET}
+      OIDC_REDIRECT_URL: ${OIDC_REDIRECT_URL}
+      OIDC_PROVIDER_NAME: ${OIDC_PROVIDER_NAME:-SSO}
+      OIDC_SCOPES: ${OIDC_SCOPES:-openid email profile}
+      OIDC_REQUIRE_EMAIL_VERIFIED: ${OIDC_REQUIRE_EMAIL_VERIFIED:-true}
+      GOMEMLIMIT: ${GOMEMLIMIT:-96MiB}
+      BARKTRACE_MCP_TOKEN: ${BARKTRACE_MCP_TOKEN:-}
+      BARKTRACE_UPTIME_ALLOW_PRIVATE_TARGETS: ${BARKTRACE_UPTIME_ALLOW_PRIVATE_TARGETS:-false}
+    volumes:
+      - barktrace_data:/data
+    mem_limit: 128m
+    healthcheck:
+      test: ["CMD", "/app/barktrace", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  barktrace_data:

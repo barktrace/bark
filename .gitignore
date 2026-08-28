@@ -1,0 +1,7 @@
+/data/
+/.env
+/barktrace
+/ui/node_modules/
+/ui/dist/
+/ui/.astro/
+!/internal/web/dist/

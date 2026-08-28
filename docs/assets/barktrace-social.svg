@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" role="img" aria-labelledby="title desc">
+  <title id="title">Barktrace</title>
+  <desc id="desc">Lean, self-hosted error tracking. Follow every failure.</desc>
+  <rect width="1280" height="640" fill="#111310"/>
+  <circle cx="1110" cy="560" r="310" fill="none" stroke="#c5f11e" stroke-opacity=".12" stroke-width="2"/>
+  <circle cx="1110" cy="560" r="230" fill="none" stroke="#c5f11e" stroke-opacity=".09" stroke-width="2"/>
+  <circle cx="1110" cy="560" r="150" fill="none" stroke="#c5f11e" stroke-opacity=".07" stroke-width="2"/>
+  <g transform="translate(88 84) scale(2)">
+    <rect width="40" height="40" rx="11" fill="#c5f11e"/>
+    <path d="M9 16.5 15 10l5 5 5-5 6 6.5V27a4 4 0 0 1-4 4H13a4 4 0 0 1-4-4V16.5Z" fill="none" stroke="#171916" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M7 23h7l2.3-5.4 4.2 10.8 3-7.1 2 1.7H33" fill="none" stroke="#171916" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <text x="88" y="290" fill="#f2f4ef" font-family="Inter, Arial, sans-serif" font-size="104" font-weight="800" letter-spacing="-6">barktrace<tspan fill="#c5f11e">.</tspan></text>
+  <text x="94" y="370" fill="#a8aea3" font-family="Inter, Arial, sans-serif" font-size="34" font-weight="500">Follow every failure.</text>
+  <text x="94" y="505" fill="#737a6f" font-family="Inter, Arial, sans-serif" font-size="22" font-weight="600" letter-spacing="2">LEAN · SELF-HOSTED · SENTRY SDK COMPATIBLE</text>
+</svg>

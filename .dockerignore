@@ -1,0 +1,9 @@
+.git
+.env
+data
+ui/node_modules
+ui/dist
+ui/.astro
+*.db
+*.db-shm
+*.db-wal

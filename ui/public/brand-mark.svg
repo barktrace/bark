@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" role="img" aria-labelledby="title">
+  <title id="title">Barktrace mark</title>
+  <rect width="40" height="40" rx="11" fill="#171916"/>
+  <path d="M9 16.5 15 10l5 5 5-5 6 6.5V27a4 4 0 0 1-4 4H13a4 4 0 0 1-4-4V16.5Z" fill="none" stroke="#c5f11e" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M7 23h7l2.3-5.4 4.2 10.8 3-7.1 2 1.7H33" fill="none" stroke="#c5f11e" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

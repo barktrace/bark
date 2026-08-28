@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 180" role="img" aria-labelledby="title desc">
+  <title id="title">Barktrace</title>
+  <desc id="desc">Barktrace logo and the tagline Follow every failure.</desc>
+  <rect width="720" height="180" rx="24" fill="#fafafa"/>
+  <g transform="translate(38 38) scale(2.6)">
+    <rect width="40" height="40" rx="11" fill="#171916"/>
+    <path d="M9 16.5 15 10l5 5 5-5 6 6.5V27a4 4 0 0 1-4 4H13a4 4 0 0 1-4-4V16.5Z" fill="none" stroke="#c5f11e" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M7 23h7l2.3-5.4 4.2 10.8 3-7.1 2 1.7H33" fill="none" stroke="#c5f11e" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <text x="170" y="91" fill="#171916" font-family="Inter, Arial, sans-serif" font-size="58" font-weight="800" letter-spacing="-3">barktrace<tspan fill="#9bd319">.</tspan></text>
+  <text x="173" y="128" fill="#6f756b" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="600" letter-spacing="1">FOLLOW EVERY FAILURE</text>
+</svg>
