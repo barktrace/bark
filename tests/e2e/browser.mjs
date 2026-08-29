@@ -220,6 +220,17 @@ try {
   if (!replayIssueEvent.ok() || replayIssueEventBody.contexts?.replay?.replay_id !== replayID || replayIssueEventBody.contexts.replay.click_count !== 3) throw new Error(`Sentry Replay issue event failed: ${JSON.stringify(replayIssueEventBody)}`);
   const issueDetail = await page.request.get(`/api/0/issues/${encodeURIComponent(sentryIssues[0].id)}/`);
   if (!issueDetail.ok() || (await issueDetail.json()).shortId !== sentryIssues[0].shortId) throw new Error('Sentry issue detail endpoint failed');
+  const createdCommentResponse = await page.request.post(`/api/0/issues/${encodeURIComponent(sentryIssues[0].id)}/comments/`, { data: { text: 'Investigating through the Sentry API' } });
+  const createdComment = await createdCommentResponse.json();
+  if (!createdCommentResponse.ok() || createdComment.type !== 'note' || createdComment.data?.text !== 'Investigating through the Sentry API') throw new Error(`Sentry issue comment creation failed: ${JSON.stringify(createdComment)}`);
+  const issueActivitiesResponse = await page.request.get(`/api/0/organizations/e2e/issues/${encodeURIComponent(sentryIssues[0].id)}/activities/`);
+  const issueActivities = await issueActivitiesResponse.json();
+  if (!issueActivitiesResponse.ok() || !issueActivities.activity?.some((item) => item.id === createdComment.id) || !issueActivities.activity?.some((item) => item.type === 'first_seen')) throw new Error(`Sentry issue activities failed: ${JSON.stringify(issueActivities)}`);
+  const updatedCommentResponse = await page.request.put(`/api/0/organizations/e2e/groups/${encodeURIComponent(sentryIssues[0].id)}/notes/${encodeURIComponent(createdComment.id)}/`, { data: { text: 'Resolved through the Sentry API' } });
+  const updatedComment = await updatedCommentResponse.json();
+  if (!updatedCommentResponse.ok() || updatedComment.data?.text !== 'Resolved through the Sentry API') throw new Error(`Sentry issue comment update failed: ${JSON.stringify(updatedComment)}`);
+  const deletedCommentResponse = await page.request.delete(`/api/0/issues/${encodeURIComponent(sentryIssues[0].id)}/comments/${encodeURIComponent(createdComment.id)}/`);
+  if (!deletedCommentResponse.ok()) throw new Error(`Sentry issue comment deletion failed: ${deletedCommentResponse.status()}`);
   const latestEvent = await page.request.get(`/api/0/issues/${encodeURIComponent(sentryIssues[0].id)}/events/latest/`);
   if (!latestEvent.ok() || (await latestEvent.json()).eventID !== eventID) throw new Error('Sentry latest issue event endpoint failed');
   const eventDetail = await page.request.get(`/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/events/${eventID}/`);

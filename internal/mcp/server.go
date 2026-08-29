@@ -22,7 +22,7 @@ import (
 
 const (
 	protocolVersion = "2025-11-25"
-	serverVersion   = "0.33.0"
+	serverVersion   = "0.34.0"
 )
 
 var supportedProtocolVersions = map[string]bool{
@@ -288,6 +288,18 @@ func (s *Service) callTool(r *http.Request, credential *credential, raw json.Raw
 			return nil, err
 		}
 		return s.getEvent(ctx, args.ProjectID, args.EventID)
+	case "list_issue_activities":
+		var args struct {
+			IssueID string `json:"issue_id"`
+			Limit   int    `json:"limit"`
+		}
+		if err := decodeArguments(call.Arguments, &args); err != nil || strings.TrimSpace(args.IssueID) == "" {
+			return nil, errors.New("issue_id is required")
+		}
+		if _, err := s.requireIssue(ctx, credential, args.IssueID, "read"); err != nil {
+			return nil, err
+		}
+		return s.listIssueActivities(ctx, args.IssueID, boundedLimit(args.Limit))
 	case "list_releases":
 		var args projectArgs
 		if err := requiredProjectArguments(call.Arguments, &args); err != nil {
@@ -429,6 +441,9 @@ func tools() []tool {
 		{Name: "get_event", Description: "Get an event including its original Sentry JSON payload.", InputSchema: objectSchema(map[string]any{
 			"project_id": stringProperty("Project UUID"), "event_id": stringProperty("32-character Sentry event ID"),
 		}, "project_id", "event_id"), Annotations: readOnly},
+		{Name: "list_issue_activities", Description: "List issue comments and triage state changes with their actors.", InputSchema: objectSchema(map[string]any{
+			"issue_id": stringProperty("Issue UUID"), "limit": limitProperty,
+		}, "issue_id"), Annotations: readOnly},
 		{Name: "list_releases", Description: "List releases linked to a project with event counts.", InputSchema: objectSchema(map[string]any{
 			"project_id": stringProperty("Project UUID"), "limit": limitProperty,
 		}, "project_id"), Annotations: readOnly},

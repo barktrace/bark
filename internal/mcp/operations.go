@@ -42,6 +42,30 @@ func (s *Service) addIssueCommentTool(ctx context.Context, credential *credentia
 	return map[string]any{"id": id, "issue_id": args.IssueID, "body": body, "actor_user_id": actor, "created_at": nowUTC()}, nil
 }
 
+func (s *Service) listIssueActivities(ctx context.Context, issueID string, limit int) (any, error) {
+	rows, err := s.store.DB.QueryContext(ctx, `
+		SELECT a.id, a.kind, a.value, a.created_at,
+		       COALESCE(a.user_id, ''), COALESCE(u.name, ''), COALESCE(u.email, '')
+		FROM issue_activities a LEFT JOIN users u ON u.id = a.user_id
+		WHERE a.issue_id = ? ORDER BY a.created_at DESC, a.id DESC LIMIT ?`, issueID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]map[string]any, 0)
+	for rows.Next() {
+		var id, kind, value, createdAt, actorID, actorName, actorEmail string
+		if err := rows.Scan(&id, &kind, &value, &createdAt, &actorID, &actorName, &actorEmail); err != nil {
+			return nil, err
+		}
+		items = append(items, map[string]any{
+			"id": id, "issue_id": issueID, "kind": kind, "value": value, "created_at": createdAt,
+			"actor_user_id": actorID, "actor_name": actorName, "actor_email": actorEmail,
+		})
+	}
+	return items, rows.Err()
+}
+
 type alertRuleCreateArgs struct {
 	ProjectID        string          `json:"project_id"`
 	Name             string          `json:"name"`

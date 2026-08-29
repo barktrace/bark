@@ -148,3 +148,40 @@ func TestRequireResolvesNumericSentryIssueAuditScope(t *testing.T) {
 		t.Fatalf("unexpected Sentry issue audit scope: org=%q project=%q type=%q id=%q", organizationID, projectID, targetType, targetID)
 	}
 }
+
+func TestRequireResolvesSentryCommentAuditScope(t *testing.T) {
+	st := openAuthStore(t)
+	plain := "bark_sentry-comment-audit-token"
+	hash := sha256.Sum256([]byte(plain))
+	_, err := st.DB.Exec(`
+		INSERT INTO organizations(id, slug, name) VALUES ('org', 'org', 'Org');
+		INSERT INTO users(id, email, name) VALUES ('user', 'user@example.com', 'User');
+		INSERT INTO organization_memberships(organization_id, user_id, role) VALUES ('org', 'user', 'owner');
+		INSERT INTO projects(id, sentry_id, organization_id, slug, name, public_key) VALUES ('project', '1', 'org', 'app', 'App', 'key');
+		INSERT INTO issues(id, project_id, fingerprint, title, first_seen_at, last_seen_at) VALUES ('issue', 'project', 'fingerprint', 'Boom', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+		INSERT INTO issue_activities(id, issue_id, user_id, kind, value) VALUES ('comment', 'issue', 'user', 'comment', 'Investigating');
+		INSERT INTO api_tokens(id, user_id, organization_id, name, token_hash, token_prefix) VALUES ('token', 'user', 'org', 'Automation', ?, 'bark_sen');
+	`, hash[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{store: st}
+	mux := http.NewServeMux()
+	mux.Handle("DELETE /api/0/issues/{issue_id}/comments/{note_id}/", service.Require(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})))
+	request := httptest.NewRequest(http.MethodDelete, "/api/0/issues/issue/comments/comment/", nil)
+	request.Header.Set("Authorization", "Bearer "+plain)
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("response status = %d", response.Code)
+	}
+	var organizationID, projectID, targetType, targetID string
+	if err := st.DB.QueryRow(`SELECT organization_id, project_id, target_type, target_id FROM audit_logs`).Scan(&organizationID, &projectID, &targetType, &targetID); err != nil {
+		t.Fatal(err)
+	}
+	if organizationID != "org" || projectID != "project" || targetType != "comment" || targetID != "comment" {
+		t.Fatalf("unexpected Sentry comment audit scope: org=%q project=%q type=%q id=%q", organizationID, projectID, targetType, targetID)
+	}
+}

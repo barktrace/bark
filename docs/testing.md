@@ -95,7 +95,7 @@ provider. A real Chromium browser signs in, proves automatic account creation,
 creates a project, sends a Sentry event, opens the resulting issue and telemetry
 views, uploads and applies a distribution-specific indexed source map by debug
 ID, verifies Sentry-compatible organization/project/key/issue/event detail,
-event attachment download, and user-feedback listing
+issue activity and comment lifecycle, event attachment download, and user-feedback listing
 routes, runs a Discover query, creates a saved dashboard widget, renders an
 interactive rrweb replay, verifies Sentry-compatible replay search, issue
 correlation, decoded segments, click classification, automatic Replay issues,

@@ -72,6 +72,7 @@ func (s *Service) auditScope(r *http.Request) (organizationID, projectID, target
 	for _, candidate := range []struct{ key, kind string }{
 		{"job_id", "ingestion_job"}, {"artifact_id", "artifact"}, {"file_id", "artifact"},
 		{"attachment_id", "attachment"}, {"feedback_id", "feedback"},
+		{"note_id", "comment"},
 		{"issue_id", "issue"}, {"monitor_id", "monitor"}, {"rule_id", "alert_rule"},
 		{"widget_id", "dashboard_widget"}, {"dashboard_id", "dashboard"},
 		{"invitation_id", "invitation"}, {"token_id", "token"}, {"user_id", "user"},
@@ -84,6 +85,9 @@ func (s *Service) auditScope(r *http.Request) (organizationID, projectID, target
 	}
 	if projectID == "" && targetType == "issue" {
 		_ = s.store.DB.QueryRowContext(r.Context(), `SELECT project_id FROM issues WHERE id = ? OR CAST(rowid AS TEXT) = ?`, targetID, targetID).Scan(&projectID)
+	}
+	if projectID == "" && targetType == "comment" {
+		_ = s.store.DB.QueryRowContext(r.Context(), `SELECT i.project_id FROM issue_activities a JOIN issues i ON i.id = a.issue_id WHERE a.id = ?`, targetID).Scan(&projectID)
 	}
 	if targetType == "dashboard" {
 		_ = s.store.DB.QueryRowContext(r.Context(), `SELECT organization_id, COALESCE(project_id, '') FROM dashboards WHERE id = ?`, targetID).Scan(&organizationID, &projectID)

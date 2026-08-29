@@ -242,6 +242,10 @@ func (s *Server) routes() {
 	s.mux.Handle("DELETE /api/0/issues/{issue_id}/", s.auth.Require(http.HandlerFunc(s.sentryIssueDetail)))
 	s.mux.Handle("GET /api/0/issues/{issue_id}/events/", s.auth.Require(http.HandlerFunc(s.sentryIssueEvents)))
 	s.mux.Handle("GET /api/0/issues/{issue_id}/events/latest/", s.auth.Require(http.HandlerFunc(s.sentryIssueLatestEvent)))
+	s.registerSentryIssueActivityRoutes("/api/0/issues/{issue_id}")
+	s.registerSentryIssueActivityRoutes("/api/0/groups/{issue_id}")
+	s.registerSentryIssueActivityRoutes("/api/0/organizations/{org_slug}/issues/{issue_id}")
+	s.registerSentryIssueActivityRoutes("/api/0/organizations/{org_slug}/groups/{issue_id}")
 	s.mux.Handle("GET /api/0/projects/{org_slug}/{project_slug}/releases/{version}/files/", s.auth.Require(http.HandlerFunc(s.sentryReleaseArtifacts)))
 	s.mux.Handle("POST /api/0/projects/{org_slug}/{project_slug}/releases/{version}/files/", s.auth.Require(http.HandlerFunc(s.sentryReleaseArtifacts)))
 	s.mux.Handle("GET /api/0/projects/{org_slug}/{project_slug}/releases/{version}/files/{file_id}/", s.auth.Require(http.HandlerFunc(s.sentryReleaseArtifactDetail)))
@@ -309,6 +313,16 @@ func (s *Server) routes() {
 		}
 		http.Redirect(w, r, "/ui/", http.StatusTemporaryRedirect)
 	})
+}
+
+func (s *Server) registerSentryIssueActivityRoutes(prefix string) {
+	s.mux.Handle("GET "+prefix+"/activities/", s.auth.Require(http.HandlerFunc(s.sentryIssueActivities)))
+	for _, resource := range []string{"comments", "notes"} {
+		s.mux.Handle("GET "+prefix+"/"+resource+"/", s.auth.Require(http.HandlerFunc(s.sentryIssueComments)))
+		s.mux.Handle("POST "+prefix+"/"+resource+"/", s.auth.Require(http.HandlerFunc(s.sentryIssueComments)))
+		s.mux.Handle("PUT "+prefix+"/"+resource+"/{note_id}/", s.auth.Require(http.HandlerFunc(s.sentryIssueCommentDetail)))
+		s.mux.Handle("DELETE "+prefix+"/"+resource+"/{note_id}/", s.auth.Require(http.HandlerFunc(s.sentryIssueCommentDetail)))
+	}
 }
 
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {

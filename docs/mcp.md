@@ -76,6 +76,7 @@ curl --fail-with-body https://errors.example.com/mcp \
 | `update_issue_status` | Sets an issue to unresolved, resolved, or ignored. |
 | `update_issue` | Updates issue status, priority, assignment, bookmark, and snooze state. |
 | `add_issue_comment` | Adds a triage comment to an issue. |
+| `list_issue_activities` | Lists comments and triage state changes with their actors. |
 | `list_events` | Lists event occurrences, optionally for one issue. |
 | `get_event` | Returns an event including its original Sentry JSON. |
 | `list_releases` | Lists project releases and event counts. |

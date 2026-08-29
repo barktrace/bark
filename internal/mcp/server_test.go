@@ -60,8 +60,8 @@ func TestInitializeAndListTools(t *testing.T) {
 	listed := call(t, service, `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
 	toolsResult := listed["result"].(map[string]any)
 	available := toolsResult["tools"].([]any)
-	if len(available) != 60 {
-		t.Fatalf("tool count = %d, want 60", len(available))
+	if len(available) != 61 {
+		t.Fatalf("tool count = %d, want 61", len(available))
 	}
 }
 
@@ -130,6 +130,10 @@ func TestOperationalMCPToolsLifecycle(t *testing.T) {
 	comment := callWithToken(t, service, plain, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"add_issue_comment","arguments":{"issue_id":"issue","body":"Investigating via MCP"}}}`)
 	if comment["result"].(map[string]any)["isError"] != false {
 		t.Fatalf("add_issue_comment failed: %#v", comment)
+	}
+	activity := callWithToken(t, service, plain, `{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"list_issue_activities","arguments":{"issue_id":"issue"}}}`)
+	if activity["result"].(map[string]any)["isError"] != false {
+		t.Fatalf("list_issue_activities failed: %#v", activity)
 	}
 
 	createdAlert := callWithToken(t, service, plain, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"create_alert_rule","arguments":{"project_id":"project","name":"Critical email","trigger":"metric_threshold","destination_type":"email","destination_email":"alerts@example.com","conditions":{"metric_name":"queue.depth","min_value":10},"frequency_minutes":30}}}`)
