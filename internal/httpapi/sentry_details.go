@@ -380,7 +380,7 @@ func (s *Server) updateSentryIssue(w http.ResponseWriter, r *http.Request, princ
 		return false
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(r.Context(), `UPDATE issues SET status = ?, priority = ?, assignee_user_id = ?, bookmarked = ?, snoozed_until = ? WHERE id = ?`, issue.Status, issue.Priority, nullStringValue(issue.AssigneeID), issue.Bookmarked, nullStringValue(issue.SnoozedUntil), issue.ID); err != nil {
+	if _, err := tx.ExecContext(r.Context(), `UPDATE issues SET status = ?, priority = ?, assignee_user_id = ?, bookmarked = ?, snoozed_until = ? WHERE id = ?`, issue.Status, issue.Priority, nullStringValue(issue.AssigneeID), boolInteger(issue.Bookmarked), nullStringValue(issue.SnoozedUntil), issue.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not update issue")
 		return false
 	}

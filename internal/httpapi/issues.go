@@ -193,7 +193,7 @@ func (s *Server) updateIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(r.Context(), `UPDATE issues SET status = ?, priority = ?, assignee_user_id = ?, bookmarked = ?, snoozed_until = ? WHERE id = ?`, status, priority, nullStringValue(assignee), bookmarked, nullStringValue(snoozed), issueID); err != nil {
+	if _, err := tx.ExecContext(r.Context(), `UPDATE issues SET status = ?, priority = ?, assignee_user_id = ?, bookmarked = ?, snoozed_until = ? WHERE id = ?`, status, priority, nullStringValue(assignee), boolInteger(bookmarked), nullStringValue(snoozed), issueID); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not update issue")
 		return
 	}
@@ -349,4 +349,11 @@ func nullStringValue(value sql.NullString) any {
 		return value.String
 	}
 	return nil
+}
+
+func boolInteger(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }

@@ -1,6 +1,7 @@
 import { chromium } from 'playwright';
 
 const baseURL = process.env.BARKTRACE_E2E_URL || 'http://127.0.0.1:18080';
+const mcpToken = process.env.BARKTRACE_E2E_MCP_TOKEN || '';
 const configuredChromium = process.env.CHROME_BIN || '';
 const browser = await chromium.launch({
   headless: true,
@@ -194,6 +195,43 @@ try {
   await page.getByRole('button', { name: 'Artifacts' }).click();
   await page.getByRole('heading', { name: 'Source maps and debug files' }).waitFor();
 
+  const organizationsResponse = await page.request.get('/organizations');
+  const organizations = await organizationsResponse.json();
+  const nativeOrganization = organizations.find((item) => item.organization_slug === 'e2e');
+  if (!organizationsResponse.ok() || !nativeOrganization) throw new Error('native organization discovery failed');
+  const nativeProjectsResponse = await page.request.get(`/projects?organization_id=${encodeURIComponent(nativeOrganization.organization_id)}`);
+  const nativeProjects = await nativeProjectsResponse.json();
+  const nativeProject = nativeProjects.find((item) => item.slug === sentryProject.slug);
+  if (!nativeProjectsResponse.ok() || !nativeProject) throw new Error('native project discovery failed');
+  const nativeIssuesResponse = await page.request.get(`/issues?project_id=${encodeURIComponent(nativeProject.id)}`);
+  const nativeIssues = await nativeIssuesResponse.json();
+  if (!nativeIssuesResponse.ok() || !nativeIssues[0]?.id) throw new Error('native issue discovery failed');
+
+  const mcpCall = async (id, name, args) => {
+    const result = await fetch(`${baseURL}/mcp`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${mcpToken}`,
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } }),
+    });
+    const payload = await result.json();
+    if (!result.ok || payload.result?.isError) throw new Error(`MCP ${name} failed: ${JSON.stringify(payload)}`);
+    return payload.result.structuredContent;
+  };
+  const mcpMembers = await mcpCall(1, 'list_organization_members', { organization_id: nativeOrganization.organization_id });
+  if (!mcpMembers.some((member) => member.email === 'e2e@barktrace.test')) throw new Error('MCP organization member listing failed');
+  const mcpPermissions = await mcpCall(2, 'list_project_permissions', { project_id: nativeProject.id });
+  if (!mcpPermissions.some((permission) => permission.email === 'e2e@barktrace.test' && permission.effective_role === 'admin')) throw new Error('MCP project permission listing failed');
+  const mcpIssue = await mcpCall(3, 'update_issue', { issue_id: nativeIssues[0].id, priority: 'critical', bookmarked: true });
+  if (mcpIssue.priority !== 'critical' || !mcpIssue.bookmarked) throw new Error('MCP advanced issue update failed');
+  const mcpQuota = await mcpCall(4, 'set_project_quota', { project_id: nativeProject.id, category: 'error', per_minute: 120, per_day: 5000, max_item_bytes: 1048576 });
+  if (!mcpQuota.configured || mcpQuota.per_minute !== 120) throw new Error('MCP quota update failed');
+  const mcpRetention = await mcpCall(5, 'update_retention', { organization_id: nativeOrganization.organization_id, days: 45 });
+  if (mcpRetention.retention_days !== 45) throw new Error('MCP retention update failed');
+
   await page.locator('#account-button').click();
   await page.getByRole('button', { name: 'Sign out' }).click();
   await page.waitForURL(`${baseURL}/ui/login/`);
@@ -201,7 +239,7 @@ try {
   if (me.status() !== 401) throw new Error(`logout left session active: /auth/me returned ${me.status()}`);
 
   if (browserErrors.length) throw new Error(browserErrors.join('\n'));
-  console.log('browser E2E passed: OIDC, ingestion, Sentry API details, Discover, dashboards, interactive replay, profile analysis, telemetry, and logout');
+  console.log('browser E2E passed: OIDC, ingestion, Sentry API details, Discover, dashboards, interactive replay, profile analysis, telemetry, MCP operations, and logout');
 } finally {
   await browser.close();
 }

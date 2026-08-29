@@ -64,11 +64,14 @@ curl --fail-with-body https://errors.example.com/mcp \
 | Tool | Effect |
 | --- | --- |
 | `list_organizations` | Lists organizations visible to the credential and their project/issue counts. |
+| `list_organization_members` | Lists members and organization roles inside the credential's organization. |
 | `list_projects` | Lists projects and DSNs, optionally by organization slug. |
 | `get_project_summary` | Returns issue, open issue, event, and release counts. |
+| `list_project_permissions` | Lists organization roles, explicit project overrides, and effective project roles. |
 | `list_issues` | Searches and filters grouped issues for a project. |
 | `get_issue` | Returns an issue and its release linkage. |
 | `update_issue_status` | Sets an issue to unresolved, resolved, or ignored. |
+| `update_issue` | Updates issue status, priority, assignment, bookmark, and snooze state. |
 | `list_events` | Lists event occurrences, optionally for one issue. |
 | `get_event` | Returns an event including its original Sentry JSON. |
 | `list_releases` | Lists project releases and event counts. |
@@ -86,12 +89,16 @@ curl --fail-with-body https://errors.example.com/mcp \
 | `list_artifacts` | Lists source maps and debug files. |
 | `list_deploys`, `list_commits`, `list_suspect_commits` | Correlates releases and source changes. |
 | `list_project_quotas`, `list_ingestion_jobs` | Inspects limits, retries, and dead letters. |
+| `set_project_quota` | Sets or clears category-specific per-minute, per-day, and item-size limits. |
+| `retry_ingestion_job`, `delete_ingestion_job` | Retries dead-letter jobs or removes completed/dead jobs. |
 | `get_storage_summary`, `list_audit_logs` | Inspects tenant storage and security activity. |
+| `update_retention` | Changes organization retention within the supported 1–3650 day range. |
 
 ## Security boundary
 
 Database-backed MCP tokens can access only their organization. `read` tokens
-cannot invoke mutation tools; `write` tokens can update issue status and manage
-dashboards, and successful mutations are recorded with actor type `mcp`. Treat every token as a
+cannot invoke mutation tools; `write` tokens can update issue triage state,
+manage dashboards and quotas, operate dead-letter jobs, and change retention.
+Successful mutations are recorded with actor type `mcp`. Treat every token as a
 secret and use HTTPS. `BARKTRACE_MCP_TOKEN`, when configured, deliberately keeps
 legacy instance-wide administrative access and should be reserved for recovery.

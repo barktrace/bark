@@ -9,6 +9,7 @@ app_port=${BARKTRACE_E2E_APP_PORT:-18080}
 oidc_port=${BARKTRACE_E2E_OIDC_PORT:-19090}
 app_url="http://127.0.0.1:$app_port"
 oidc_url="http://127.0.0.1:$oidc_port"
+mcp_token=barktrace-e2e-mcp-token-0000000000000000
 
 cleanup() {
   docker rm -f "$container_name" >/dev/null 2>&1 || true
@@ -40,6 +41,7 @@ docker run --detach --name "$container_name" --network host \
   --env BARKTRACE_DEFAULT_ORG_NAME='E2E Organization' \
   --env BARKTRACE_DEFAULT_ORG_SLUG=e2e \
   --env BARKTRACE_DATABASE_URL="${BARKTRACE_E2E_DATABASE_URL:-}" \
+  --env BARKTRACE_MCP_TOKEN="$mcp_token" \
   --env OIDC_ISSUER_URL="$oidc_url" \
   --env OIDC_CLIENT_ID=barktrace-e2e \
   --env OIDC_CLIENT_SECRET=barktrace-e2e-secret \
@@ -56,6 +58,7 @@ curl --silent --fail "$app_url/readyz" >/dev/null || { docker logs "$container_n
 browser_image=${BARKTRACE_E2E_BROWSER_IMAGE:-mcr.microsoft.com/playwright:v1.56.1-noble}
 if ! docker run --rm --network host \
   --env BARKTRACE_E2E_URL="$app_url" \
+  --env BARKTRACE_E2E_MCP_TOKEN="$mcp_token" \
   --volume "$repo_dir:/workspace:ro" \
   --workdir /workspace/tests/e2e \
   --entrypoint node \

@@ -115,7 +115,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.writeResult(w, id, map[string]any{
 			"protocolVersion": version,
 			"capabilities":    map[string]any{"tools": map[string]bool{"listChanged": false}},
-			"serverInfo":      map[string]string{"name": "barktrace", "version": "0.4.0"},
+			"serverInfo":      map[string]string{"name": "barktrace", "version": "0.8.0"},
 		})
 	case "ping":
 		s.writeResult(w, id, map[string]any{})
@@ -293,6 +293,9 @@ func (s *Service) callTool(r *http.Request, credential *credential, raw json.Raw
 		return s.listReleases(ctx, args.ProjectID, boundedLimit(args.Limit))
 	case "query_discover", "list_dashboards", "create_dashboard", "add_dashboard_widget", "delete_dashboard":
 		return s.callDiscoverTool(ctx, credential, call.Name, call.Arguments)
+	case "list_organization_members", "list_project_permissions", "update_issue", "set_project_quota",
+		"retry_ingestion_job", "delete_ingestion_job", "update_retention":
+		return s.callAdministrationTool(ctx, credential, call.Name, call.Arguments)
 	case "list_transactions", "list_logs", "list_uptime_monitors", "list_uptime_checks",
 		"list_cron_monitors", "list_cron_checkins", "list_feedback", "list_replays",
 		"analyze_replay", "list_profiles", "analyze_profile", "list_metrics", "list_alert_rules", "list_alert_deliveries",
@@ -466,6 +469,26 @@ func tools() []tool {
 		{Name: "list_ingestion_jobs", Description: "Inspect durable ingestion queue jobs and failures.", InputSchema: objectSchema(map[string]any{"project_id": stringProperty("Project UUID"), "status": stringProperty("Optional pending, processing, done, or dead status"), "limit": limitProperty}, "project_id"), Annotations: readOnly},
 		{Name: "list_audit_logs", Description: "List recent organization audit entries.", InputSchema: objectSchema(map[string]any{"project_id": stringProperty("Optional project UUID"), "limit": limitProperty}), Annotations: readOnly},
 		{Name: "get_storage_summary", Description: "Get organization storage usage, retention, queue, and category totals.", InputSchema: objectSchema(nil), Annotations: readOnly},
+		{Name: "list_organization_members", Description: "List organization members and their organization roles.", InputSchema: objectSchema(map[string]any{"organization_id": stringProperty("Organization UUID; only needed by the legacy instance token")}), Annotations: readOnly},
+		{Name: "list_project_permissions", Description: "List organization roles, explicit project overrides, and effective roles for a project.", InputSchema: objectSchema(map[string]any{"project_id": stringProperty("Project UUID")}, "project_id"), Annotations: readOnly},
+		{Name: "update_issue", Description: "Update issue status, priority, assignment, bookmark, or snooze state.", InputSchema: objectSchema(map[string]any{
+			"issue_id":         stringProperty("Issue UUID"),
+			"status":           map[string]any{"type": "string", "enum": []string{"unresolved", "resolved", "ignored"}},
+			"priority":         map[string]any{"type": "string", "enum": []string{"low", "medium", "high", "critical"}},
+			"assignee_user_id": stringProperty("Organization user UUID, or an empty string to unassign"),
+			"bookmarked":       map[string]any{"type": "boolean"},
+			"snoozed_until":    stringProperty("Future RFC3339 timestamp, or an empty string to clear"),
+		}, "issue_id"), Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true}},
+		{Name: "set_project_quota", Description: "Set or clear a category-specific project ingestion quota; three zero values clear it.", InputSchema: objectSchema(map[string]any{
+			"project_id":     stringProperty("Project UUID"),
+			"category":       map[string]any{"type": "string", "enum": []string{"all", "error", "transaction", "span", "log", "session", "attachment", "feedback", "replay", "profile", "metric", "check_in"}},
+			"per_minute":     map[string]any{"type": "integer", "minimum": 0},
+			"per_day":        map[string]any{"type": "integer", "minimum": 0},
+			"max_item_bytes": map[string]any{"type": "integer", "minimum": 0, "maximum": 100 << 20},
+		}, "project_id", "category", "per_minute", "per_day", "max_item_bytes"), Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true}},
+		{Name: "retry_ingestion_job", Description: "Move a dead-letter ingestion job back to the pending queue.", InputSchema: objectSchema(map[string]any{"project_id": stringProperty("Project UUID"), "job_id": stringProperty("Ingestion job UUID")}, "project_id", "job_id"), Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false}},
+		{Name: "delete_ingestion_job", Description: "Permanently delete a completed or dead ingestion job and its unreferenced payload.", InputSchema: objectSchema(map[string]any{"project_id": stringProperty("Project UUID"), "job_id": stringProperty("Ingestion job UUID")}, "project_id", "job_id"), Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": true, "idempotentHint": false}},
+		{Name: "update_retention", Description: "Set organization retention between 1 and 3650 days.", InputSchema: objectSchema(map[string]any{"organization_id": stringProperty("Organization UUID; only needed by the legacy instance token"), "days": map[string]any{"type": "integer", "minimum": 1, "maximum": 3650}}, "days"), Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true}},
 	}
 }
 
