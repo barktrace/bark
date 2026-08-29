@@ -3,6 +3,7 @@ package symbolicate
 import (
 	"bytes"
 	"context"
+	"debug/dwarf"
 	"debug/elf"
 	"debug/macho"
 	"debug/pe"
@@ -274,6 +275,198 @@ func main() { _ = dwarf_target() }
 	if !changed || filepath.Base(frame["filename"].(string)) != "fixture.go" || frame["lineno"].(float64) < 4 || frame["symbol_addr"] != fmt.Sprintf("0x%x", address) || frame["symbolicated"] != true {
 		t.Fatalf("processed ELF/DWARF frame = %#v, changed=%v", frame, changed)
 	}
+}
+
+func TestLookupELFFrameExpandsDWARFInlineChain(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("ELF fixture requires Linux")
+	}
+	directory := t.TempDir()
+	sourcePath := filepath.Join(directory, "inline.go")
+	binaryPath := filepath.Join(directory, "inline")
+	if err := os.WriteFile(sourcePath, []byte(dwarfInlineFixtureSource), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("go", "build", "-o", binaryPath, sourcePath)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("build inline ELF fixture: %v\n%s", err, output)
+	}
+	file, err := os.Open(binaryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	parsed, err := elf.NewFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbols, err := parsed.Symbols()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var target elf.Symbol
+	for _, symbol := range symbols {
+		if strings.HasSuffix(symbol.Name, ".inline_root") {
+			target = symbol
+			break
+		}
+	}
+	data, err := parsed.DWARF()
+	imageBase := elfPreferredBase(parsed)
+	_ = parsed.Close()
+	if err != nil || target.Value == 0 || target.Size == 0 {
+		t.Fatalf("inline fixture debug data or root symbol missing: %v", err)
+	}
+	address := addressWithDWARFInlines(t, data, target.Value, target.Size, 2)
+	matched := lookupELFFrame(file, address, 0)
+	assertDWARFInlineChain(t, matched)
+
+	contents, err := os.ReadFile(binaryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := symbolicationStore(t)
+	putDebugArtifactBytes(t, st, "INLINE-DWARF", contents)
+	payload := []byte(fmt.Sprintf(`{
+		"debug_meta":{"images":[{"type":"elf","image_addr":"0x%x","image_size":"0x0","debug_id":"INLINE-DWARF"}]},
+		"exception":{"values":[{"stacktrace":{"frames":[{"instruction_addr":"0x%x","function":"unknown","filename":"inline"}]}}]}
+	}`, imageBase, address))
+	processed, changed, err := ProcessEvent(context.Background(), st, "project", "release", payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frames := processedFrames(t, processed)
+	if !changed || len(frames) < 3 || !strings.HasSuffix(frames[0]["function"].(string), ".inline_root") || !strings.HasSuffix(frames[1]["function"].(string), ".inline_middle") || !strings.HasSuffix(frames[2]["function"].(string), ".inline_leaf") {
+		t.Fatalf("expanded DWARF event frames = %#v, changed=%v", frames, changed)
+	}
+}
+
+const dwarfInlineFixtureSource = `package main
+
+func inline_leaf(value int) int { return value + input }
+func inline_middle(value int) int { return inline_leaf(value) + value }
+
+//go:noinline
+func inline_root(value int) int { return inline_middle(value) }
+
+var input, sink int
+func main() { sink = inline_root(input) }
+`
+
+func addressWithDWARFInlines(t *testing.T, data *dwarf.Data, start, size uint64, depth int) uint64 {
+	t.Helper()
+	for address := start; address < start+size; address++ {
+		if len(lookupDWARFInlines(data, address)) >= depth {
+			return address
+		}
+	}
+	t.Fatalf("no address in %#x-%#x has %d DWARF inline levels", start, start+size, depth)
+	return 0
+}
+
+func assertDWARFInlineChain(t *testing.T, matched nativeSymbol) {
+	t.Helper()
+	if !strings.HasSuffix(matched.function, ".inline_root") || len(matched.inlines) < 2 {
+		t.Fatalf("DWARF inline match = %#v", matched)
+	}
+	if !strings.HasSuffix(matched.inlines[0].function, ".inline_middle") || !strings.HasSuffix(matched.inlines[1].function, ".inline_leaf") {
+		t.Fatalf("DWARF inline functions = %#v", matched.inlines)
+	}
+	if filepath.Base(matched.filename) != "inline.go" || filepath.Base(matched.inlines[0].filename) != "inline.go" || filepath.Base(matched.inlines[1].filename) != "inline.go" {
+		t.Fatalf("DWARF inline source locations = %#v", matched)
+	}
+}
+
+func TestLookupMachOFrameExpandsDWARFInlineChain(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("cross-compiled Mach-O fixture requires Linux")
+	}
+	directory := t.TempDir()
+	sourcePath := filepath.Join(directory, "inline.go")
+	binaryPath := filepath.Join(directory, "inline-macos")
+	if err := os.WriteFile(sourcePath, []byte(dwarfInlineFixtureSource), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("go", "build", "-o", binaryPath, sourcePath)
+	command.Env = append(os.Environ(), "GOOS=darwin", "GOARCH=amd64", "CGO_ENABLED=0", "GOTOOLCHAIN=local")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("build inline Mach-O fixture: %v\n%s", err, output)
+	}
+	file, err := os.Open(binaryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	parsed, err := macho.NewFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var address, size uint64
+	if parsed.Symtab != nil {
+		for index, symbol := range parsed.Symtab.Syms {
+			if !strings.HasSuffix(symbol.Name, ".inline_root") {
+				continue
+			}
+			address = symbol.Value
+			size = 256
+			for _, next := range parsed.Symtab.Syms[index+1:] {
+				if next.Sect == symbol.Sect && next.Value > address && next.Value-address < size {
+					size = next.Value - address
+				}
+			}
+			break
+		}
+	}
+	data, dataErr := parsed.DWARF()
+	text := parsed.Segment("__TEXT")
+	_ = parsed.Close()
+	if dataErr != nil || text == nil || address == 0 {
+		t.Fatalf("inline Mach-O fixture data missing: %v", dataErr)
+	}
+	address = addressWithDWARFInlines(t, data, address, size, 2)
+	assertDWARFInlineChain(t, lookupMachOFrame(file, address, text.Addr, "x86_64"))
+}
+
+func TestLookupPEFrameExpandsDWARFInlineChain(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("cross-compiled PE fixture requires Linux")
+	}
+	directory := t.TempDir()
+	sourcePath := filepath.Join(directory, "inline.go")
+	binaryPath := filepath.Join(directory, "inline.exe")
+	if err := os.WriteFile(sourcePath, []byte(dwarfInlineFixtureSource), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("go", "build", "-o", binaryPath, sourcePath)
+	command.Env = append(os.Environ(), "GOOS=windows", "GOARCH=amd64", "CGO_ENABLED=0", "GOTOOLCHAIN=local")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("build inline PE fixture: %v\n%s", err, output)
+	}
+	file, err := os.Open(binaryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	parsed, err := pe.NewFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var targetRVA uint64
+	for _, symbol := range parsed.Symbols {
+		sectionIndex := int(symbol.SectionNumber) - 1
+		if strings.HasSuffix(symbol.Name, ".inline_root") && sectionIndex >= 0 && sectionIndex < len(parsed.Sections) {
+			targetRVA = uint64(parsed.Sections[sectionIndex].VirtualAddress) + uint64(symbol.Value)
+			break
+		}
+	}
+	imageBase := peImageBase(parsed)
+	data, dataErr := parsed.DWARF()
+	_ = parsed.Close()
+	if dataErr != nil || imageBase == 0 || targetRVA == 0 {
+		t.Fatalf("inline PE fixture data missing: %v", dataErr)
+	}
+	address := addressWithDWARFInlines(t, data, imageBase+targetRVA, 256, 2)
+	assertDWARFInlineChain(t, lookupPEFrame(file, address, imageBase))
 }
 
 func TestDWARFSectionBudget(t *testing.T) {

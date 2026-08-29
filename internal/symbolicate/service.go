@@ -422,11 +422,11 @@ func lookupELFFrame(reader io.ReaderAt, address, imageBase uint64) nativeSymbol 
 		symbolBias = preferredBase
 	}
 	function, symbolAddress := lookupELFSymbol(file, lookupAddress)
-	filename, line, column := lookupDWARFLine(file, lookupAddress)
+	filename, line, column, inlines := lookupDWARFFrame(file, lookupAddress)
 	if symbolAddress >= symbolBias {
 		symbolAddress -= symbolBias
 	}
-	return nativeSymbol{function: function, address: symbolAddress, filename: filename, line: line, column: column}
+	return nativeSymbol{function: function, address: symbolAddress, filename: filename, line: line, column: column, inlines: inlines}
 }
 
 func elfPreferredBase(file *elf.File) uint64 {
@@ -459,15 +459,16 @@ func lookupELFSymbol(file *elf.File, relative uint64) (string, uint64) {
 	return bestName, bestAddress
 }
 
-func lookupDWARFLine(file *elf.File, address uint64) (string, int, int) {
+func lookupDWARFFrame(file *elf.File, address uint64) (string, int, int, []nativeInline) {
 	if !hasBoundedDWARF(file) {
-		return "", 0, 0
+		return "", 0, 0, nil
 	}
 	data, err := file.DWARF()
 	if err != nil {
-		return "", 0, 0
+		return "", 0, 0, nil
 	}
-	return lookupDWARFLineData(data, address)
+	filename, line, column := lookupDWARFLineData(data, address)
+	return filename, line, column, lookupDWARFInlines(data, address)
 }
 
 func lookupDWARFLineData(data *dwarf.Data, address uint64) (string, int, int) {
@@ -492,6 +493,145 @@ func lookupDWARFLineData(data *dwarf.Data, address uint64) (string, int, int) {
 		return position.File.Name, position.Line, position.Column
 	}
 	return "", 0, 0
+}
+
+func lookupDWARFInlines(data *dwarf.Data, address uint64) []nativeInline {
+	reader := data.Reader()
+	depth := 0
+	files := []*dwarf.LineFile(nil)
+	type inlineCandidate struct {
+		depth int
+		value nativeInline
+	}
+	candidates := make(map[int]inlineCandidate)
+	for entries := 0; entries < 1000000; entries++ {
+		entry, err := reader.Next()
+		if err != nil || entry == nil {
+			break
+		}
+		if entry.Tag == 0 {
+			if depth > 0 {
+				depth--
+			}
+			continue
+		}
+		entryDepth := depth
+		if entry.Tag == dwarf.TagCompileUnit {
+			ranges, rangeErr := data.Ranges(entry)
+			if rangeErr == nil && len(ranges) > 0 && !dwarfRangesContain(ranges, address) {
+				reader.SkipChildren()
+				continue
+			}
+			files = nil
+			if lines, lineErr := data.LineReader(entry); lineErr == nil && lines != nil {
+				files = lines.Files()
+			}
+		}
+		if entry.Tag == dwarf.TagInlinedSubroutine {
+			start, size, ok := matchingDWARFRange(data, entry, address)
+			if ok {
+				name := dwarfEntryName(data, entry)
+				if name != "" {
+					callFile := dwarfFileName(files, dwarfIntValue(entry.Val(dwarf.AttrCallFile)))
+					candidate := inlineCandidate{depth: entryDepth, value: nativeInline{
+						function: name, filename: callFile, line: dwarfIntValue(entry.Val(dwarf.AttrCallLine)), address: start, rangeSize: size,
+					}}
+					previous, found := candidates[entryDepth]
+					if !found || candidate.value.rangeSize < previous.value.rangeSize {
+						candidates[entryDepth] = candidate
+					}
+				}
+			}
+		}
+		if entry.Children {
+			depth++
+		}
+	}
+	ordered := make([]inlineCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		ordered = append(ordered, candidate)
+	}
+	sort.Slice(ordered, func(left, right int) bool { return ordered[left].depth < ordered[right].depth })
+	if len(ordered) > maxNativeInlineDepth {
+		ordered = ordered[:maxNativeInlineDepth]
+	}
+	inlines := make([]nativeInline, 0, len(ordered))
+	for level, candidate := range ordered {
+		candidate.value.level = level
+		inlines = append(inlines, candidate.value)
+	}
+	return inlines
+}
+
+func dwarfRangesContain(ranges [][2]uint64, address uint64) bool {
+	for _, item := range ranges {
+		if item[1] > item[0] && address >= item[0] && address < item[1] {
+			return true
+		}
+	}
+	return false
+}
+
+func matchingDWARFRange(data *dwarf.Data, entry *dwarf.Entry, address uint64) (uint64, uint64, bool) {
+	ranges, err := data.Ranges(entry)
+	if err != nil || len(ranges) > 1000000 {
+		return 0, 0, false
+	}
+	bestStart, bestSize := uint64(0), ^uint64(0)
+	for _, item := range ranges {
+		if item[1] <= item[0] || address < item[0] || address >= item[1] || item[1]-item[0] >= bestSize {
+			continue
+		}
+		bestStart, bestSize = item[0], item[1]-item[0]
+	}
+	if bestSize == ^uint64(0) {
+		return 0, 0, false
+	}
+	return bestStart, bestSize, true
+}
+
+func dwarfEntryName(data *dwarf.Data, entry *dwarf.Entry) string {
+	for references := 0; entry != nil && references < 8; references++ {
+		if name, ok := entry.Val(dwarf.AttrName).(string); ok && strings.TrimSpace(name) != "" {
+			return strings.TrimSpace(name)
+		}
+		var offset dwarf.Offset
+		var found bool
+		for _, attribute := range []dwarf.Attr{dwarf.AttrAbstractOrigin, dwarf.AttrSpecification} {
+			if value, ok := entry.Val(attribute).(dwarf.Offset); ok {
+				offset, found = value, true
+				break
+			}
+		}
+		if !found {
+			break
+		}
+		reader := data.Reader()
+		reader.Seek(offset)
+		entry, _ = reader.Next()
+	}
+	return ""
+}
+
+func dwarfIntValue(value any) int {
+	switch typed := value.(type) {
+	case int64:
+		if typed >= 0 && uint64(typed) <= uint64(^uint(0)>>1) {
+			return int(typed)
+		}
+	case uint64:
+		if typed <= uint64(^uint(0)>>1) {
+			return int(typed)
+		}
+	}
+	return 0
+}
+
+func dwarfFileName(files []*dwarf.LineFile, index int) string {
+	if index <= 0 || index >= len(files) || files[index] == nil {
+		return ""
+	}
+	return files[index].Name
 }
 
 func lookupMachOFrame(reader io.ReaderAt, address, imageBase uint64, arch string) nativeSymbol {
@@ -531,11 +671,11 @@ func lookupMachOFile(file *macho.File, address, imageBase uint64) nativeSymbol {
 		symbolBias = preferredBase
 	}
 	function, symbolAddress := lookupMachOSymbol(file, lookupAddress)
-	filename, line, column := lookupMachODWARFLine(file, lookupAddress)
+	filename, line, column, inlines := lookupMachODWARFFrame(file, lookupAddress)
 	if symbolAddress >= symbolBias {
 		symbolAddress -= symbolBias
 	}
-	return nativeSymbol{function: function, address: symbolAddress, filename: filename, line: line, column: column}
+	return nativeSymbol{function: function, address: symbolAddress, filename: filename, line: line, column: column, inlines: inlines}
 }
 
 func lookupMachOSymbol(file *macho.File, address uint64) (string, uint64) {
@@ -573,7 +713,7 @@ func lookupMachOSymbol(file *macho.File, address uint64) (string, uint64) {
 	return best.Name, best.Value
 }
 
-func lookupMachODWARFLine(file *macho.File, address uint64) (string, int, int) {
+func lookupMachODWARFFrame(file *macho.File, address uint64) (string, int, int, []nativeInline) {
 	var size uint64
 	found := false
 	for _, section := range file.Sections {
@@ -582,18 +722,19 @@ func lookupMachODWARFLine(file *macho.File, address uint64) (string, int, int) {
 		}
 		found = true
 		if section.Size > maxDWARFBytes-size {
-			return "", 0, 0
+			return "", 0, 0, nil
 		}
 		size += section.Size
 	}
 	if !found {
-		return "", 0, 0
+		return "", 0, 0, nil
 	}
 	data, err := file.DWARF()
 	if err != nil {
-		return "", 0, 0
+		return "", 0, 0, nil
 	}
-	return lookupDWARFLineData(data, address)
+	filename, line, column := lookupDWARFLineData(data, address)
+	return filename, line, column, lookupDWARFInlines(data, address)
 }
 
 func machoArchMatches(expected, actual string) bool {
@@ -632,11 +773,11 @@ func lookupPEFrame(reader io.ReaderAt, address, imageBase uint64) nativeSymbol {
 		returnBias = preferredBase
 	}
 	function, symbolRVA := lookupPESymbol(file, lookupRVA)
-	filename, line, column := lookupPEDWARFLine(file, preferredBase+lookupRVA)
-	if filename == "" {
-		filename, line, column = lookupPEDWARFLine(file, lookupRVA)
+	filename, line, column, inlines := lookupPEDWARFFrame(file, preferredBase+lookupRVA)
+	if filename == "" && len(inlines) == 0 {
+		filename, line, column, inlines = lookupPEDWARFFrame(file, lookupRVA)
 	}
-	return nativeSymbol{function: function, address: returnBias + symbolRVA, filename: filename, line: line, column: column}
+	return nativeSymbol{function: function, address: returnBias + symbolRVA, filename: filename, line: line, column: column, inlines: inlines}
 }
 
 func peImageBase(file *pe.File) uint64 {
@@ -687,7 +828,7 @@ func lookupPESymbol(file *pe.File, addressRVA uint64) (string, uint64) {
 	return best.Name, bestRVA
 }
 
-func lookupPEDWARFLine(file *pe.File, address uint64) (string, int, int) {
+func lookupPEDWARFFrame(file *pe.File, address uint64) (string, int, int, []nativeInline) {
 	var size uint64
 	found := false
 	for _, section := range file.Sections {
@@ -696,18 +837,19 @@ func lookupPEDWARFLine(file *pe.File, address uint64) (string, int, int) {
 		}
 		found = true
 		if uint64(section.Size) > maxDWARFBytes-size {
-			return "", 0, 0
+			return "", 0, 0, nil
 		}
 		size += uint64(section.Size)
 	}
 	if !found {
-		return "", 0, 0
+		return "", 0, 0, nil
 	}
 	data, err := file.DWARF()
 	if err != nil {
-		return "", 0, 0
+		return "", 0, 0, nil
 	}
-	return lookupDWARFLineData(data, address)
+	filename, line, column := lookupDWARFLineData(data, address)
+	return filename, line, column, lookupDWARFInlines(data, address)
 }
 
 func hasBoundedDWARF(file *elf.File) bool {
