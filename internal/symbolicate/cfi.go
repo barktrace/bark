@@ -21,6 +21,7 @@ type breakpadCFI struct {
 	inits   []breakpadCFIInit
 	changes []breakpadCFIChange
 	windows []breakpadWIN
+	dwarf   *dwarfCFI
 }
 
 type breakpadWIN struct {
@@ -88,6 +89,9 @@ func unwindMinidumpThread(dump *minidump, thread minidumpThread, unwinders map[s
 				next = unwinder.unwind(ip-module.base, registers, memory, ipName, spName)
 				if next == nil && dump.architecture == "x86" {
 					next = unwinder.unwindWindows(ip-module.base, registers, memory, dump)
+				}
+				if next == nil && unwinder.dwarf != nil {
+					next = unwinder.dwarf.unwind(ip-module.base, registers, memory, dump.architecture)
 				}
 			}
 		}
@@ -171,8 +175,10 @@ func loadBreakpadUnwinders(ctx context.Context, st *store.Store, projectID strin
 			continue
 		}
 		unwinder := parseBreakpadCFI(file)
+		_, _ = file.Seek(0, io.SeekStart)
+		unwinder.dwarf = loadDwarfCFI(file)
 		_ = file.Close()
-		if len(unwinder.inits) > 0 || len(unwinder.windows) > 0 {
+		if len(unwinder.inits) > 0 || len(unwinder.windows) > 0 || unwinder.dwarf != nil {
 			result[normalized] = unwinder
 		}
 	}
