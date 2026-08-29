@@ -59,7 +59,7 @@ The DSN shown in the project setup page should always be copied verbatim.
 | Replay event/recording payloads | Storage, retrieval, metadata, bounded statistics, event timeline, and interactive rrweb playback |
 | Profile and metric payloads | Storage, summaries, sampled-profile hotspots, threads, and flamegraph |
 | Source maps and release files | Source Map v3, including indexed maps, canonical URL source roots, release/distribution precedence, embedded source context, and debug-ID artifact bundles |
-| ELF, Mach-O/dSYM, PE/COFF, Microsoft PDB, and Breakpad debug files | ELF, thin/universal Mach-O, and PE/COFF function symbols with bounded DWARF source locations and inline chains; standalone PDB 7 CodeView public/procedure symbols and C13 source locations; and Breakpad `FUNC`/`PUBLIC` symbols with `FILE`/line and nested `INLINE` records, selected by debug ID |
+| ELF, Mach-O/dSYM, PE/COFF, Microsoft PDB, and Breakpad debug files | ELF, thin/universal Mach-O, and PE/COFF function symbols with bounded DWARF source locations and inline chains; standalone PDB 7 CodeView public/procedure symbols, C13 source locations, and nested inline sites; and Breakpad `FUNC`/`PUBLIC` symbols with `FILE`/line and nested `INLINE` records, selected by debug ID |
 | ProGuard and R8 mappings | Debug-ID-selected Java class, method, filename, and line remapping, including the Sentry multipart upload route |
 | Release commits and deploys | Supported |
 | Artifact bundle/chunk upload protocol | Supported for common `sentry-cli` workflows |
@@ -94,8 +94,8 @@ DWARF lookup, including runtime load-address rebasing, universal-binary
 architecture selection, and bounded `DW_TAG_inlined_subroutine` expansion.
 Native symbolication does not yet perform CFI-based stack unwinding. PE/COFF
 images resolve embedded symbols and DWARF source locations. Standalone Microsoft
-PDB 7 files resolve bounded public and procedure symbols and C13 source
-locations, but PDB inline-site records are not yet expanded.
+PDB 7 files resolve bounded public and procedure symbols, C13 source locations,
+and nested `S_INLINESITE` records through IPI and inlinee-line metadata.
 ProGuard/R8 mappings restore classes, methods, and source lines but do not yet
 expand ambiguous inlined call chains into multiple frames. Breakpad symbolication
 resolves bounded function ranges, source lines, and nested inline records, but

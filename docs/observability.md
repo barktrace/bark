@@ -102,13 +102,15 @@ and PE/COFF artifacts resolve function symbols and DWARF source files, lines,
 and columns, including runtime image-base rebasing. DWARF loading is skipped
 when its uncompressed sections exceed 32 MiB so a debug artifact cannot consume
 the container's whole memory budget. Standalone PDB 7 files resolve bounded
-CodeView public and procedure symbols plus C13 source files, lines, and columns
-with section/RVA rebasing. Breakpad files resolve bounded `FUNC` records before
-falling back to the nearest `PUBLIC` symbol, add `FILE` and source-line
-information, and expand up to 512 nested `INLINE`/`INLINE_ORIGIN` call frames.
+CodeView public and procedure symbols, C13 source files, lines, and columns, and
+nested `S_INLINESITE` call frames through IPI function identities and inlinee
+line programs, with section/RVA rebasing. Breakpad files resolve bounded `FUNC`
+records before falling back to the nearest `PUBLIC` symbol, add `FILE` and
+source-line information, and expand up to 512 nested `INLINE`/`INLINE_ORIGIN`
+call frames.
 ELF, Mach-O/dSYM, and DWARF-enabled PE files likewise expand bounded
-`DW_TAG_inlined_subroutine` chains with call-site locations. PDB inline-site
-expansion and CFI stack unwinding are not currently implemented.
+`DW_TAG_inlined_subroutine` chains with call-site locations. CFI stack unwinding
+is not currently implemented.
 
 Java and Android frames can use ProGuard/R8 mapping files selected by the
 event's ProGuard UUID. Barktrace restores class, method, source filename, and

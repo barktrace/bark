@@ -22,13 +22,17 @@ SENTRY_CLI_BIN=/path/to/sentry-cli \
   go test -count=1 -run TestSentryCLIWorkflow -v ./internal/httpapi
 ```
 
-The standalone PDB parser has an opt-in fixture check for compiler-produced
-Microsoft PDB 7 files. It verifies both public/procedure symbols and CodeView
-C13 source locations:
+The standalone PDB parser has opt-in fixture checks for compiler-produced
+Microsoft PDB 7 files. They verify public/procedure symbols, CodeView C13 source
+locations, nested inline sites, and inline line-program file changes:
 
 ```sh
 BARKTRACE_PDB_FIXTURE=/path/to/application.pdb \
   go test -count=1 -run TestRealPDBFixture -v ./internal/symbolicate
+
+BARKTRACE_PDB_INLINE_FIXTURE=/path/to/nested-inline.pdb \
+BARKTRACE_PDB_INLINE_FILES_FIXTURE=/path/to/inline-file-changes.pdb \
+  go test -count=1 -run 'TestRealPDBInline' -v ./internal/symbolicate
 ```
 
 The replicated SQLite integration test downloads a checksum-verified, pinned
