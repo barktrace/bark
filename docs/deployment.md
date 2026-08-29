@@ -17,16 +17,17 @@ build stage.
 
 ## Requirements
 
-- one application replica;
+- one application replica when using the default local SQLite database, or a
+  replicated libSQL database plus S3 blob storage for multiple replicas;
 - one persistent volume mounted at `/data`;
 - TCP port `8080` behind an HTTPS reverse proxy;
 - an OpenID Connect provider;
 - a proxy request-body limit of at least 20 MiB for Sentry envelopes.
 
-SQLite is intentionally the only database. Do not scale the application to
-multiple replicas sharing the volume. Vertical scaling and a fast local or
-block-storage volume are the supported topology; network filesystems with
-unreliable SQLite locking are not.
+SQLite is intentionally the only database engine. Do not scale several
+application replicas over one filesystem database. Vertical scaling with local
+SQLite is the simplest topology; multi-node deployments use a shared replicated
+libSQL service for metadata and S3-compatible object storage for payloads.
 
 ## Docker Compose
 
@@ -50,7 +51,8 @@ and route the public hostname to port `8080`.
    `compose.yml`, or create a Dockerfile application using `Dockerfile`.
 2. Configure the domain (for example `errors.example.com`) with HTTPS and route
    it to container port `8080`.
-3. Attach persistent storage to `/data`. Keep exactly one replica.
+3. Attach persistent storage to `/data`. Keep exactly one replica unless the
+   remote-libSQL and S3 multi-node topology below is configured.
 4. Import the variables in `deploy/dokploy.env.example` into the Environment
    panel. Enter OIDC and MCP values as secrets rather than committing them.
 5. Use `GET /readyz` as the health check. A successful response is HTTP 200.
@@ -107,16 +109,46 @@ Dokploy volume snapshots are also suitable when they are crash-consistent. The
 simplest portable alternative is to stop Barktrace, copy the entire `/data`
 directory (including `-wal` and `-shm` files if present), and restart it.
 
-To restore, stop Barktrace, preserve the current volume, put the backed-up
+To restore a local SQLite deployment, stop Barktrace, preserve the current volume, put the backed-up
 `barktrace.db` in `/data`, remove stale `barktrace.db-wal` and `barktrace.db-shm`
 files, ensure UID/GID `65532` can write the directory, and start the one replica.
 Confirm `/readyz` before accepting traffic.
 
+## Multi-node deployment
+
+For API redundancy without PostgreSQL, provision a replicated libSQL service
+(self-hosted or managed) and an S3-compatible bucket. Configure every Barktrace
+replica with the same values:
+
+```env
+BARKTRACE_DATABASE_URL=libsql://barktrace.example.turso.io
+BARKTRACE_DATABASE_AUTH_TOKEN=replace-with-database-token
+BARKTRACE_BLOB_BACKEND=s3
+BARKTRACE_S3_ENDPOINT=https://s3.example.com
+BARKTRACE_S3_REGION=eu-west-1
+BARKTRACE_S3_BUCKET=barktrace
+BARKTRACE_S3_ACCESS_KEY_ID=replace-me
+BARKTRACE_S3_SECRET_ACCESS_KEY=replace-me
+BARKTRACE_S3_PREFIX=production
+```
+
+Each replica still needs a small writable `/data` mount for bounded temporary
+files, but the local `barktrace.db` is not used when `BARKTRACE_DATABASE_URL` is
+set. Route traffic through a health-checking load balancer. Migrations are
+serialized with a database lease, and scheduled workers already use leases, so
+replicas can start and serve concurrently. Availability and backup guarantees
+for metadata are those of the chosen libSQL service; configure its replication
+and point-in-time recovery separately.
+
 ## Operational limits
 
-This release is a deployable single-node observability service, not complete
-Sentry parity. Errors, issue triage, releases and release health, normalized
-transactions and spans, logs, uptime, webhook/Slack alerts, members, API
-tokens, rate limits, and retention controls are implemented. Replays, metrics,
-profiles, attachments, symbolication/source maps, commit metadata, email alert
-delivery, and high-availability storage are not implemented yet.
+This release is a deployable single-node or remote-libSQL multi-node
+observability service, not complete Sentry parity. It includes durable ingestion, symbolication artifacts,
+check-ins, feedback, attachments, replays, profiles, metrics, release metadata,
+SMTP/webhook/Slack delivery, RBAC, audit logs, quotas, and scoped MCP access.
+
+For high-durability payload storage, set `BARKTRACE_BLOB_BACKEND=s3` and provide
+the S3 variables documented in [configuration.md](configuration.md). Background
+workers coordinate through database leases. Never run multiple replicas against
+independent local SQLite databases or place one SQLite file on an unsafe network
+filesystem; use the remote-libSQL topology above for active-active API service.

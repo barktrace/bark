@@ -14,18 +14,19 @@ The public route layout is:
 - `/api/{project_id}/envelope/` — SDK envelopes
 - `/api/{project_id}/store/` — legacy SDK events
 - `/api/{project_id}/logs/` — lightweight structured log ingestion
-- `/mcp` — optional authenticated Streamable HTTP MCP endpoint
-- `/organizations`, `/projects`, `/issues`, `/releases`, `/performance`, `/logs`, `/uptime/*` — native JSON API
+- `/mcp` — authenticated, organization-scoped Streamable HTTP MCP endpoint
+- `/organizations`, `/projects`, `/issues`, `/releases`, `/performance`, `/logs`, `/uptime/*`, `/cron/*`, `/replays`, `/profiles`, `/metrics`, and `/artifacts` — native JSON API
 - `/healthz` and `/readyz` — probes
 
 ## Memory policy
 
 - Standard-library `net/http`; no reflection-heavy web framework.
-- SQLite WAL mode with a single open connection by default.
+- SQLite WAL mode with a single open connection by default; remote libSQL is
+  available when a replicated metadata plane is required.
 - Streaming envelope parsing with hard per-item and request limits.
 - Raw event JSON is not duplicated after normalization.
-- Bounded queues only; ingestion remains synchronous until a durable queue is
-  introduced.
+- Payloads are persisted before processing and consumed through leased,
+  retryable jobs with a bounded worker loop.
 - Static assets are embedded and served directly without a Node process.
 
 The target is an idle RSS below 40 MiB and a default container memory limit of
@@ -52,21 +53,22 @@ be added without changing ingestion identity.
 
 ## Observability processors
 
-Transactions and log items are normalized synchronously into compact indexed
-tables. Uptime checks run in the same Go process with bounded response reads and
-sequential scheduling. Public HTTP/HTTPS targets are allowed by default;
+Transactions, logs, check-ins, replays, profiles, metrics, feedback, and
+attachments are normalized into compact indexed tables or content-addressed
+blobs. Background ingestion, uptime, alert delivery, cron evaluation, and
+retention work uses database leases or atomic job leases so multiple processes
+do not duplicate scheduled work. Public HTTP/HTTPS targets are allowed by default;
 loopback, link-local, and private IPs are rejected before creation and again at
 connection time to reduce SSRF and DNS-rebinding risk.
 
 ## Compatibility boundary
 
-The implemented surface includes errors, deterministic grouping and triage,
-transactions, normalized spans, sessions and release health, structured logs,
-uptime, webhook/Slack alerts, organizations, projects, members, tokens,
-retention, and core envelope/store ingestion. Other unsupported envelope
-categories are written to `ingestion_outcomes`, so clients do not retry
-indefinitely. Durable processing for check-ins, attachments, profiles, replays,
-metrics, source maps, symbolication, commit metadata, and high availability is
-planned as separate bounded modules. This boundary is explicit because claiming
-complete Sentry parity before those processors exist would make SDK delivery
-look successful while silently discarding data.
+The implemented surface includes errors and triage, transactions and spans,
+sessions and release health, structured logs, uptime and cron monitoring,
+replays, profiles, metrics, feedback, attachments, source maps and native debug
+files, releases/commits/deploys, alerts, quotas, audit logs, durable ingestion,
+and the common self-hosted `sentry-cli` workflows. S3-compatible storage can be
+used for blobs shared by several processes. Multi-node deployments connect each
+Barktrace replica to the same replicated libSQL database and S3 bucket. Database
+leases ensure only one replica performs each scheduled worker task, while HTTP
+ingestion and queries remain active on every replica.

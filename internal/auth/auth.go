@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/GhaziBenDahmane/barktrace/internal/config"
-	"github.com/GhaziBenDahmane/barktrace/internal/store"
+	"github.com/barktrace/bark/internal/config"
+	"github.com/barktrace/bark/internal/store"
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"

@@ -12,13 +12,16 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/GhaziBenDahmane/barktrace/internal/alerts"
-	"github.com/GhaziBenDahmane/barktrace/internal/auth"
-	"github.com/GhaziBenDahmane/barktrace/internal/config"
-	"github.com/GhaziBenDahmane/barktrace/internal/httpapi"
-	"github.com/GhaziBenDahmane/barktrace/internal/maintenance"
-	"github.com/GhaziBenDahmane/barktrace/internal/store"
-	"github.com/GhaziBenDahmane/barktrace/internal/uptime"
+	"github.com/barktrace/bark/internal/alerts"
+	"github.com/barktrace/bark/internal/auth"
+	"github.com/barktrace/bark/internal/blobstore"
+	"github.com/barktrace/bark/internal/config"
+	"github.com/barktrace/bark/internal/coordination"
+	"github.com/barktrace/bark/internal/cronmon"
+	"github.com/barktrace/bark/internal/httpapi"
+	"github.com/barktrace/bark/internal/maintenance"
+	"github.com/barktrace/bark/internal/store"
+	"github.com/barktrace/bark/internal/uptime"
 )
 
 func main() {
@@ -63,7 +66,18 @@ func run() error {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
-	st, err := store.Open(ctx, cfg.DataDir)
+	var blobs blobstore.Backend
+	if cfg.BlobBackend == "s3" {
+		blobs, err = blobstore.NewS3(blobstore.S3Config{
+			Endpoint: cfg.S3.Endpoint, Region: cfg.S3.Region, Bucket: cfg.S3.Bucket,
+			AccessKey: cfg.S3.AccessKey, SecretKey: cfg.S3.SecretKey, SessionToken: cfg.S3.SessionToken,
+			Prefix: cfg.S3.Prefix, TempDir: cfg.DataDir, AllowHTTP: cfg.S3.AllowHTTP,
+		})
+		if err != nil {
+			return fmt.Errorf("configure S3 blob storage: %w", err)
+		}
+	}
+	st, err := store.OpenWithDatabase(ctx, cfg.DataDir, blobs, cfg.DatabaseURL, cfg.DatabaseAuthToken)
 	if err != nil {
 		return err
 	}
@@ -73,10 +87,16 @@ func run() error {
 		return err
 	}
 	uptimeService := uptime.New(st, cfg.UptimeAllowPrivateTargets)
-	go uptimeService.Run(ctx)
-	go maintenance.New(st).Run(ctx)
-	go alerts.New(st).Run(ctx)
+	coordinator := coordination.New(st.DB)
+	maintenanceService := maintenance.New(st)
+	alertService := alerts.New(st, cfg.SMTP)
+	cronService := cronmon.New(st)
+	go coordinator.Run(ctx, "uptime", 0, 5*time.Second, uptimeService.RunDue)
+	go coordinator.Run(ctx, "retention", time.Minute, 6*time.Hour, maintenanceService.CleanupAll)
+	go coordinator.Run(ctx, "alerts", 0, 10*time.Second, alertService.DeliverPending)
+	go coordinator.Run(ctx, "cron", time.Minute, time.Minute, func(ctx context.Context) { cronService.MarkMissed(ctx, time.Now().UTC()) })
 	api := httpapi.New(cfg, st, authentication, uptimeService)
+	go api.RunIngestion(ctx)
 	server := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           api.Handler(),
@@ -92,7 +112,11 @@ func run() error {
 		defer shutdownCancel()
 		_ = server.Shutdown(shutdownCtx)
 	}()
-	slog.Info("barktrace listening", "address", cfg.Addr, "ui", "/ui/", "database", cfg.DataDir)
+	database := cfg.DataDir
+	if cfg.DatabaseURL != "" {
+		database = "remote libSQL"
+	}
+	slog.Info("barktrace listening", "address", cfg.Addr, "ui", "/ui/", "database", database)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}

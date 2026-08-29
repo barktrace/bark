@@ -54,25 +54,29 @@ The DSN shown in the project setup page should always be copied verbatim.
 | Sentry structured log envelope items | Supported |
 | Project ingestion rate-limit headers | Supported |
 | Unknown envelope item acknowledgement/outcome recording | Supported |
+| Cron/check-in envelope items | Supported |
+| Attachments and user reports | Supported |
+| Replay event/recording payloads | Supported for storage and retrieval |
+| Profile and metric payloads | Supported for storage and summaries |
+| Source maps and release files | Supported |
+| ELF and Breakpad debug files | Supported |
+| Release commits and deploys | Supported |
+| Artifact bundle/chunk upload protocol | Supported for common `sentry-cli` workflows |
+| Pre-production APK/AAB/IPA build upload and installable APK/IPA download | Supported |
+| Snapshot image upload, latest-base lookup, and ZIP download | Supported |
+| Durable queue, retry, and dead-letter handling | Supported |
 
 The compatibility checks currently exercise real `sentry-sdk` 2.21.0 and
-`sentry-go` 0.43.0 clients against the production Docker image.
+`sentry-go` 0.43.0 clients against the production Docker image. An opt-in test
+also exercises real `sentry-cli` 3.7.0 release, source-map, debug-file, build,
+snapshot, issue, event, log, deploy, repository, monitor, and code-mapping
+workflows.
 
 ## Not yet Sentry-compatible
 
-Barktrace is compatible with Sentry SDK error delivery, not with the complete
-Sentry product or HTTP API. The following need dedicated implementations:
-
-- check-ins, profiles, replays, metrics, and attachments;
-- source-map ingestion, native debug files, and symbolication;
-- user feedback and client-report processing;
-- Sentry-compatible alert-management APIs and quota categories (native webhook/Slack rules, project rate limits, and retention controls are available);
-- commit/deploy metadata and suspect commits;
-- the broader `/api/0` project, team, member, and issue API;
-- complete endpoint coverage expected by `sentry-cli` (native Bearer API tokens and release creation are available);
-- Relay protocol support and multi-node/high-availability ingestion.
-
-Unsupported envelope item types receive a successful response and
-are recorded in `ingestion_outcomes` with `processor pending`. This prevents SDK
-retry storms, but the unsupported payload itself is not retained. Transactions
-and log items are retained; replay and profiling payloads are not.
+Barktrace implements the current `sentry-cli` network surface and common SDK
+workflows, not the complete Sentry SaaS product or every private HTTP endpoint.
+Relay registration, Discover's query language, custom dashboards, deep
+replay/profile visualization, and the full integration marketplace are outside
+the current compatibility boundary. Unknown envelope categories receive a
+successful response and an ingestion outcome so clients do not retry forever.

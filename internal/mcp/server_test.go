@@ -3,12 +3,13 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
-	"github.com/GhaziBenDahmane/barktrace/internal/store"
+	"github.com/barktrace/bark/internal/store"
 )
 
 const testToken = "0123456789abcdef0123456789abcdef"
@@ -55,8 +56,110 @@ func TestInitializeAndListTools(t *testing.T) {
 	listed := call(t, service, `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
 	toolsResult := listed["result"].(map[string]any)
 	available := toolsResult["tools"].([]any)
-	if len(available) != 9 {
-		t.Fatalf("tool count = %d, want 9", len(available))
+	if len(available) != 30 {
+		t.Fatalf("tool count = %d, want 30", len(available))
+	}
+}
+
+func TestOrganizationTokenIsScopedAndReadOnly(t *testing.T) {
+	st := testStore(t)
+	seedMCPData(t, st)
+	plain := "bark_mcp_scoped-read-token"
+	hash := sha256.Sum256([]byte(plain))
+	_, err := st.DB.Exec(`
+		INSERT INTO organizations(id, slug, name) VALUES ('other-org', 'other', 'Other');
+		INSERT INTO projects(id, sentry_id, organization_id, slug, name, public_key) VALUES ('other-project', '2', 'other-org', 'other', 'Other', 'other-key');
+		INSERT INTO users(id, email, name) VALUES ('creator', 'creator@example.com', 'Creator');
+		INSERT INTO organization_memberships(organization_id, user_id, role) VALUES ('org', 'creator', 'owner');
+		INSERT INTO mcp_tokens(id, organization_id, created_by, name, token_hash, token_prefix, scopes) VALUES ('mcp-read', 'org', 'creator', 'Read', ?, 'bark_mcp_scope', '["read"]');
+	`, hash[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := New(st, "", "https://errors.example")
+
+	listed := callWithToken(t, service, plain, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_projects","arguments":{}}}`)
+	projects := listed["result"].(map[string]any)["structuredContent"].([]any)
+	if len(projects) != 1 || projects[0].(map[string]any)["id"] != "project" {
+		t.Fatalf("scoped projects = %#v", projects)
+	}
+
+	foreign := callWithToken(t, service, plain, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_project_summary","arguments":{"project_id":"other-project"}}}`)
+	if foreign["result"].(map[string]any)["isError"] != true {
+		t.Fatalf("foreign project was accessible: %#v", foreign)
+	}
+
+	updated := callWithToken(t, service, plain, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"update_issue_status","arguments":{"issue_id":"issue","status":"resolved"}}}`)
+	if updated["result"].(map[string]any)["isError"] != true {
+		t.Fatalf("read-only token changed issue: %#v", updated)
+	}
+}
+
+func TestOrganizationWriteTokenAuditsMutation(t *testing.T) {
+	st := testStore(t)
+	seedMCPData(t, st)
+	plain := "bark_mcp_scoped-write-token"
+	hash := sha256.Sum256([]byte(plain))
+	_, err := st.DB.Exec(`
+		INSERT INTO users(id, email, name) VALUES ('creator', 'creator@example.com', 'Creator');
+		INSERT INTO organization_memberships(organization_id, user_id, role) VALUES ('org', 'creator', 'owner');
+		INSERT INTO mcp_tokens(id, organization_id, created_by, name, token_hash, token_prefix, scopes) VALUES ('mcp-write', 'org', 'creator', 'Write', ?, 'bark_mcp_scope', '["write"]');
+	`, hash[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := New(st, "", "https://errors.example")
+	updated := callWithToken(t, service, plain, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"update_issue_status","arguments":{"issue_id":"issue","status":"resolved"}}}`)
+	if updated["result"].(map[string]any)["isError"] != false {
+		t.Fatalf("write token mutation failed: %#v", updated)
+	}
+	var actorType, action, actorID string
+	if err := st.DB.QueryRow(`SELECT actor_type, action, actor_user_id FROM audit_logs`).Scan(&actorType, &action, &actorID); err != nil {
+		t.Fatal(err)
+	}
+	if actorType != "mcp" || action != "update_issue_status" || actorID != "creator" {
+		t.Fatalf("audit actor=%q action=%q user=%q", actorType, action, actorID)
+	}
+}
+
+func TestObservabilityToolsExecuteAgainstCurrentSchema(t *testing.T) {
+	st := testStore(t)
+	seedMCPData(t, st)
+	_, err := st.DB.Exec(`
+		INSERT INTO uptime_monitors(id, project_id, name, url, next_check_at) VALUES ('uptime', 'project', 'API', 'https://example.com/health', '2026-01-01T00:00:00Z');
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := New(st, testToken, "https://errors.example")
+	calls := []string{
+		`{"name":"list_transactions","arguments":{"project_id":"project"}}`,
+		`{"name":"list_logs","arguments":{"project_id":"project"}}`,
+		`{"name":"list_uptime_monitors","arguments":{"project_id":"project"}}`,
+		`{"name":"list_uptime_checks","arguments":{"project_id":"project","monitor_id":"uptime"}}`,
+		`{"name":"list_cron_monitors","arguments":{"project_id":"project"}}`,
+		`{"name":"list_cron_checkins","arguments":{"project_id":"project"}}`,
+		`{"name":"list_feedback","arguments":{"project_id":"project"}}`,
+		`{"name":"list_replays","arguments":{"project_id":"project"}}`,
+		`{"name":"list_profiles","arguments":{"project_id":"project"}}`,
+		`{"name":"list_metrics","arguments":{"project_id":"project"}}`,
+		`{"name":"list_alert_rules","arguments":{"project_id":"project"}}`,
+		`{"name":"list_alert_deliveries","arguments":{"project_id":"project"}}`,
+		`{"name":"list_artifacts","arguments":{"project_id":"project"}}`,
+		`{"name":"list_attachments","arguments":{"project_id":"project"}}`,
+		`{"name":"list_deploys","arguments":{"project_id":"project"}}`,
+		`{"name":"list_commits","arguments":{"project_id":"project"}}`,
+		`{"name":"list_suspect_commits","arguments":{"project_id":"project","issue_id":"issue"}}`,
+		`{"name":"list_project_quotas","arguments":{"project_id":"project"}}`,
+		`{"name":"list_ingestion_jobs","arguments":{"project_id":"project"}}`,
+		`{"name":"list_audit_logs","arguments":{"project_id":"project"}}`,
+		`{"name":"get_storage_summary","arguments":{}}`,
+	}
+	for index, params := range calls {
+		response := call(t, service, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":`+params+`}`)
+		if response["result"].(map[string]any)["isError"] != false {
+			t.Fatalf("tool call %d failed: %#v", index, response)
+		}
 	}
 }
 
@@ -111,9 +214,16 @@ func authorizedRequest(body string) *http.Request {
 }
 
 func call(t *testing.T, service *Service, body string) map[string]any {
+	return callWithToken(t, service, testToken, body)
+}
+
+func callWithToken(t *testing.T, service *Service, token, body string) map[string]any {
 	t.Helper()
 	response := httptest.NewRecorder()
-	service.ServeHTTP(response, authorizedRequest(body))
+	request := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewBufferString(body))
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	service.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 	}

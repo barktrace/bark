@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/GhaziBenDahmane/barktrace/internal/store"
+	"github.com/barktrace/bark/internal/store"
 )
 
 func TestCheckNowOpensAndResolvesIncident(t *testing.T) {

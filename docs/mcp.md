@@ -1,19 +1,22 @@
 # MCP server
 
 Barktrace includes a stateless Streamable HTTP Model Context Protocol endpoint in
-the main process. It requires no sidecar and is disabled unless
-`BARKTRACE_MCP_TOKEN` is configured.
+the main process. It requires no sidecar. Organization administrators create
+scoped credentials from the dashboard; the legacy instance-wide environment
+token remains available for upgrades and recovery.
 
 ## Enable it
 
-Generate a dedicated administrative token and store it in your deployment's
-secret manager:
+Sign in as an organization administrator, open **Organization**, and create an
+MCP token with `read` or `read` + `write` scope. The secret is displayed once.
+For a legacy instance-wide credential, generate a token and store it in your
+deployment's secret manager:
 
 ```sh
 openssl rand -hex 32
 ```
 
-Set the result as `BARKTRACE_MCP_TOKEN` and redeploy. The endpoint is then:
+Set the result as `BARKTRACE_MCP_TOKEN` and redeploy. In either mode the endpoint is:
 
 ```text
 https://errors.example.com/mcp
@@ -60,7 +63,7 @@ curl --fail-with-body https://errors.example.com/mcp \
 
 | Tool | Effect |
 | --- | --- |
-| `list_organizations` | Lists all organizations and their project/issue counts. |
+| `list_organizations` | Lists organizations visible to the credential and their project/issue counts. |
 | `list_projects` | Lists projects and DSNs, optionally by organization slug. |
 | `get_project_summary` | Returns issue, open issue, event, and release counts. |
 | `list_issues` | Searches and filters grouped issues for a project. |
@@ -69,11 +72,21 @@ curl --fail-with-body https://errors.example.com/mcp \
 | `list_events` | Lists event occurrences, optionally for one issue. |
 | `get_event` | Returns an event including its original Sentry JSON. |
 | `list_releases` | Lists project releases and event counts. |
+| `list_transactions`, `list_logs` | Queries performance data and structured logs. |
+| `list_uptime_monitors`, `list_uptime_checks` | Inspects uptime status and history. |
+| `list_cron_monitors`, `list_cron_checkins` | Inspects scheduled-job health. |
+| `list_feedback`, `list_attachments` | Inspects user reports and event attachments. |
+| `list_replays`, `list_profiles`, `list_metrics` | Inspects extended telemetry products. |
+| `list_alert_rules`, `list_alert_deliveries` | Inspects alert configuration and delivery. |
+| `list_artifacts` | Lists source maps and debug files. |
+| `list_deploys`, `list_commits`, `list_suspect_commits` | Correlates releases and source changes. |
+| `list_project_quotas`, `list_ingestion_jobs` | Inspects limits, retries, and dead letters. |
+| `get_storage_summary`, `list_audit_logs` | Inspects tenant storage and security activity. |
 
 ## Security boundary
 
-The MCP token is currently instance-wide. It can read every organization and
-raw event payload, and it can change issue status. Treat it as an administrative
-secret, use HTTPS, do not reuse the OIDC client secret, and rotate it by changing
-the environment variable and redeploying. Per-user OAuth, organization-scoped
-tokens, and an MCP audit log are future hardening work.
+Database-backed MCP tokens can access only their organization. `read` tokens
+cannot invoke mutation tools; `write` tokens can also update issue status, and
+successful mutations are recorded with actor type `mcp`. Treat every token as a
+secret and use HTTPS. `BARKTRACE_MCP_TOKEN`, when configured, deliberately keeps
+legacy instance-wide administrative access and should be reserved for recovery.

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	alertservice "github.com/GhaziBenDahmane/barktrace/internal/alerts"
-	"github.com/GhaziBenDahmane/barktrace/internal/auth"
+	alertservice "github.com/barktrace/bark/internal/alerts"
+	"github.com/barktrace/bark/internal/auth"
 	"github.com/google/uuid"
 )
 
@@ -19,7 +19,7 @@ func (s *Server) alertRules(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "project access required")
 		return
 	}
-	rows, err := s.store.DB.QueryContext(r.Context(), `SELECT id, name, trigger, destination_type, destination_url, enabled, created_at FROM alert_rules WHERE project_id = ? ORDER BY created_at DESC`, projectID)
+	rows, err := s.store.DB.QueryContext(r.Context(), `SELECT id, name, trigger, destination_type, destination_url, destination_email, conditions, frequency_minutes, enabled, created_at FROM alert_rules WHERE project_id = ? ORDER BY created_at DESC`, projectID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not list alert rules")
 		return
@@ -27,10 +27,16 @@ func (s *Server) alertRules(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	items := make([]map[string]any, 0)
 	for rows.Next() {
-		var id, name, trigger, destinationType, destinationURL, createdAt string
+		var id, name, trigger, destinationType, destinationURL, destinationEmail, createdAt string
+		var conditions json.RawMessage
+		var frequency int
 		var enabled bool
-		if err := rows.Scan(&id, &name, &trigger, &destinationType, &destinationURL, &enabled, &createdAt); err == nil {
-			items = append(items, map[string]any{"id": id, "name": name, "trigger": trigger, "destination_type": destinationType, "destination_host": destinationHost(destinationURL), "enabled": enabled, "created_at": createdAt})
+		if err := rows.Scan(&id, &name, &trigger, &destinationType, &destinationURL, &destinationEmail, &conditions, &frequency, &enabled, &createdAt); err == nil {
+			destination := destinationURL
+			if destinationType == "email" {
+				destination = destinationEmail
+			}
+			items = append(items, map[string]any{"id": id, "name": name, "trigger": trigger, "destination_type": destinationType, "destination_host": destinationHost(destination), "conditions": conditions, "frequency_minutes": frequency, "enabled": enabled, "created_at": createdAt})
 		}
 	}
 	writeJSON(w, http.StatusOK, items)
@@ -39,11 +45,14 @@ func (s *Server) alertRules(w http.ResponseWriter, r *http.Request) {
 func (s *Server) createAlertRule(w http.ResponseWriter, r *http.Request) {
 	principal, _ := auth.PrincipalFromContext(r.Context())
 	var input struct {
-		ProjectID       string `json:"project_id"`
-		Name            string `json:"name"`
-		Trigger         string `json:"trigger"`
-		DestinationType string `json:"destination_type"`
-		DestinationURL  string `json:"destination_url"`
+		ProjectID        string          `json:"project_id"`
+		Name             string          `json:"name"`
+		Trigger          string          `json:"trigger"`
+		DestinationType  string          `json:"destination_type"`
+		DestinationURL   string          `json:"destination_url"`
+		DestinationEmail string          `json:"destination_email"`
+		Conditions       json.RawMessage `json:"conditions"`
+		FrequencyMinutes int             `json:"frequency_minutes"`
 	}
 	if err := decodeJSON(w, r, &input); err != nil {
 		return
@@ -52,29 +61,40 @@ func (s *Server) createAlertRule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "project administrator access required")
 		return
 	}
-	input.Name, input.Trigger, input.DestinationType, input.DestinationURL = strings.TrimSpace(input.Name), strings.ToLower(strings.TrimSpace(input.Trigger)), strings.ToLower(strings.TrimSpace(input.DestinationType)), strings.TrimSpace(input.DestinationURL)
+	input.Name, input.Trigger, input.DestinationType, input.DestinationURL, input.DestinationEmail = strings.TrimSpace(input.Name), strings.ToLower(strings.TrimSpace(input.Trigger)), strings.ToLower(strings.TrimSpace(input.DestinationType)), strings.TrimSpace(input.DestinationURL), strings.TrimSpace(input.DestinationEmail)
 	if input.Name == "" || !alertTrigger(input.Trigger) {
 		writeError(w, http.StatusBadRequest, "valid rule name and trigger are required")
 		return
 	}
-	if err := alertservice.ValidateDestination(input.DestinationType, input.DestinationURL); err != nil {
+	destination := input.DestinationURL
+	if input.DestinationType == "email" {
+		destination = input.DestinationEmail
+	}
+	if err := alertservice.ValidateDestination(input.DestinationType, destination); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	id := uuid.NewString()
-	if _, err := s.store.DB.ExecContext(r.Context(), `INSERT INTO alert_rules(id, project_id, name, trigger, destination_type, destination_url) VALUES (?, ?, ?, ?, ?, ?)`, id, input.ProjectID, input.Name, input.Trigger, input.DestinationType, input.DestinationURL); err != nil {
+	conditions, ok := validAlertConditions(input.Conditions)
+	if !ok || input.FrequencyMinutes < 0 || input.FrequencyMinutes > 10080 {
+		writeError(w, http.StatusBadRequest, "invalid alert conditions or frequency")
+		return
+	}
+	if _, err := s.store.DB.ExecContext(r.Context(), `INSERT INTO alert_rules(id, project_id, name, trigger, destination_type, destination_url, destination_email, conditions, frequency_minutes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, input.ProjectID, input.Name, input.Trigger, input.DestinationType, input.DestinationURL, input.DestinationEmail, conditions, input.FrequencyMinutes); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not create alert rule")
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"id": id, "name": input.Name, "trigger": input.Trigger, "destination_type": input.DestinationType, "destination_host": destinationHost(input.DestinationURL), "enabled": true})
+	writeJSON(w, http.StatusCreated, map[string]any{"id": id, "name": input.Name, "trigger": input.Trigger, "destination_type": input.DestinationType, "destination_host": destinationHost(destination), "conditions": json.RawMessage(conditions), "frequency_minutes": input.FrequencyMinutes, "enabled": true})
 }
 
 func (s *Server) updateAlertRule(w http.ResponseWriter, r *http.Request) {
 	principal, _ := auth.PrincipalFromContext(r.Context())
 	ruleID := r.PathValue("rule_id")
-	var projectID, name, trigger, destinationType, destinationURL string
+	var projectID, name, trigger, destinationType, destinationURL, destinationEmail string
+	var conditions json.RawMessage
+	var frequency int
 	var enabled bool
-	if err := s.store.DB.QueryRowContext(r.Context(), `SELECT project_id, name, trigger, destination_type, destination_url, enabled FROM alert_rules WHERE id = ?`, ruleID).Scan(&projectID, &name, &trigger, &destinationType, &destinationURL, &enabled); err != nil {
+	if err := s.store.DB.QueryRowContext(r.Context(), `SELECT project_id, name, trigger, destination_type, destination_url, destination_email, conditions, frequency_minutes, enabled FROM alert_rules WHERE id = ?`, ruleID).Scan(&projectID, &name, &trigger, &destinationType, &destinationURL, &destinationEmail, &conditions, &frequency, &enabled); err != nil {
 		writeError(w, http.StatusNotFound, "alert rule not found")
 		return
 	}
@@ -83,11 +103,14 @@ func (s *Server) updateAlertRule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		Name            *string `json:"name"`
-		Trigger         *string `json:"trigger"`
-		DestinationType *string `json:"destination_type"`
-		DestinationURL  *string `json:"destination_url"`
-		Enabled         *bool   `json:"enabled"`
+		Name             *string         `json:"name"`
+		Trigger          *string         `json:"trigger"`
+		DestinationType  *string         `json:"destination_type"`
+		DestinationURL   *string         `json:"destination_url"`
+		DestinationEmail *string         `json:"destination_email"`
+		Conditions       json.RawMessage `json:"conditions"`
+		FrequencyMinutes *int            `json:"frequency_minutes"`
+		Enabled          *bool           `json:"enabled"`
 	}
 	if err := decodeJSON(w, r, &input); err != nil {
 		return
@@ -104,6 +127,20 @@ func (s *Server) updateAlertRule(w http.ResponseWriter, r *http.Request) {
 	if input.DestinationURL != nil && strings.TrimSpace(*input.DestinationURL) != "" {
 		destinationURL = strings.TrimSpace(*input.DestinationURL)
 	}
+	if input.DestinationEmail != nil && strings.TrimSpace(*input.DestinationEmail) != "" {
+		destinationEmail = strings.TrimSpace(*input.DestinationEmail)
+	}
+	if len(input.Conditions) > 0 {
+		var ok bool
+		conditions, ok = validAlertConditions(input.Conditions)
+		if !ok {
+			writeError(w, http.StatusBadRequest, "invalid alert conditions")
+			return
+		}
+	}
+	if input.FrequencyMinutes != nil {
+		frequency = *input.FrequencyMinutes
+	}
 	if input.Enabled != nil {
 		enabled = *input.Enabled
 	}
@@ -111,15 +148,23 @@ func (s *Server) updateAlertRule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "valid rule name and trigger are required")
 		return
 	}
-	if err := alertservice.ValidateDestination(destinationType, destinationURL); err != nil {
+	destination := destinationURL
+	if destinationType == "email" {
+		destination = destinationEmail
+	}
+	if err := alertservice.ValidateDestination(destinationType, destination); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if _, err := s.store.DB.ExecContext(r.Context(), `UPDATE alert_rules SET name = ?, trigger = ?, destination_type = ?, destination_url = ?, enabled = ? WHERE id = ?`, name, trigger, destinationType, destinationURL, enabled, ruleID); err != nil {
+	if frequency < 0 || frequency > 10080 {
+		writeError(w, http.StatusBadRequest, "frequency must be between 0 and 10080 minutes")
+		return
+	}
+	if _, err := s.store.DB.ExecContext(r.Context(), `UPDATE alert_rules SET name = ?, trigger = ?, destination_type = ?, destination_url = ?, destination_email = ?, conditions = ?, frequency_minutes = ?, enabled = ? WHERE id = ?`, name, trigger, destinationType, destinationURL, destinationEmail, conditions, frequency, enabled, ruleID); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not update alert rule")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"id": ruleID, "name": name, "trigger": trigger, "destination_type": destinationType, "destination_host": destinationHost(destinationURL), "enabled": enabled})
+	writeJSON(w, http.StatusOK, map[string]any{"id": ruleID, "name": name, "trigger": trigger, "destination_type": destinationType, "destination_host": destinationHost(destination), "conditions": conditions, "frequency_minutes": frequency, "enabled": enabled})
 }
 
 func (s *Server) deleteAlertRule(w http.ResponseWriter, r *http.Request) {
@@ -189,13 +234,34 @@ func (s *Server) alertDeliveries(w http.ResponseWriter, r *http.Request) {
 }
 
 func alertTrigger(value string) bool {
-	return value == "new_issue" || value == "regression" || value == "uptime_down"
+	return value == "new_issue" || value == "regression" || value == "uptime_down" || value == "cron_missed" || value == "metric_threshold" || value == "user_feedback"
 }
 
 func destinationHost(raw string) string {
+	if strings.Contains(raw, "@") && !strings.Contains(raw, "://") {
+		return raw
+	}
 	parsed, err := url.Parse(raw)
 	if err != nil {
 		return "configured"
 	}
 	return parsed.Host
+}
+
+func validAlertConditions(raw json.RawMessage) ([]byte, bool) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return []byte(`{}`), true
+	}
+	var conditions map[string]any
+	if json.Unmarshal(raw, &conditions) != nil {
+		return nil, false
+	}
+	allowed := map[string]bool{"environment": true, "levels": true, "metric_name": true, "min_value": true, "max_value": true}
+	for key := range conditions {
+		if !allowed[key] {
+			return nil, false
+		}
+	}
+	encoded, err := json.Marshal(conditions)
+	return encoded, err == nil
 }

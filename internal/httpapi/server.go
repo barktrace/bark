@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -9,13 +10,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/GhaziBenDahmane/barktrace/internal/auth"
-	"github.com/GhaziBenDahmane/barktrace/internal/config"
-	"github.com/GhaziBenDahmane/barktrace/internal/ingest"
-	"github.com/GhaziBenDahmane/barktrace/internal/mcp"
-	"github.com/GhaziBenDahmane/barktrace/internal/store"
-	"github.com/GhaziBenDahmane/barktrace/internal/uptime"
-	webassets "github.com/GhaziBenDahmane/barktrace/internal/web"
+	"github.com/barktrace/bark/internal/auth"
+	"github.com/barktrace/bark/internal/config"
+	"github.com/barktrace/bark/internal/ingest"
+	"github.com/barktrace/bark/internal/mcp"
+	"github.com/barktrace/bark/internal/store"
+	"github.com/barktrace/bark/internal/uptime"
+	webassets "github.com/barktrace/bark/internal/web"
 	"github.com/google/uuid"
 )
 
@@ -49,6 +50,10 @@ func (s *Server) Handler() http.Handler {
 	return requestLog(recoverer(securityHeaders(s.mux)))
 }
 
+func (s *Server) RunIngestion(ctx context.Context) {
+	s.ingest.Run(ctx)
+}
+
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -75,6 +80,10 @@ func (s *Server) routes() {
 	s.mux.Handle("DELETE /organizations/{organization_id}/invitations/{invitation_id}", s.auth.Require(http.HandlerFunc(s.deleteInvitation)))
 	s.mux.Handle("PATCH /organizations/{organization_id}/members/{user_id}", s.auth.Require(http.HandlerFunc(s.updateMember)))
 	s.mux.Handle("DELETE /organizations/{organization_id}/members/{user_id}", s.auth.Require(http.HandlerFunc(s.deleteMember)))
+	s.mux.Handle("GET /organizations/{organization_id}/audit-logs", s.auth.Require(http.HandlerFunc(s.auditLogs)))
+	s.mux.Handle("GET /organizations/{organization_id}/mcp-tokens", s.auth.Require(http.HandlerFunc(s.mcpTokens)))
+	s.mux.Handle("POST /organizations/{organization_id}/mcp-tokens", s.auth.Require(http.HandlerFunc(s.createMCPToken)))
+	s.mux.Handle("DELETE /organizations/{organization_id}/mcp-tokens/{token_id}", s.auth.Require(http.HandlerFunc(s.deleteMCPToken)))
 	s.mux.Handle("GET /api-tokens", s.auth.Require(http.HandlerFunc(s.apiTokens)))
 	s.mux.Handle("POST /api-tokens", s.auth.Require(http.HandlerFunc(s.createAPIToken)))
 	s.mux.Handle("DELETE /api-tokens/{token_id}", s.auth.Require(http.HandlerFunc(s.deleteAPIToken)))
@@ -87,18 +96,45 @@ func (s *Server) routes() {
 	s.mux.Handle("DELETE /alerts/{rule_id}", s.auth.Require(http.HandlerFunc(s.deleteAlertRule)))
 	s.mux.Handle("POST /alerts/{rule_id}/test", s.auth.Require(http.HandlerFunc(s.testAlertRule)))
 	s.mux.Handle("GET /alert-deliveries", s.auth.Require(http.HandlerFunc(s.alertDeliveries)))
+	s.mux.Handle("GET /cron/monitors", s.auth.Require(http.HandlerFunc(s.cronMonitors)))
+	s.mux.Handle("POST /cron/monitors", s.auth.Require(http.HandlerFunc(s.createCronMonitor)))
+	s.mux.Handle("DELETE /cron/monitors/{monitor_id}", s.auth.Require(http.HandlerFunc(s.deleteCronMonitor)))
+	s.mux.Handle("GET /cron/checkins", s.auth.Require(http.HandlerFunc(s.cronCheckins)))
+	s.mux.Handle("GET /feedback", s.auth.Require(http.HandlerFunc(s.feedback)))
+	s.mux.Handle("GET /attachments", s.auth.Require(http.HandlerFunc(s.eventAttachments)))
+	s.mux.Handle("GET /attachments/{attachment_id}", s.auth.Require(http.HandlerFunc(s.attachmentContent)))
+	s.mux.Handle("GET /replays", s.auth.Require(http.HandlerFunc(s.replays)))
+	s.mux.Handle("GET /replays/{replay_id}/{content}", s.auth.Require(http.HandlerFunc(s.replayContent)))
+	s.mux.Handle("GET /profiles", s.auth.Require(http.HandlerFunc(s.profiles)))
+	s.mux.Handle("GET /profiles/{profile_id}", s.auth.Require(http.HandlerFunc(s.profileContent)))
+	s.mux.Handle("GET /metrics", s.auth.Require(http.HandlerFunc(s.metrics)))
 	s.mux.Handle("GET /projects", s.auth.Require(http.HandlerFunc(s.projects)))
 	s.mux.Handle("POST /projects", s.auth.Require(http.HandlerFunc(s.createProject)))
 	s.mux.Handle("PATCH /projects/{project_id}", s.auth.Require(http.HandlerFunc(s.updateProject)))
 	s.mux.Handle("DELETE /projects/{project_id}", s.auth.Require(http.HandlerFunc(s.deleteProject)))
+	s.mux.Handle("GET /projects/{project_id}/memberships", s.auth.Require(http.HandlerFunc(s.projectMemberships)))
+	s.mux.Handle("PUT /projects/{project_id}/memberships/{user_id}", s.auth.Require(http.HandlerFunc(s.updateProjectMembership)))
+	s.mux.Handle("DELETE /projects/{project_id}/memberships/{user_id}", s.auth.Require(http.HandlerFunc(s.deleteProjectMembership)))
 	s.mux.Handle("POST /projects/{project_id}/rotate-key", s.auth.Require(http.HandlerFunc(s.rotateProjectKey)))
+	s.mux.Handle("GET /artifacts", s.auth.Require(http.HandlerFunc(s.projectArtifacts)))
+	s.mux.Handle("POST /artifacts", s.auth.Require(http.HandlerFunc(s.uploadProjectArtifact)))
+	s.mux.Handle("GET /artifacts/{artifact_id}", s.auth.Require(http.HandlerFunc(s.artifactFile)))
+	s.mux.Handle("DELETE /artifacts/{artifact_id}", s.auth.Require(http.HandlerFunc(s.artifactFile)))
+	s.mux.Handle("POST /projects/{project_id}/reprocess", s.auth.Require(http.HandlerFunc(s.reprocessProject)))
+	s.mux.Handle("GET /projects/{project_id}/quotas", s.auth.Require(http.HandlerFunc(s.projectQuotas)))
+	s.mux.Handle("PUT /projects/{project_id}/quotas/{category}", s.auth.Require(http.HandlerFunc(s.updateProjectQuota)))
+	s.mux.Handle("GET /projects/{project_id}/ingestion-jobs", s.auth.Require(http.HandlerFunc(s.ingestionJobs)))
+	s.mux.Handle("POST /projects/{project_id}/ingestion-jobs/{job_id}/retry", s.auth.Require(http.HandlerFunc(s.retryIngestionJob)))
+	s.mux.Handle("DELETE /projects/{project_id}/ingestion-jobs/{job_id}", s.auth.Require(http.HandlerFunc(s.deleteIngestionJob)))
 	s.mux.Handle("GET /issues", s.auth.Require(http.HandlerFunc(s.issues)))
 	s.mux.Handle("GET /issues/{issue_id}", s.auth.Require(http.HandlerFunc(s.issueDetail)))
+	s.mux.Handle("GET /issues/{issue_id}/suspects", s.auth.Require(http.HandlerFunc(s.issueSuspects)))
 	s.mux.Handle("PATCH /issues/{issue_id}", s.auth.Require(http.HandlerFunc(s.updateIssue)))
 	s.mux.Handle("DELETE /issues/{issue_id}", s.auth.Require(http.HandlerFunc(s.deleteIssue)))
 	s.mux.Handle("POST /issues/{issue_id}/comments", s.auth.Require(http.HandlerFunc(s.createIssueComment)))
 	s.mux.Handle("GET /events/{event_id}", s.auth.Require(http.HandlerFunc(s.eventDetail)))
 	s.mux.Handle("GET /releases", s.auth.Require(http.HandlerFunc(s.releases)))
+	s.mux.Handle("GET /releases/{release_id}/metadata", s.auth.Require(http.HandlerFunc(s.releaseMetadata)))
 	s.mux.Handle("GET /performance", s.auth.Require(http.HandlerFunc(s.performance)))
 	s.mux.Handle("GET /transactions/{transaction_id}", s.auth.Require(http.HandlerFunc(s.transactionDetail)))
 	s.mux.Handle("GET /logs", s.auth.Require(http.HandlerFunc(s.logs)))
@@ -107,14 +143,50 @@ func (s *Server) routes() {
 	s.mux.Handle("DELETE /uptime/monitors/{monitor_id}", s.auth.Require(http.HandlerFunc(s.deleteUptimeMonitor)))
 	s.mux.Handle("POST /uptime/monitors/{monitor_id}/check", s.auth.Require(http.HandlerFunc(s.checkUptimeMonitor)))
 	s.mux.Handle("GET /uptime/checks", s.auth.Require(http.HandlerFunc(s.uptimeChecks)))
+	s.mux.Handle("GET /api/0/", s.auth.Require(http.HandlerFunc(s.sentryAuthInfo)))
+	s.mux.Handle("GET /api/0/organizations/", s.auth.Require(http.HandlerFunc(s.sentryOrganizations)))
+	s.mux.Handle("GET /api/0/organizations/{org_slug}/projects/", s.auth.Require(http.HandlerFunc(s.sentryOrganizationProjects)))
+	s.mux.Handle("GET /api/0/organizations/{org_slug}/monitors/", s.auth.Require(http.HandlerFunc(s.sentryOrganizationMonitors)))
+	s.mux.Handle("GET /api/0/organizations/{org_slug}/repos/", s.auth.Require(http.HandlerFunc(s.sentryOrganizationRepositories)))
+	s.mux.Handle("POST /api/0/organizations/{org_slug}/code-mappings/bulk/", s.auth.Require(http.HandlerFunc(s.sentryBulkCodeMappings)))
+	s.mux.Handle("GET /api/0/organizations/{org_slug}/events/", s.auth.Require(http.HandlerFunc(s.sentryOrganizationEvents)))
+	s.mux.Handle("GET /api/0/organizations/{org_slug}/releases/", s.auth.Require(http.HandlerFunc(s.sentryOrganizationReleases)))
 	s.mux.Handle("POST /api/0/organizations/{org_slug}/releases/", s.auth.Require(http.HandlerFunc(s.createSentryRelease)))
-	if s.cfg.MCPToken != "" {
-		s.mux.Handle("POST /mcp", mcp.New(s.store, s.cfg.MCPToken, s.cfg.PublicURL))
-	}
+	s.mux.Handle("GET /api/0/organizations/{org_slug}/releases/{version}/", s.auth.Require(http.HandlerFunc(s.sentryReleaseDetail)))
+	s.mux.Handle("PUT /api/0/organizations/{org_slug}/releases/{version}/", s.auth.Require(http.HandlerFunc(s.sentryReleaseDetail)))
+	s.mux.Handle("DELETE /api/0/organizations/{org_slug}/releases/{version}/", s.auth.Require(http.HandlerFunc(s.deleteSentryRelease)))
+	s.mux.Handle("GET /api/0/organizations/{org_slug}/releases/{version}/commits/", s.auth.Require(http.HandlerFunc(s.sentryReleaseCommits)))
+	s.mux.Handle("POST /api/0/organizations/{org_slug}/releases/{version}/commits/", s.auth.Require(http.HandlerFunc(s.sentryReleaseCommits)))
+	s.mux.Handle("GET /api/0/organizations/{org_slug}/releases/{version}/previous-with-commits/", s.auth.Require(http.HandlerFunc(s.sentryPreviousRelease)))
+	s.mux.Handle("GET /api/0/organizations/{org_slug}/releases/{version}/deploys/", s.auth.Require(http.HandlerFunc(s.sentryReleaseDeployList)))
+	s.mux.Handle("POST /api/0/organizations/{org_slug}/releases/{version}/deploys/", s.auth.Require(http.HandlerFunc(s.sentryReleaseDeploys)))
+	s.mux.Handle("GET /api/0/projects/{org_slug}/{project_slug}/releases/", s.auth.Require(http.HandlerFunc(s.sentryProjectReleases)))
+	s.mux.Handle("GET /api/0/projects/{org_slug}/{project_slug}/events/", s.auth.Require(http.HandlerFunc(s.sentryProjectEvents)))
+	s.mux.Handle("GET /api/0/projects/{org_slug}/{project_slug}/issues/", s.auth.Require(http.HandlerFunc(s.sentryProjectIssues)))
+	s.mux.Handle("PUT /api/0/projects/{org_slug}/{project_slug}/issues/", s.auth.Require(http.HandlerFunc(s.sentryProjectIssues)))
+	s.mux.Handle("GET /api/0/projects/{org_slug}/{project_slug}/releases/{version}/files/", s.auth.Require(http.HandlerFunc(s.sentryReleaseArtifacts)))
+	s.mux.Handle("POST /api/0/projects/{org_slug}/{project_slug}/releases/{version}/files/", s.auth.Require(http.HandlerFunc(s.sentryReleaseArtifacts)))
+	s.mux.Handle("GET /api/0/projects/{org_slug}/{project_slug}/releases/{version}/files/{file_id}/", s.auth.Require(http.HandlerFunc(s.sentryReleaseArtifactDetail)))
+	s.mux.Handle("PUT /api/0/projects/{org_slug}/{project_slug}/releases/{version}/files/{file_id}/", s.auth.Require(http.HandlerFunc(s.sentryReleaseArtifactDetail)))
+	s.mux.Handle("DELETE /api/0/projects/{org_slug}/{project_slug}/releases/{version}/files/{file_id}/", s.auth.Require(http.HandlerFunc(s.sentryReleaseArtifactDetail)))
+	s.mux.Handle("GET /api/0/organizations/{org_slug}/chunk-upload/", s.auth.Require(http.HandlerFunc(s.sentryChunkUpload)))
+	s.mux.Handle("POST /api/0/organizations/{org_slug}/chunk-upload/", s.auth.Require(http.HandlerFunc(s.sentryChunkUpload)))
+	s.mux.Handle("POST /api/0/organizations/{org_slug}/artifactbundle/assemble/", s.auth.Require(http.HandlerFunc(s.assembleArtifactBundle)))
+	s.mux.Handle("POST /api/0/projects/{org_slug}/{project_slug}/files/difs/assemble/", s.auth.Require(http.HandlerFunc(s.assembleDebugFiles)))
+	s.mux.Handle("POST /api/0/projects/{org_slug}/{project_slug}/files/preprodartifacts/assemble/", s.auth.Require(http.HandlerFunc(s.assemblePreprodBuild)))
+	s.mux.Handle("GET /api/0/organizations/{org_slug}/preprodartifacts/{preprod_path...}", s.auth.Require(http.HandlerFunc(s.preprodOrganizationRoute)))
+	s.mux.Handle("POST /api/0/organizations/{org_slug}/preprodartifacts/{preprod_path...}", s.auth.Require(http.HandlerFunc(s.preprodOrganizationRoute)))
+	s.mux.Handle("GET /api/0/projects/{org_slug}/{project_slug}/preprodartifacts/snapshots/upload-options/", s.auth.Require(http.HandlerFunc(s.snapshotUploadOptions)))
+	s.mux.Handle("POST /api/0/projects/{org_slug}/{project_slug}/preprodartifacts/snapshots/", s.auth.Require(http.HandlerFunc(s.createPreprodSnapshot)))
+	s.mux.HandleFunc("HEAD /api/0/objectstore/v1/objects/preprod/{scope}/{object_key...}", s.snapshotObject)
+	s.mux.HandleFunc("PUT /api/0/objectstore/v1/objects/preprod/{scope}/{object_key...}", s.snapshotObject)
+	s.mux.HandleFunc("POST /api/0/objectstore/v1/objects:batch/preprod/{scope}/{$}", s.snapshotObjectBatch)
+	s.mux.Handle("POST /mcp", mcp.New(s.store, s.cfg.MCPToken, s.cfg.PublicURL))
 
 	s.mux.HandleFunc("OPTIONS /api/{project_id}/envelope/", ingestionPreflight)
 	s.mux.HandleFunc("OPTIONS /api/{project_id}/store/", ingestionPreflight)
 	s.mux.HandleFunc("OPTIONS /api/{project_id}/logs/", ingestionPreflight)
+	s.mux.HandleFunc("OPTIONS /api/{project_id}/user-report/", ingestionPreflight)
 	s.mux.HandleFunc("POST /api/{project_id}/envelope/", func(w http.ResponseWriter, r *http.Request) {
 		ingestionHeaders(w)
 		s.ingest.Envelope(w, r, r.PathValue("project_id"))
@@ -126,6 +198,18 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/{project_id}/logs/", func(w http.ResponseWriter, r *http.Request) {
 		ingestionHeaders(w)
 		s.ingest.Logs(w, r, r.PathValue("project_id"))
+	})
+	s.mux.HandleFunc("POST /api/{project_id}/user-report/", func(w http.ResponseWriter, r *http.Request) {
+		ingestionHeaders(w)
+		s.ingest.Feedback(w, r, r.PathValue("project_id"))
+	})
+	s.mux.HandleFunc("POST /api/{project_id}/cron/{monitor_slug}/{checkin_id}/", func(w http.ResponseWriter, r *http.Request) {
+		ingestionHeaders(w)
+		s.ingest.CheckIn(w, r, r.PathValue("project_id"), r.PathValue("monitor_slug"), r.PathValue("checkin_id"))
+	})
+	s.mux.HandleFunc("POST /api/{project_id}/cron/{monitor_slug}/", func(w http.ResponseWriter, r *http.Request) {
+		ingestionHeaders(w)
+		s.ingest.CheckIn(w, r, r.PathValue("project_id"), r.PathValue("monitor_slug"), "")
 	})
 
 	s.mux.Handle("GET /ui/", webassets.Handler())
@@ -191,7 +275,15 @@ func (s *Server) projects(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "organization access required")
 		return
 	}
-	rows, err := s.store.DB.QueryContext(r.Context(), `SELECT id, sentry_id, slug, name, COALESCE(platform, ''), public_key, created_at FROM projects WHERE organization_id = ? ORDER BY name`, organizationID)
+	rows, err := s.store.DB.QueryContext(r.Context(), `
+		SELECT p.id, p.sentry_id, p.slug, p.name, COALESCE(p.platform, ''), p.public_key, p.created_at,
+		       CASE WHEN pm.role != '' THEN pm.role WHEN om.role IN ('owner', 'admin') THEN 'admin' ELSE om.role END
+		FROM projects p
+		JOIN organization_memberships om ON om.organization_id = p.organization_id AND om.user_id = ?
+		LEFT JOIN project_memberships pm ON pm.project_id = p.id AND pm.user_id = om.user_id
+		WHERE p.organization_id = ? AND COALESCE(pm.role, '') != 'none'
+		ORDER BY p.name
+	`, principal.UserID, organizationID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not list projects")
 		return
@@ -199,14 +291,14 @@ func (s *Server) projects(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	items := make([]map[string]any, 0)
 	for rows.Next() {
-		var id, sentryID, projectSlug, name, platform, publicKey, createdAt string
-		if err := rows.Scan(&id, &sentryID, &projectSlug, &name, &platform, &publicKey, &createdAt); err != nil {
+		var id, sentryID, projectSlug, name, platform, publicKey, createdAt, effectiveRole string
+		if err := rows.Scan(&id, &sentryID, &projectSlug, &name, &platform, &publicKey, &createdAt, &effectiveRole); err != nil {
 			writeError(w, http.StatusInternalServerError, "could not list projects")
 			return
 		}
 		items = append(items, map[string]any{
 			"id": id, "sentry_id": sentryID, "slug": projectSlug, "name": name, "platform": platform,
-			"public_key": publicKey, "dsn": dsnURL(s.cfg.PublicURL, publicKey, sentryID), "created_at": createdAt,
+			"public_key": publicKey, "dsn": dsnURL(s.cfg.PublicURL, publicKey, sentryID), "created_at": createdAt, "role": effectiveRole,
 		})
 	}
 	writeJSON(w, http.StatusOK, items)
@@ -345,13 +437,18 @@ func (s *Server) createSentryRelease(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "organization not found")
 		return
 	}
-	if _, ok := principal.Membership(orgID); !ok {
+	membership, ok := principal.Membership(orgID)
+	if !ok || membership.Role == "viewer" {
 		writeError(w, http.StatusForbidden, "organization access required")
 		return
 	}
 	var input struct {
-		Version  string   `json:"version"`
-		Projects []string `json:"projects"`
+		Version      string   `json:"version"`
+		Projects     []string `json:"projects"`
+		URL          string   `json:"url"`
+		DateStarted  string   `json:"dateStarted"`
+		DateReleased string   `json:"dateReleased"`
+		Status       string   `json:"status"`
 	}
 	if err := decodeJSON(w, r, &input); err != nil {
 		return
@@ -361,7 +458,24 @@ func (s *Server) createSentryRelease(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "version is required")
 		return
 	}
+	input.Status = strings.ToLower(strings.TrimSpace(input.Status))
+	if input.Status == "" {
+		input.Status = "open"
+	}
+	if input.Status != "open" && input.Status != "archived" {
+		writeError(w, http.StatusBadRequest, "status must be open or archived")
+		return
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
+	started := now
+	if input.DateStarted != "" {
+		parsed, err := time.Parse(time.RFC3339, input.DateStarted)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "dateStarted must be RFC3339")
+			return
+		}
+		started = parsed.UTC().Format(time.RFC3339Nano)
+	}
 	tx, err := s.store.DB.BeginTx(r.Context(), nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not create release")
@@ -369,7 +483,13 @@ func (s *Server) createSentryRelease(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 	releaseID := uuid.NewString()
-	if err := tx.QueryRowContext(r.Context(), `INSERT INTO releases(id, organization_id, version, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(organization_id, version) DO UPDATE SET last_seen_at = excluded.last_seen_at RETURNING id`, releaseID, orgID, input.Version, now, now).Scan(&releaseID); err != nil {
+	if input.DateReleased != "" {
+		if _, err := time.Parse(time.RFC3339, input.DateReleased); err != nil {
+			writeError(w, http.StatusBadRequest, "dateReleased must be RFC3339")
+			return
+		}
+	}
+	if err := tx.QueryRowContext(r.Context(), `INSERT INTO releases(id, organization_id, version, first_seen_at, last_seen_at, released_at, status) VALUES (?, ?, ?, ?, ?, NULLIF(?, ''), ?) ON CONFLICT(organization_id, version) DO UPDATE SET last_seen_at = excluded.last_seen_at, released_at = COALESCE(excluded.released_at, releases.released_at), status = excluded.status RETURNING id`, releaseID, orgID, input.Version, started, now, input.DateReleased, input.Status).Scan(&releaseID); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not create release")
 		return
 	}
@@ -392,16 +512,52 @@ func (s *Server) createSentryRelease(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not commit release")
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"id": releaseID, "version": input.Version, "projects": input.Projects, "dateCreated": now})
+	item, err := s.sentryReleaseResponse(r, releaseID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load release")
+		return
+	}
+	writeJSON(w, http.StatusCreated, item)
 }
 
 func (s *Server) canAccessProject(r *http.Request, principal *auth.Principal, projectID string) bool {
+	_, ok := s.projectRole(r, principal, projectID)
+	return ok
+}
+
+func (s *Server) projectRole(r *http.Request, principal *auth.Principal, projectID string) (string, bool) {
+	if principal == nil {
+		return "", false
+	}
 	var organizationID string
 	if err := s.store.DB.QueryRowContext(r.Context(), `SELECT organization_id FROM projects WHERE id = ?`, projectID).Scan(&organizationID); err != nil {
-		return false
+		return "", false
 	}
-	_, ok := principal.Membership(organizationID)
-	return ok
+	membership, ok := principal.Membership(organizationID)
+	if !ok {
+		return "", false
+	}
+	var override string
+	err := s.store.DB.QueryRowContext(r.Context(), `SELECT role FROM project_memberships WHERE project_id = ? AND user_id = ?`, projectID, principal.UserID).Scan(&override)
+	if err == nil {
+		if override == "none" {
+			return "", false
+		}
+		return override, true
+	}
+	if err != sql.ErrNoRows {
+		return "", false
+	}
+	switch membership.Role {
+	case "owner", "admin":
+		return "admin", true
+	case "member":
+		return "member", true
+	case "viewer":
+		return "viewer", true
+	default:
+		return "", false
+	}
 }
 
 func ingestionPreflight(w http.ResponseWriter, _ *http.Request) {

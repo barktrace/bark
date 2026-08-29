@@ -1,0 +1,327 @@
+package httpapi
+
+import (
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/barktrace/bark/internal/auth"
+	"github.com/barktrace/bark/internal/cronmon"
+	"github.com/google/uuid"
+)
+
+func (s *Server) cronMonitors(w http.ResponseWriter, r *http.Request) {
+	principal, _ := auth.PrincipalFromContext(r.Context())
+	projectID := r.URL.Query().Get("project_id")
+	if !s.canAccessProject(r, principal, projectID) {
+		writeError(w, http.StatusForbidden, "project access required")
+		return
+	}
+	rows, err := s.store.DB.QueryContext(r.Context(), `SELECT id, slug, name, schedule_type, schedule_value, timezone, checkin_margin, max_runtime, status, COALESCE(last_checkin_at, ''), COALESCE(next_checkin_at, ''), created_at FROM cron_monitors WHERE project_id = ? ORDER BY name`, projectID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not list cron monitors")
+		return
+	}
+	defer rows.Close()
+	items := make([]map[string]any, 0)
+	for rows.Next() {
+		var id, slug, name, scheduleType, scheduleValue, timezone, status, lastCheckin, nextCheckin, createdAt string
+		var margin, maxRuntime int
+		if err := rows.Scan(&id, &slug, &name, &scheduleType, &scheduleValue, &timezone, &margin, &maxRuntime, &status, &lastCheckin, &nextCheckin, &createdAt); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not list cron monitors")
+			return
+		}
+		items = append(items, map[string]any{"id": id, "slug": slug, "name": name, "schedule_type": scheduleType, "schedule_value": scheduleValue, "timezone": timezone, "checkin_margin": margin, "max_runtime": maxRuntime, "status": status, "last_checkin_at": lastCheckin, "next_checkin_at": nextCheckin, "created_at": createdAt})
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) createCronMonitor(w http.ResponseWriter, r *http.Request) {
+	principal, _ := auth.PrincipalFromContext(r.Context())
+	var input struct {
+		ProjectID     string          `json:"project_id"`
+		Slug          string          `json:"slug"`
+		Name          string          `json:"name"`
+		ScheduleType  string          `json:"schedule_type"`
+		ScheduleValue json.RawMessage `json:"schedule_value"`
+		Timezone      string          `json:"timezone"`
+		CheckinMargin int             `json:"checkin_margin"`
+		MaxRuntime    int             `json:"max_runtime"`
+	}
+	if err := decodeJSON(w, r, &input); err != nil {
+		return
+	}
+	if !s.canManageProject(r, principal, input.ProjectID) {
+		writeError(w, http.StatusForbidden, "project administrator access required")
+		return
+	}
+	input.Slug = slug(input.Slug)
+	input.Name = strings.TrimSpace(firstNonEmpty(input.Name, input.Slug))
+	if input.Slug == "" || input.Name == "" {
+		writeError(w, http.StatusBadRequest, "name and slug are required")
+		return
+	}
+	kind, value, err := cronmon.NormalizeSchedule(input.ScheduleType, input.ScheduleValue)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if input.Timezone == "" {
+		input.Timezone = "UTC"
+	}
+	if _, err := time.LoadLocation(input.Timezone); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid timezone")
+		return
+	}
+	if input.CheckinMargin <= 0 {
+		input.CheckinMargin = 5
+	}
+	if input.MaxRuntime <= 0 {
+		input.MaxRuntime = 30
+	}
+	next := cronmon.Next(time.Now().UTC(), kind, value, input.Timezone)
+	id := uuid.NewString()
+	_, err = s.store.DB.ExecContext(r.Context(), `INSERT INTO cron_monitors(id, project_id, slug, name, schedule_type, schedule_value, timezone, checkin_margin, max_runtime, next_checkin_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, input.ProjectID, input.Slug, input.Name, kind, value, input.Timezone, input.CheckinMargin, input.MaxRuntime, next.Format(time.RFC3339Nano))
+	if err != nil {
+		writeError(w, http.StatusConflict, "cron monitor slug already exists")
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"id": id, "slug": input.Slug, "name": input.Name, "schedule_type": kind, "schedule_value": value, "next_checkin_at": next})
+}
+
+func (s *Server) deleteCronMonitor(w http.ResponseWriter, r *http.Request) {
+	principal, _ := auth.PrincipalFromContext(r.Context())
+	id := r.PathValue("monitor_id")
+	var projectID string
+	if err := s.store.DB.QueryRowContext(r.Context(), `SELECT project_id FROM cron_monitors WHERE id = ?`, id).Scan(&projectID); err != nil {
+		writeError(w, http.StatusNotFound, "cron monitor not found")
+		return
+	}
+	if !s.canManageProject(r, principal, projectID) {
+		writeError(w, http.StatusForbidden, "project administrator access required")
+		return
+	}
+	_, _ = s.store.DB.ExecContext(r.Context(), `DELETE FROM cron_monitors WHERE id = ?`, id)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) cronCheckins(w http.ResponseWriter, r *http.Request) {
+	principal, _ := auth.PrincipalFromContext(r.Context())
+	monitorID := r.URL.Query().Get("monitor_id")
+	var projectID string
+	if err := s.store.DB.QueryRowContext(r.Context(), `SELECT project_id FROM cron_monitors WHERE id = ?`, monitorID).Scan(&projectID); err != nil || !s.canAccessProject(r, principal, projectID) {
+		writeError(w, http.StatusForbidden, "cron monitor access required")
+		return
+	}
+	rows, err := s.store.DB.QueryContext(r.Context(), `SELECT id, checkin_id, status, COALESCE(duration, 0), release, environment, started_at, COALESCE(finished_at, '') FROM cron_checkins WHERE monitor_id = ? ORDER BY started_at DESC LIMIT 100`, monitorID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not list check-ins")
+		return
+	}
+	defer rows.Close()
+	items := make([]map[string]any, 0)
+	for rows.Next() {
+		var id, checkinID, status, release, environment, started, finished string
+		var duration float64
+		if rows.Scan(&id, &checkinID, &status, &duration, &release, &environment, &started, &finished) == nil {
+			items = append(items, map[string]any{"id": id, "check_in_id": checkinID, "status": status, "duration": duration, "release": release, "environment": environment, "started_at": started, "finished_at": finished})
+		}
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) feedback(w http.ResponseWriter, r *http.Request) {
+	principal, _ := auth.PrincipalFromContext(r.Context())
+	projectID := r.URL.Query().Get("project_id")
+	if !s.canAccessProject(r, principal, projectID) {
+		writeError(w, http.StatusForbidden, "project access required")
+		return
+	}
+	rows, err := s.store.DB.QueryContext(r.Context(), `SELECT id, event_id, name, email, comments, url, created_at FROM user_feedback WHERE project_id = ? ORDER BY created_at DESC LIMIT 200`, projectID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not list feedback")
+		return
+	}
+	defer rows.Close()
+	items := make([]map[string]any, 0)
+	for rows.Next() {
+		var id, eventID, name, email, comments, targetURL, createdAt string
+		if rows.Scan(&id, &eventID, &name, &email, &comments, &targetURL, &createdAt) == nil {
+			items = append(items, map[string]any{"id": id, "event_id": eventID, "name": name, "email": email, "comments": comments, "url": targetURL, "created_at": createdAt})
+		}
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) eventAttachments(w http.ResponseWriter, r *http.Request) {
+	principal, _ := auth.PrincipalFromContext(r.Context())
+	eventID, projectID := r.URL.Query().Get("event_id"), r.URL.Query().Get("project_id")
+	if eventID == "" || !s.canAccessProject(r, principal, projectID) {
+		writeError(w, http.StatusForbidden, "event access required")
+		return
+	}
+	rows, err := s.store.DB.QueryContext(r.Context(), `SELECT a.id, a.filename, a.attachment_type, b.content_type, b.size, a.created_at FROM event_attachments a JOIN blobs b ON b.id = a.blob_id JOIN events e ON e.id = a.event_id WHERE e.project_id = ? AND (e.id = ? OR e.event_id = ?) ORDER BY a.created_at`, projectID, eventID, eventID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not list attachments")
+		return
+	}
+	defer rows.Close()
+	items := make([]map[string]any, 0)
+	for rows.Next() {
+		var id, filename, attachmentType, contentType, createdAt string
+		var size int64
+		if rows.Scan(&id, &filename, &attachmentType, &contentType, &size, &createdAt) == nil {
+			items = append(items, map[string]any{"id": id, "filename": filename, "attachment_type": attachmentType, "content_type": contentType, "size": size, "created_at": createdAt})
+		}
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) attachmentContent(w http.ResponseWriter, r *http.Request) {
+	principal, _ := auth.PrincipalFromContext(r.Context())
+	var projectID, key, contentType, filename string
+	err := s.store.DB.QueryRowContext(r.Context(), `SELECT e.project_id, b.storage_key, b.content_type, a.filename FROM event_attachments a JOIN events e ON e.id = a.event_id JOIN blobs b ON b.id = a.blob_id WHERE a.id = ?`, r.PathValue("attachment_id")).Scan(&projectID, &key, &contentType, &filename)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "attachment not found")
+		return
+	}
+	if err != nil || !s.canAccessProject(r, principal, projectID) {
+		writeError(w, http.StatusForbidden, "attachment access required")
+		return
+	}
+	s.serveBlob(w, r, key, contentType, filename)
+}
+
+func (s *Server) replays(w http.ResponseWriter, r *http.Request) {
+	principal, _ := auth.PrincipalFromContext(r.Context())
+	projectID := r.URL.Query().Get("project_id")
+	if !s.canAccessProject(r, principal, projectID) {
+		writeError(w, http.StatusForbidden, "project access required")
+		return
+	}
+	rows, err := s.store.DB.QueryContext(r.Context(), `SELECT id, replay_id, segment_id, environment, release, user_id, started_at, finished_at, error_count, url, event_blob_id IS NOT NULL, recording_blob_id IS NOT NULL FROM replays WHERE project_id = ? ORDER BY finished_at DESC LIMIT 200`, projectID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not list replays")
+		return
+	}
+	defer rows.Close()
+	items := make([]map[string]any, 0)
+	for rows.Next() {
+		var id, replayID, environment, release, userID, started, finished, targetURL string
+		var segmentID, errorCount int
+		var hasEvent, hasRecording bool
+		if rows.Scan(&id, &replayID, &segmentID, &environment, &release, &userID, &started, &finished, &errorCount, &targetURL, &hasEvent, &hasRecording) == nil {
+			items = append(items, map[string]any{"id": id, "replay_id": replayID, "segment_id": segmentID, "environment": environment, "release": release, "user_id": userID, "started_at": started, "finished_at": finished, "error_count": errorCount, "url": targetURL, "has_event": hasEvent, "has_recording": hasRecording})
+		}
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) replayContent(w http.ResponseWriter, r *http.Request) {
+	principal, _ := auth.PrincipalFromContext(r.Context())
+	column, contentType, filename := "event_blob_id", "application/json", "replay-event.json"
+	if r.PathValue("content") == "recording" {
+		column, contentType, filename = "recording_blob_id", "application/octet-stream", "replay-recording.bin"
+	}
+	var projectID, key, storedType string
+	query := `SELECT rp.project_id, b.storage_key, b.content_type FROM replays rp JOIN blobs b ON b.id = rp.` + column + ` WHERE rp.id = ?`
+	if err := s.store.DB.QueryRowContext(r.Context(), query, r.PathValue("replay_id")).Scan(&projectID, &key, &storedType); err != nil {
+		writeError(w, http.StatusNotFound, "replay content not found")
+		return
+	}
+	if !s.canAccessProject(r, principal, projectID) {
+		writeError(w, http.StatusForbidden, "replay access required")
+		return
+	}
+	if storedType != "" {
+		contentType = storedType
+	}
+	s.serveBlob(w, r, key, contentType, filename)
+}
+
+func (s *Server) profiles(w http.ResponseWriter, r *http.Request) {
+	principal, _ := auth.PrincipalFromContext(r.Context())
+	projectID := r.URL.Query().Get("project_id")
+	if !s.canAccessProject(r, principal, projectID) {
+		writeError(w, http.StatusForbidden, "project access required")
+		return
+	}
+	rows, err := s.store.DB.QueryContext(r.Context(), `SELECT p.id, p.profile_id, p.transaction_id, p.platform, p.environment, p.release, p.started_at, p.duration_ms, b.size FROM profiles p JOIN blobs b ON b.id = p.blob_id WHERE p.project_id = ? ORDER BY p.started_at DESC LIMIT 200`, projectID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not list profiles")
+		return
+	}
+	defer rows.Close()
+	items := make([]map[string]any, 0)
+	for rows.Next() {
+		var id, profileID, transactionID, platform, environment, release, started string
+		var duration float64
+		var size int64
+		if rows.Scan(&id, &profileID, &transactionID, &platform, &environment, &release, &started, &duration, &size) == nil {
+			items = append(items, map[string]any{"id": id, "profile_id": profileID, "transaction_id": transactionID, "platform": platform, "environment": environment, "release": release, "started_at": started, "duration_ms": duration, "size": size})
+		}
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) profileContent(w http.ResponseWriter, r *http.Request) {
+	principal, _ := auth.PrincipalFromContext(r.Context())
+	var projectID, key, contentType string
+	if err := s.store.DB.QueryRowContext(r.Context(), `SELECT p.project_id, b.storage_key, b.content_type FROM profiles p JOIN blobs b ON b.id = p.blob_id WHERE p.id = ?`, r.PathValue("profile_id")).Scan(&projectID, &key, &contentType); err != nil {
+		writeError(w, http.StatusNotFound, "profile not found")
+		return
+	}
+	if !s.canAccessProject(r, principal, projectID) {
+		writeError(w, http.StatusForbidden, "profile access required")
+		return
+	}
+	s.serveBlob(w, r, key, contentType, "profile.json")
+}
+
+func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
+	principal, _ := auth.PrincipalFromContext(r.Context())
+	projectID := r.URL.Query().Get("project_id")
+	if !s.canAccessProject(r, principal, projectID) {
+		writeError(w, http.StatusForbidden, "project access required")
+		return
+	}
+	window, label := performanceWindow(r.URL.Query().Get("period"))
+	since := time.Now().UTC().Add(-window).Format(time.RFC3339Nano)
+	query := strings.TrimSpace(r.URL.Query().Get("query"))
+	rows, err := s.store.DB.QueryContext(r.Context(), `SELECT name, metric_type, unit, COUNT(*), MIN(value), AVG(value), MAX(value), MAX(timestamp) FROM metric_points WHERE project_id = ? AND timestamp >= ? AND (? = '' OR name LIKE '%' || ? || '%') GROUP BY name, metric_type, unit ORDER BY MAX(timestamp) DESC LIMIT 200`, projectID, since, query, query)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not summarize metrics")
+		return
+	}
+	defer rows.Close()
+	items := make([]map[string]any, 0)
+	for rows.Next() {
+		var name, metricType, unit, lastSeen string
+		var count int64
+		var minimum, average, maximum float64
+		if rows.Scan(&name, &metricType, &unit, &count, &minimum, &average, &maximum, &lastSeen) == nil {
+			items = append(items, map[string]any{"name": name, "type": metricType, "unit": unit, "count": count, "min": minimum, "average": average, "max": maximum, "last_seen_at": lastSeen})
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"period": label, "metrics": items})
+}
+
+func (s *Server) serveBlob(w http.ResponseWriter, r *http.Request, key, contentType, filename string) {
+	file, err := s.store.Blobs.Open(key)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "blob content not found")
+		return
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not read blob")
+		return
+	}
+	w.Header().Set("Content-Type", firstNonEmpty(contentType, "application/octet-stream"))
+	w.Header().Set("Content-Disposition", `attachment; filename="`+strings.ReplaceAll(filename, `"`, "")+`"`)
+	http.ServeContent(w, r, filename, info.ModTime(), file)
+}

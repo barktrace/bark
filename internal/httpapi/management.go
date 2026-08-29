@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/GhaziBenDahmane/barktrace/internal/auth"
+	"github.com/barktrace/bark/internal/auth"
 	"github.com/google/uuid"
 )
 

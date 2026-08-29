@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/GhaziBenDahmane/barktrace/internal/store"
+	"github.com/barktrace/bark/internal/store"
 )
 
 func TestCleanupOrganizationDryRunAndDelete(t *testing.T) {

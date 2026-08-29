@@ -12,14 +12,47 @@ required value is absent or unsafe.
 | `BARKTRACE_ADDR` | no | `:8080` | HTTP listen address inside the container. |
 | `BARKTRACE_HEALTHCHECK_URL` | no | `http://127.0.0.1:8080/readyz` | URL used only by the binary's `healthcheck` subcommand. Set it if changing the container listen port. |
 | `BARKTRACE_DATA_DIR` | no | `./data` (`/data` in the image) | Directory containing `barktrace.db` and its WAL files. Persist the whole directory. |
+| `BARKTRACE_DATABASE_URL` | no | empty | Remote SQLite-compatible libSQL URL. Leave empty for local SQLite. Set this together with S3 blobs to run multiple Barktrace replicas. |
+| `BARKTRACE_DATABASE_AUTH_TOKEN` | with authenticated libSQL | empty | Authentication token for the remote metadata database. It is deliberately separate from the URL to avoid leaking it in logs. |
 | `BARKTRACE_DEFAULT_ORG_NAME` | no | `Default` | Display name of the organization created during first login. |
 | `BARKTRACE_DEFAULT_ORG_SLUG` | no | `default` | URL-safe slug of the default organization. Keep it stable after first deployment. |
 | `BARKTRACE_AUTO_PROVISION` | no | `true` | Creates a user from a new verified OIDC identity. When false, only identities linked to existing users can sign in. |
 | `BARKTRACE_SESSION_LIFETIME_HOURS` | no | `720` | Browser-session lifetime in hours. |
 | `BARKTRACE_RATE_LIMIT_PER_MINUTE` | no | `1000` | Maximum ingestion requests per project in a fixed one-minute window. A rejected request returns HTTP 429 and Sentry retry headers. |
 | `GOMEMLIMIT` | no | `96MiB` in the image | Go soft memory limit. Keep it below the container memory limit. |
-| `BARKTRACE_MCP_TOKEN` | no | empty | Enables `/mcp` when set. It must contain at least 32 characters. |
+| `BARKTRACE_MCP_TOKEN` | no | empty | Optional legacy instance-wide MCP credential. It must contain at least 32 characters; organization-scoped credentials can instead be created in the UI. |
 | `BARKTRACE_UPTIME_ALLOW_PRIVATE_TARGETS` | no | `false` | Allows uptime monitors to contact loopback and private-network IPs. Keep disabled unless Barktrace is intentionally monitoring trusted internal services. |
+| `BARKTRACE_BLOB_BACKEND` | no | `local` | Blob backend: `local` or `s3`. Use `s3` whenever several Barktrace replicas share remote libSQL metadata. |
+
+`BARKTRACE_DATABASE_URL` accepts `libsql://`, `https://`, or `wss://` URLs.
+Plain HTTP/WebSocket URLs are accepted only on loopback for development. URL
+credentials and query parameters are rejected; pass the token separately. The
+remote service remains SQLite-compatible—PostgreSQL is neither required nor
+supported.
+
+## Email alerts
+
+| Variable | Required | Default | Description |
+| --- | --- | --- | --- |
+| `SMTP_HOST` | for email alerts | empty | SMTP server hostname. |
+| `SMTP_PORT` | no | `587` | SMTP server port. |
+| `SMTP_USERNAME` | no | empty | SMTP authentication username. |
+| `SMTP_PASSWORD` | no | empty | SMTP authentication password. |
+| `SMTP_FROM` | with `SMTP_HOST` | empty | Envelope sender and `From` address. |
+| `SMTP_TLS_MODE` | no | `starttls` | `starttls`, implicit `tls`, or `none`. |
+
+## S3-compatible blob storage
+
+| Variable | Required with `s3` | Default | Description |
+| --- | --- | --- | --- |
+| `BARKTRACE_S3_ENDPOINT` | yes | empty | S3-compatible endpoint URL. HTTPS is required unless insecure HTTP is explicitly enabled. |
+| `BARKTRACE_S3_REGION` | no | `us-east-1` | SigV4 region. |
+| `BARKTRACE_S3_BUCKET` | yes | empty | Existing bucket used for payload objects. |
+| `BARKTRACE_S3_ACCESS_KEY_ID` | yes | empty | S3 access key. |
+| `BARKTRACE_S3_SECRET_ACCESS_KEY` | yes | empty | S3 secret key. |
+| `BARKTRACE_S3_SESSION_TOKEN` | no | empty | Temporary-credential session token. |
+| `BARKTRACE_S3_PREFIX` | no | empty | Optional key prefix. |
+| `BARKTRACE_S3_ALLOW_HTTP` | no | `false` | Permit plaintext non-loopback endpoints; intended only for isolated development networks. |
 
 ## OpenID Connect
 

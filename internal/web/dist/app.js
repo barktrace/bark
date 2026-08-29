@@ -8,6 +8,7 @@ const state = {
   issueId: '',
   issueDetail: null,
   eventId: '',
+  attachments: [],
   releases: [],
   performance: { period: '24h', stats: {}, transactions: [] },
   transactionDetail: null,
@@ -26,6 +27,21 @@ const state = {
   alerts: [],
   alertDeliveries: [],
   newToken: '',
+  cronMonitors: [],
+  cronMonitorId: '',
+  cronCheckins: [],
+  feedback: [],
+  replays: [],
+  profiles: [],
+  metrics: { period: '24h', metrics: [] },
+  artifacts: [],
+  quotas: { default_per_minute: 0, quotas: [] },
+  ingestionJobs: { jobs: [] },
+  telemetryTab: 'cron',
+  projectMemberships: [],
+  auditLogs: [],
+  mcpTokens: [],
+  newMCPToken: '',
 };
 
 const routeMeta = {
@@ -38,6 +54,7 @@ const routeMeta = {
   performance: ['Performance', 'Transactions, traces, and latency.'],
   logs: ['Logs', 'Structured application logs in context.'],
   uptime: ['Uptime', 'Endpoint checks and incident history.'],
+  telemetry: ['Telemetry', 'Cron checks, feedback, replays, profiles, metrics, artifacts, and ingestion health.'],
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -51,6 +68,7 @@ const currentProject = () => state.projects.find((project) => project.id === sta
 const currentOrganization = () => state.organizations.find((organization) => organization.organization_id === state.organizationId);
 const currentMembership = () => state.me?.memberships.find((item) => item.organization_id === state.organizationId);
 const canAdminister = () => ['owner', 'admin'].includes(currentMembership()?.role);
+const canAdministerProject = () => currentProject()?.role === 'admin';
 
 function relative(value) {
   const date = new Date(value);
@@ -220,10 +238,11 @@ function renderIssueDetail() {
   const frames = Array.isArray(exception.stacktrace?.frames) ? [...exception.stacktrace.frames].reverse() : [];
   const breadcrumbs = Array.isArray(payload.breadcrumbs?.values) ? payload.breadcrumbs.values : [];
   const activity = detail.activities.map((item) => `<div class="activity-item"><span class="activity-icon">${item.kind === 'comment' ? '”' : '•'}</span><p><strong>${escapeHTML(item.user_name || item.user_email || 'System')}</strong> ${item.kind === 'comment' ? escapeHTML(item.value) : `${escapeHTML(item.kind)} → ${escapeHTML(item.value || 'cleared')}`}<small>${escapeHTML(relative(item.created_at))}</small></p></div>`).join('');
+  const attachments = state.attachments.map((item) => `<a class="management-row" href="/attachments/${encodeURIComponent(item.id)}"><span class="platform-icon">FILE</span><span><strong>${escapeHTML(item.filename)}</strong><small>${escapeHTML(item.attachment_type)} · ${Number(item.size).toLocaleString()} bytes</small></span></a>`).join('');
   return `<div class="issue-detail-head"><button class="button secondary small" data-back-issues>← All issues</button><div class="inline-actions"><button class="icon-text-button ${issue.bookmarked ? 'active' : ''}" data-bookmark-issue>${issue.bookmarked ? '★ Bookmarked' : '☆ Bookmark'}</button><button class="button secondary small" data-snooze-issue>${issue.snoozed_until ? 'Unsnooze' : 'Snooze 24h'}</button><button class="button secondary small" data-issue-status="${issue.status === 'resolved' ? 'unresolved' : 'resolved'}">${issue.status === 'resolved' ? 'Reopen' : 'Resolve'}</button>${canAdminister() ? '<button class="button danger small" data-delete-issue>Delete</button>' : ''}</div></div>
     <section class="issue-hero card"><div><div class="issue-meta"><span class="severity ${escapeHTML(issue.level)}"></span><span class="status ${escapeHTML(issue.status)}">${escapeHTML(issue.status)}</span><span>${escapeHTML(issue.level)}</span><span>${Number(issue.event_count).toLocaleString()} events</span>${issue.snoozed_until ? `<span>Snoozed until ${escapeHTML(new Date(issue.snoozed_until).toLocaleString())}</span>` : ''}</div><h2>${escapeHTML(issue.title)}</h2><p class="muted">First seen ${escapeHTML(relative(issue.first_seen_at))} · Last seen ${escapeHTML(relative(issue.last_seen_at))}</p></div><div class="issue-controls"><label>Assignee<select id="issue-assignee"><option value="">Unassigned</option>${state.members.members.map((member) => `<option value="${escapeHTML(member.id)}" ${issue.assignee_user_id === member.id ? 'selected' : ''}>${escapeHTML(member.name || member.email)}</option>`).join('')}</select></label><label>Priority<select id="issue-priority">${['low', 'medium', 'high', 'critical'].map((value) => `<option value="${value}" ${issue.priority === value ? 'selected' : ''}>${value}</option>`).join('')}</select></label><label>Status<select id="issue-status">${['unresolved', 'resolved', 'ignored'].map((value) => `<option value="${value}" ${issue.status === value ? 'selected' : ''}>${value}</option>`).join('')}</select></label></div></section>
     <div class="issue-detail-grid"><section class="card event-detail"><div class="event-picker">${detail.events.map((event, index) => `<button class="${event.id === selected?.id ? 'active' : ''}" data-event-id="${escapeHTML(event.id)}"><strong>#${detail.events.length - index}</strong><span>${escapeHTML(event.environment || 'default')}</span><small>${escapeHTML(relative(event.timestamp))}</small></button>`).join('')}</div>${selected ? `<div class="event-content"><div class="event-facts"><span><small>Event ID</small><code>${escapeHTML(selected.event_id)}</code></span><span><small>Release</small><code>${escapeHTML(selected.release || '—')}</code></span><span><small>Platform</small><b>${escapeHTML(selected.platform || 'generic')}</b></span><span><small>Environment</small><b>${escapeHTML(selected.environment || 'default')}</b></span></div>${exception.type || exception.value ? `<div class="exception-block"><p class="eyebrow">Exception</p><h3>${escapeHTML(exception.type || 'Error')}</h3><p>${escapeHTML(exception.value || payload.message || '')}</p></div>` : ''}<div class="detail-section"><h3>Stack trace</h3>${frames.length ? `<div class="stacktrace">${frames.map((frame) => `<div class="frame ${frame.in_app ? 'in-app' : ''}"><div><strong class="mono">${escapeHTML(frame.function || '<unknown>')}</strong><span class="mono">${escapeHTML(frame.filename || frame.abs_path || '')}:${escapeHTML(frame.lineno || '')}</span></div>${frame.context_line ? `<pre>${escapeHTML(frame.context_line)}</pre>` : ''}</div>`).join('')}</div>` : '<p class="muted">No stack frames were included in this event.</p>'}</div>${breadcrumbs.length ? `<div class="detail-section"><h3>Breadcrumbs</h3><div class="breadcrumb-list">${breadcrumbs.slice(-30).reverse().map((crumb) => `<div><time>${escapeHTML(crumb.timestamp || '')}</time><span class="log-level ${escapeHTML(crumb.level || 'info')}">${escapeHTML(crumb.category || crumb.type || 'log')}</span><strong>${escapeHTML(crumb.message || JSON.stringify(crumb.data || {}))}</strong></div>`).join('')}</div></div>` : ''}<details class="raw-event"><summary>Raw event JSON</summary><pre>${escapeHTML(JSON.stringify(payload, null, 2))}</pre></details></div>` : '<div class="empty-state"><h3>No retained events</h3></div>'}</section>
-    <aside class="card activity-panel"><div class="card-heading"><div><p class="eyebrow">Collaboration</p><h2>Activity</h2></div></div><form id="issue-comment"><textarea name="body" maxlength="4000" placeholder="Leave a note for your team…" required></textarea><button class="button small">Comment</button></form><div class="activity-list">${activity || '<p class="muted padded">No activity yet.</p>'}</div></aside></div>`;
+    <aside class="card activity-panel"><div class="card-heading"><div><p class="eyebrow">Collaboration</p><h2>Activity</h2></div></div><form id="issue-comment"><textarea name="body" maxlength="4000" placeholder="Leave a note for your team…" required></textarea><button class="button small">Comment</button></form><div class="activity-list">${activity || '<p class="muted padded">No activity yet.</p>'}</div><h3 class="section-title">Attachments</h3><div class="management-list compact-management">${attachments || '<p class="muted padded">No attachments for this event.</p>'}</div></aside></div>`;
 }
 
 function renderReleases() {
@@ -253,6 +272,9 @@ function renderSettings() {
   const members = state.members.members.map((item) => `<div class="management-row"><span class="avatar small-avatar">${escapeHTML((item.name || item.email).slice(0, 1).toUpperCase())}</span><span><strong>${escapeHTML(item.name || item.email)}</strong><small>${escapeHTML(item.email)}</small></span>${admin && item.id !== state.me.id ? `<select data-member-role="${escapeHTML(item.id)}">${['viewer', 'member', 'admin', ...(membership?.role === 'owner' ? ['owner'] : [])].map((role) => `<option ${item.role === role ? 'selected' : ''}>${role}</option>`).join('')}</select><button class="icon-text-button danger-text" data-remove-member="${escapeHTML(item.id)}">Remove</button>` : `<b>${escapeHTML(item.role)}</b>`}</div>`).join('');
   const invitations = state.members.invitations.map((item) => `<div class="management-row"><span class="avatar small-avatar">?</span><span><strong>${escapeHTML(item.email)}</strong><small>Expires ${escapeHTML(relative(item.expires_at))}</small></span><b>${escapeHTML(item.role)}</b>${admin ? `<button class="icon-text-button danger-text" data-revoke-invite="${escapeHTML(item.id)}">Revoke</button>` : ''}</div>`).join('');
   const tokens = state.tokens.map((item) => `<div class="management-row"><span class="platform-icon">API</span><span><strong>${escapeHTML(item.name)}</strong><small class="mono">${escapeHTML(item.prefix)}… · ${item.last_used_at ? `used ${escapeHTML(relative(item.last_used_at))}` : 'never used'}</small></span><small>${item.expires_at ? `expires ${escapeHTML(relative(item.expires_at))}` : 'no expiry'}</small><button class="icon-text-button danger-text" data-delete-token="${escapeHTML(item.id)}">Revoke</button></div>`).join('');
+  const mcpTokens = state.mcpTokens.map((item) => `<div class="management-row"><span class="platform-icon">MCP</span><span><strong>${escapeHTML(item.name)}</strong><small class="mono">${escapeHTML(item.token_prefix)}… · ${Array.isArray(item.scopes) ? item.scopes.map(escapeHTML).join(', ') : 'read'} · ${item.last_used_at ? `used ${escapeHTML(relative(item.last_used_at))}` : 'never used'}</small></span><small>${item.expires_at ? `expires ${escapeHTML(relative(item.expires_at))}` : 'no expiry'}</small><button class="icon-text-button danger-text" data-delete-mcp-token="${escapeHTML(item.id)}">Revoke</button></div>`).join('');
+  const projectMemberships = state.projectMemberships.map((item) => `<div class="management-row"><span class="avatar small-avatar">${escapeHTML((item.name || item.email || '?')[0].toUpperCase())}</span><span><strong>${escapeHTML(item.name || item.email)}</strong><small>${escapeHTML(item.organization_role)} organization role · effective ${escapeHTML(item.effective_role)}</small></span><select data-project-role="${escapeHTML(item.user_id)}"><option value="" ${!item.project_role ? 'selected' : ''}>inherit</option>${['viewer', 'member', 'admin', 'none'].map((role) => `<option value="${role}" ${item.project_role === role ? 'selected' : ''}>${role}</option>`).join('')}</select></div>`).join('');
+  const auditRows = state.auditLogs.slice(0, 30).map((item) => `<div class="management-row"><span class="platform-icon">LOG</span><span><strong>${escapeHTML(item.action)}</strong><small>${escapeHTML(item.actor_email || item.actor_type)} · ${escapeHTML(item.target_type || 'request')} ${escapeHTML(item.target_id || '')}</small></span><small>${escapeHTML(relative(item.created_at))}</small></div>`).join('');
   const totals = state.storage?.totals || {};
   const alerts = state.alerts.map((item) => `<div class="management-row"><i class="monitor-state ${item.enabled ? 'up' : 'pending'}"></i><span><strong>${escapeHTML(item.name)}</strong><small>${escapeHTML(item.trigger.replaceAll('_', ' '))} · ${escapeHTML(item.destination_type)} · ${escapeHTML(item.destination_host)}</small></span><button class="button secondary small" data-toggle-alert="${escapeHTML(item.id)}" data-enabled="${item.enabled}">${item.enabled ? 'Disable' : 'Enable'}</button><button class="button secondary small" data-test-alert="${escapeHTML(item.id)}">Test</button><button class="icon-text-button danger-text" data-delete-alert="${escapeHTML(item.id)}">Delete</button></div>`).join('');
   const deliveries = state.alertDeliveries.slice(0, 5).map((item) => `<div class="delivery-row"><span class="status ${item.status === 'sent' ? 'resolved' : 'unresolved'}">${escapeHTML(item.status)}</span><strong>${escapeHTML(item.rule_name)}</strong><small>${escapeHTML(item.event_type)} · ${escapeHTML(relative(item.created_at))}${item.last_error ? ` · ${escapeHTML(item.last_error)}` : ''}</small></div>`).join('');
@@ -261,8 +283,11 @@ function renderSettings() {
     <section class="card settings-card"><p class="eyebrow">Identity</p><h2>Single sign-on</h2><p class="muted">Accounts are provisioned from your OIDC provider. Password authentication is disabled.</p><dl><div><dt>Signed in as</dt><dd>${escapeHTML(state.me?.email || '')}</dd></div><div><dt>Provider</dt><dd>${escapeHTML(state.providerName)}</dd></div></dl></section>
     <section class="card settings-card span-two"><div class="card-heading"><div><p class="eyebrow">Team</p><h2>Members and invitations</h2></div>${admin ? `<form id="invite-member" class="inline-form"><input name="email" type="email" required placeholder="teammate@example.com" /><select name="role"><option>member</option><option>viewer</option><option>admin</option></select><button class="button small">Invite</button></form>` : ''}</div><div class="management-list">${members || '<p class="muted padded">No members.</p>'}${invitations}</div></section>
     <section class="card settings-card span-two"><div class="card-heading"><div><p class="eyebrow">Automation</p><h2>API tokens</h2></div><form id="create-token" class="inline-form"><input name="name" required placeholder="CI deployment" /><select name="expires_in_days"><option value="0">No expiry</option><option value="30">30 days</option><option value="90">90 days</option><option value="365">1 year</option></select><button class="button small">Create</button></form></div>${state.newToken ? `<div class="token-secret"><strong>Copy this token now — it will not be shown again.</strong><div class="copy-field"><code>${escapeHTML(state.newToken)}</code><button data-copy="${escapeHTML(state.newToken)}">${icon('copy')} Copy</button></div></div>` : ''}<div class="management-list">${tokens || '<p class="muted padded">No personal API tokens.</p>'}</div></section>
+    ${admin ? `<section class="card settings-card span-two"><div class="card-heading"><div><p class="eyebrow">AI integrations</p><h2>Organization MCP tokens</h2></div><form id="create-mcp-token" class="inline-form"><input name="name" required placeholder="Coding agent" /><select name="scope"><option value="read">Read only</option><option value="write">Read and write</option></select><select name="expires_in_days"><option value="0">No expiry</option><option value="30">30 days</option><option value="90">90 days</option><option value="365">1 year</option></select><button class="button small">Create</button></form></div>${state.newMCPToken ? `<div class="token-secret"><strong>Copy this MCP token now — it will not be shown again.</strong><div class="copy-field"><code>${escapeHTML(state.newMCPToken)}</code><button data-copy="${escapeHTML(state.newMCPToken)}">${icon('copy')} Copy</button></div></div>` : ''}<div class="management-list">${mcpTokens || '<p class="muted padded">No organization MCP tokens.</p>'}</div></section>` : ''}
+    ${canAdministerProject() ? `<section class="card settings-card span-two"><div class="card-heading"><div><p class="eyebrow">Project access</p><h2>Role overrides</h2></div></div><div class="management-list">${projectMemberships || '<p class="muted padded">No project members.</p>'}</div></section>` : ''}
     <section class="card settings-card"><p class="eyebrow">Data lifecycle</p><h2>Storage</h2><div class="storage-stats"><div><strong>${Number(state.storage?.database_bytes || 0).toLocaleString()}</strong><small>database bytes</small></div><div><strong>${Number(totals.events || 0).toLocaleString()}</strong><small>events</small></div><div><strong>${Number(totals.spans || 0).toLocaleString()}</strong><small>spans</small></div></div>${admin ? `<form id="retention-form" class="inline-form"><label>Retention days<input name="days" type="number" min="1" max="3650" value="${Number(state.storage?.retention_days || 30)}" /></label><button class="button small">Save</button></form><div class="inline-actions"><button class="button secondary small" data-cleanup="dry">Preview cleanup</button><button class="button danger small" data-cleanup="apply">Delete expired data</button></div>` : ''}</section>
-    <section class="card settings-card"><p class="eyebrow">Notifications</p><h2>Project alerts</h2>${currentProject() && admin ? `<form id="create-alert" class="stack-form"><input name="name" required placeholder="Production errors" /><div class="form-grid"><select name="trigger"><option value="new_issue">New issue</option><option value="regression">Regression</option><option value="uptime_down">Uptime down</option></select><select name="destination_type"><option value="webhook">Webhook</option><option value="slack">Slack</option></select></div><input name="destination_url" type="url" required placeholder="https://hooks.example.com/…" /><button class="button small">Add alert</button></form>` : '<p class="muted">Select a project to configure alerts.</p>'}<div class="management-list compact-management">${alerts || '<p class="muted padded">No alert rules for this project.</p>'}</div>${deliveries ? `<h3 class="section-title">Recent deliveries</h3><div class="delivery-list">${deliveries}</div>` : ''}</section>
+    <section class="card settings-card"><p class="eyebrow">Notifications</p><h2>Project alerts</h2>${currentProject() && canAdministerProject() ? `<form id="create-alert" class="stack-form"><input name="name" required placeholder="Production errors" /><div class="form-grid"><select name="trigger"><option value="new_issue">New issue</option><option value="regression">Regression</option><option value="uptime_down">Uptime down</option><option value="cron_missed">Cron missed</option><option value="metric_threshold">Metric threshold</option><option value="user_feedback">User feedback</option></select><select name="destination_type"><option value="webhook">Webhook</option><option value="slack">Slack</option><option value="email">Email</option></select></div><input name="destination" required placeholder="https://hooks.example.com/ or alerts@example.com" /><div class="form-grid"><input name="environment" placeholder="environment (optional)" /><input name="levels" placeholder="levels: error,fatal" /></div><input name="frequency_minutes" type="number" min="0" max="10080" value="0" placeholder="cooldown minutes" /><button class="button small">Add alert</button></form>` : '<p class="muted">Select a project with administrator access to configure alerts.</p>'}<div class="management-list compact-management">${alerts || '<p class="muted padded">No alert rules for this project.</p>'}</div>${deliveries ? `<h3 class="section-title">Recent deliveries</h3><div class="delivery-list">${deliveries}</div>` : ''}</section>
+    ${admin ? `<section class="card settings-card span-two"><p class="eyebrow">Security</p><h2>Audit log</h2><div class="management-list compact-management">${auditRows || '<p class="muted padded">No mutations recorded yet.</p>'}</div></section>` : ''}
     <section class="card settings-card span-two"><div class="card-heading"><div><p class="eyebrow">Organizations</p><h2>Your workspaces</h2></div><button class="button secondary small" data-open-organization>${icon('plus')} New organization</button></div><div class="org-list">${state.organizations.map((item) => `<button data-org-id="${escapeHTML(item.organization_id)}"><span>${escapeHTML(item.organization_name)}</span><small class="mono">${escapeHTML(item.organization_slug)}</small><b>${escapeHTML(item.role)}</b></button>`).join('')}</div></section>
   </div>`;
 }
@@ -310,6 +335,40 @@ function renderUptime() {
   return `<div class="toolbar"><p class="muted">Checks run inside this Barktrace instance. Private network targets are blocked by default.</p><button class="button small" data-open-monitor>${icon('plus')} New monitor</button></div><div class="uptime-grid"><section class="card monitor-list">${monitorRows}</section>${detail}</div>`;
 }
 
+function renderTelemetry() {
+  if (!currentProject()) return projectRows();
+  const tabs = [
+    ['cron', 'Cron'], ['feedback', 'Feedback'], ['replays', 'Replays'], ['profiles', 'Profiles'],
+    ['metrics', 'Metrics'], ['artifacts', 'Artifacts'], ['operations', 'Operations'],
+  ];
+  let content = '';
+  if (state.telemetryTab === 'cron') {
+    const rows = state.cronMonitors.map((item) => `<div class="management-row"><i class="monitor-state ${item.status === 'ok' ? 'up' : item.status === 'missed' || item.status === 'error' ? 'down' : 'pending'}"></i><span><strong>${escapeHTML(item.name)}</strong><small class="mono">${escapeHTML(item.slug)} · ${escapeHTML(item.schedule_type)} ${escapeHTML(item.schedule_value)} · ${escapeHTML(item.timezone)}</small></span><span class="status ${item.status === 'ok' ? 'resolved' : 'unresolved'}">${escapeHTML(item.status)}</span><button class="button secondary small" data-cron-id="${escapeHTML(item.id)}">Check-ins</button>${canAdministerProject() ? `<button class="icon-text-button danger-text" data-delete-cron="${escapeHTML(item.id)}">Delete</button>` : ''}</div>`).join('');
+    const checkins = state.cronCheckins.map((item) => `<div class="management-row"><i class="monitor-state ${item.status === 'ok' ? 'up' : item.status === 'in_progress' ? 'pending' : 'down'}"></i><span><strong>${escapeHTML(item.status)}</strong><small>${escapeHTML(item.environment || 'default')} · ${escapeHTML(item.release || 'no release')}</small></span><small>${escapeHTML(relative(item.started_at))}</small></div>`).join('');
+    content = `<section class="card settings-card"><div class="card-heading"><div><p class="eyebrow">Scheduled jobs</p><h2>Cron monitors</h2></div></div>${canAdministerProject() ? `<form id="create-cron" class="inline-form telemetry-form"><input name="name" required placeholder="Nightly backup" /><input name="slug" required placeholder="nightly-backup" /><select name="schedule_type"><option value="interval">Interval minutes</option><option value="crontab">Crontab</option></select><input name="schedule_value" required value="5" /><button class="button small">Create</button></form>` : ''}<div class="management-list">${rows || '<p class="muted padded">No cron monitors.</p>'}</div></section><section class="card settings-card"><p class="eyebrow">History</p><h2>Recent check-ins</h2><div class="management-list compact-management">${checkins || '<p class="muted padded">Select a monitor to inspect check-ins.</p>'}</div></section>`;
+  } else if (state.telemetryTab === 'feedback') {
+    const rows = state.feedback.map((item) => `<div class="management-row"><span class="avatar small-avatar">${escapeHTML((item.name || item.email || '?')[0].toUpperCase())}</span><span><strong>${escapeHTML(item.comments)}</strong><small>${escapeHTML(item.name || 'Anonymous')} · ${escapeHTML(item.email || 'no email')} · event ${escapeHTML(item.event_id || 'unlinked')}</small></span><small>${escapeHTML(relative(item.created_at))}</small></div>`).join('');
+    content = `<section class="card settings-card"><p class="eyebrow">User reports</p><h2>Feedback</h2><div class="management-list compact-management">${rows || '<p class="muted padded">No user feedback received.</p>'}</div></section>`;
+  } else if (state.telemetryTab === 'replays') {
+    const rows = state.replays.map((item) => `<div class="management-row"><span class="platform-icon">R${item.segment_id}</span><span><strong>${escapeHTML(item.url || item.replay_id)}</strong><small class="mono">${escapeHTML(item.replay_id)} · ${escapeHTML(item.environment || 'default')} · ${item.error_count} errors</small></span>${item.has_event ? `<a class="button secondary small" href="/replays/${encodeURIComponent(item.id)}/event">Event</a>` : ''}${item.has_recording ? `<a class="button secondary small" href="/replays/${encodeURIComponent(item.id)}/recording">Recording</a>` : ''}</div>`).join('');
+    content = `<section class="card settings-card"><p class="eyebrow">Session replay</p><h2>Replay segments</h2><div class="management-list compact-management">${rows || '<p class="muted padded">No replay segments received.</p>'}</div></section>`;
+  } else if (state.telemetryTab === 'profiles') {
+    const rows = state.profiles.map((item) => `<div class="management-row"><span class="platform-icon">CPU</span><span><strong class="mono">${escapeHTML(item.profile_id)}</strong><small>${escapeHTML(item.platform || 'generic')} · ${formatMS(item.duration_ms)} · ${Number(item.size).toLocaleString()} bytes</small></span><a class="button secondary small" href="/profiles/${encodeURIComponent(item.id)}">Download</a></div>`).join('');
+    content = `<section class="card settings-card"><p class="eyebrow">Profiling</p><h2>Profiles</h2><div class="management-list compact-management">${rows || '<p class="muted padded">No profiles received.</p>'}</div></section>`;
+  } else if (state.telemetryTab === 'metrics') {
+    const rows = state.metrics.metrics.map((item) => `<div class="management-row"><span class="platform-icon">Σ</span><span><strong class="mono">${escapeHTML(item.name)}</strong><small>${escapeHTML(item.type)} · ${Number(item.count).toLocaleString()} samples · last ${escapeHTML(relative(item.last_seen_at))}</small></span><span><b>${Number(item.average).toLocaleString()}</b> ${escapeHTML(item.unit || '')}<small>${Number(item.min).toLocaleString()}–${Number(item.max).toLocaleString()}</small></span></div>`).join('');
+    content = `<section class="card settings-card"><p class="eyebrow">Measurements</p><h2>Metrics · ${escapeHTML(state.metrics.period)}</h2><div class="management-list compact-management">${rows || '<p class="muted padded">No metrics received in this period.</p>'}</div></section>`;
+  } else if (state.telemetryTab === 'artifacts') {
+    const rows = state.artifacts.map((item) => `<div class="management-row"><span class="platform-icon">${escapeHTML(item.artifact_type.slice(0, 3).toUpperCase())}</span><span><strong class="mono">${escapeHTML(item.name)}</strong><small>${escapeHTML(item.release || 'unscoped')} · ${escapeHTML(item.debug_id || item.checksum || '')} · ${Number(item.size).toLocaleString()} bytes</small></span>${canAdministerProject() ? `<button class="icon-text-button danger-text" data-delete-artifact="${escapeHTML(item.id)}">Delete</button>` : ''}</div>`).join('');
+    content = `<section class="card settings-card"><div class="card-heading"><div><p class="eyebrow">Symbolication</p><h2>Source maps and debug files</h2></div></div>${canAdministerProject() ? `<form id="upload-artifact" class="inline-form telemetry-form"><input name="file" type="file" required /><input name="release" placeholder="release (optional)" /><button class="button small">Upload</button></form>` : ''}<div class="management-list">${rows || '<p class="muted padded">No artifacts uploaded.</p>'}</div></section>`;
+  } else {
+    const jobs = state.ingestionJobs.jobs.map((item) => `<div class="management-row"><i class="monitor-state ${item.status === 'done' ? 'up' : item.status === 'dead' ? 'down' : 'pending'}"></i><span><strong>${escapeHTML(item.category)} · ${escapeHTML(item.status)}</strong><small class="mono">${escapeHTML(item.id)} · ${item.attempts} attempts${item.last_error ? ` · ${escapeHTML(item.last_error)}` : ''}</small></span>${item.status === 'dead' && canAdministerProject() ? `<button class="button secondary small" data-retry-job="${escapeHTML(item.id)}">Retry</button>` : ''}${['dead', 'done'].includes(item.status) && canAdministerProject() ? `<button class="icon-text-button danger-text" data-delete-job="${escapeHTML(item.id)}">Delete</button>` : ''}</div>`).join('');
+    const quotas = state.quotas.quotas.map((item) => `<div class="management-row"><span class="platform-icon">Q</span><span><strong>${escapeHTML(item.category)}</strong><small>${item.per_minute || 'default'}/min · ${item.per_day || 'unlimited'}/day · ${item.max_item_bytes ? `${Number(item.max_item_bytes).toLocaleString()} byte max` : 'default size'}</small></span></div>`).join('');
+    content = `<div class="settings-grid"><section class="card settings-card"><p class="eyebrow">Durability</p><h2>Ingestion queue</h2><div class="management-list compact-management">${jobs || '<p class="muted padded">No retained queue jobs.</p>'}</div></section><section class="card settings-card"><p class="eyebrow">Capacity</p><h2>Category quotas</h2>${canAdministerProject() ? `<form id="set-quota" class="stack-form"><select name="category"><option>error</option><option>transaction</option><option>span</option><option>log</option><option>attachment</option><option>replay</option><option>profile</option><option>metric</option><option>check_in</option></select><div class="form-grid"><input name="per_minute" type="number" min="0" placeholder="per minute" /><input name="per_day" type="number" min="0" placeholder="per day" /></div><input name="max_item_bytes" type="number" min="0" placeholder="max item bytes" /><button class="button small">Set quota</button></form>` : ''}<div class="management-list compact-management">${quotas || `<p class="muted padded">Using the default ${Number(state.quotas.default_per_minute || 0).toLocaleString()}/minute limit.</p>`}</div></section></div>`;
+  }
+  return `<div class="toolbar"><div class="segmented telemetry-tabs">${tabs.map(([key, label]) => `<button class="${state.telemetryTab === key ? 'active' : ''}" data-telemetry-tab="${key}">${label}</button>`).join('')}</div><span class="result-count">Project data products</span></div>${content}`;
+}
+
 function render() {
   $('#page-actions').innerHTML = '';
   const renderers = {
@@ -322,6 +381,7 @@ function render() {
     performance: renderPerformance,
     logs: renderLogs,
     uptime: renderUptime,
+    telemetry: renderTelemetry,
   };
   $('#view').innerHTML = (renderers[state.route] || renderOverview)();
   bindView();
@@ -339,6 +399,10 @@ function bindView() {
   $$('[data-copy]').forEach((button) => button.addEventListener('click', async () => {
     await navigator.clipboard.writeText(button.dataset.copy);
     showToast('Copied to clipboard');
+  }));
+  $$('[data-telemetry-tab]').forEach((button) => button.addEventListener('click', () => {
+    state.telemetryTab = button.dataset.telemetryTab;
+    render();
   }));
   $$('[data-project-id]').forEach((button) => button.addEventListener('click', async () => {
     state.projectId = button.dataset.projectId;
@@ -362,17 +426,18 @@ function bindView() {
     state.issueId = button.dataset.issueId;
     state.issueDetail = await request(`/issues/${encodeURIComponent(state.issueId)}`);
     state.eventId = state.issueDetail.events[0]?.id || '';
-    render();
+    await loadAttachments();
   }));
   $$('[data-back-issues]').forEach((button) => button.addEventListener('click', () => {
     state.issueId = '';
     state.issueDetail = null;
     state.eventId = '';
+    state.attachments = [];
     render();
   }));
   $$('[data-event-id]').forEach((button) => button.addEventListener('click', () => {
     state.eventId = button.dataset.eventId;
-    render();
+    loadAttachments();
   }));
   $$('[data-issue-status]').forEach((button) => button.addEventListener('click', async () => {
     await updateSelectedIssue({ status: button.dataset.issueStatus });
@@ -478,6 +543,34 @@ function bindView() {
     await loadManagementData();
     showToast('API token revoked');
   }));
+  $('#create-mcp-token')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const input = new FormData(form);
+    const scope = input.get('scope');
+    const created = await request(`/organizations/${encodeURIComponent(state.organizationId)}/mcp-tokens`, { method: 'POST', body: JSON.stringify({ name: input.get('name'), scopes: scope === 'write' ? ['read', 'write'] : ['read'], expires_in_days: Number(input.get('expires_in_days')) }) });
+    state.newMCPToken = created.token;
+    form.reset();
+    await loadManagementData();
+    showToast('MCP token created');
+  });
+  $$('[data-delete-mcp-token]').forEach((button) => button.addEventListener('click', async () => {
+    if (!confirm('Revoke this MCP token?')) return;
+    await request(`/organizations/${encodeURIComponent(state.organizationId)}/mcp-tokens/${encodeURIComponent(button.dataset.deleteMcpToken)}`, { method: 'DELETE' });
+    await loadManagementData();
+    showToast('MCP token revoked');
+  }));
+  $$('[data-project-role]').forEach((select) => select.addEventListener('change', async () => {
+    const userId = select.dataset.projectRole;
+    const endpoint = `/projects/${encodeURIComponent(state.projectId)}/memberships/${encodeURIComponent(userId)}`;
+    if (select.value) {
+      await request(endpoint, { method: 'PUT', body: JSON.stringify({ role: select.value }) });
+    } else {
+      await request(endpoint, { method: 'DELETE' });
+    }
+    await loadManagementData();
+    showToast('Project access updated');
+  }));
   $('#retention-form')?.addEventListener('submit', async (event) => {
     event.preventDefault();
     const days = Number(new FormData(event.currentTarget).get('days'));
@@ -498,7 +591,12 @@ function bindView() {
     event.preventDefault();
     const form = event.currentTarget;
     const input = new FormData(form);
-    await request('/alerts', { method: 'POST', body: JSON.stringify({ project_id: state.projectId, name: input.get('name'), trigger: input.get('trigger'), destination_type: input.get('destination_type'), destination_url: input.get('destination_url') }) });
+    const destinationType = input.get('destination_type');
+    const destination = input.get('destination');
+    const conditions = {};
+    if (String(input.get('environment') || '').trim()) conditions.environment = String(input.get('environment')).trim();
+    if (String(input.get('levels') || '').trim()) conditions.levels = String(input.get('levels')).split(',').map((value) => value.trim()).filter(Boolean);
+    await request('/alerts', { method: 'POST', body: JSON.stringify({ project_id: state.projectId, name: input.get('name'), trigger: input.get('trigger'), destination_type: destinationType, destination_url: destinationType === 'email' ? '' : destination, destination_email: destinationType === 'email' ? destination : '', conditions, frequency_minutes: Number(input.get('frequency_minutes') || 0) }) });
     form.reset();
     await loadManagementData();
     showToast('Alert rule created');
@@ -548,6 +646,75 @@ function bindView() {
     await loadObservabilityData();
     showToast('Monitor deleted');
   }));
+  $$('[data-cron-id]').forEach((button) => button.addEventListener('click', async () => {
+    state.cronMonitorId = button.dataset.cronId;
+    state.cronCheckins = await request(`/cron/checkins?monitor_id=${encodeURIComponent(state.cronMonitorId)}`);
+    render();
+  }));
+  $('#create-cron')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const input = new FormData(form);
+    const scheduleType = input.get('schedule_type');
+    const rawValue = String(input.get('schedule_value'));
+    await request('/cron/monitors', { method: 'POST', body: JSON.stringify({
+      project_id: state.projectId, name: input.get('name'), slug: input.get('slug'), schedule_type: scheduleType,
+      schedule_value: scheduleType === 'interval' ? Number(rawValue) : rawValue, timezone: 'UTC', checkin_margin: 5, max_runtime: 30,
+    }) });
+    form.reset();
+    await loadProductData();
+    showToast('Cron monitor created');
+  });
+  $$('[data-delete-cron]').forEach((button) => button.addEventListener('click', async () => {
+    if (!confirm('Delete this cron monitor and its check-ins?')) return;
+    await request(`/cron/monitors/${encodeURIComponent(button.dataset.deleteCron)}`, { method: 'DELETE' });
+    if (state.cronMonitorId === button.dataset.deleteCron) {
+      state.cronMonitorId = '';
+      state.cronCheckins = [];
+    }
+    await loadProductData();
+    showToast('Cron monitor deleted');
+  }));
+  $('#upload-artifact')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    const release = data.get('release');
+    data.delete('release');
+    const response = await fetch(`/artifacts?project_id=${encodeURIComponent(state.projectId)}&release=${encodeURIComponent(release || '')}`, { method: 'POST', body: data });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      showToast(body.error?.message || 'Artifact upload failed');
+      return;
+    }
+    form.reset();
+    await loadProductData();
+    showToast('Artifact uploaded');
+  });
+  $$('[data-delete-artifact]').forEach((button) => button.addEventListener('click', async () => {
+    if (!confirm('Delete this artifact?')) return;
+    await request(`/artifacts/${encodeURIComponent(button.dataset.deleteArtifact)}`, { method: 'DELETE' });
+    await loadProductData();
+    showToast('Artifact deleted');
+  }));
+  $('#set-quota')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const input = new FormData(event.currentTarget);
+    const category = input.get('category');
+    await request(`/projects/${encodeURIComponent(state.projectId)}/quotas/${encodeURIComponent(category)}`, { method: 'PUT', body: JSON.stringify({ per_minute: Number(input.get('per_minute') || 0), per_day: Number(input.get('per_day') || 0), max_item_bytes: Number(input.get('max_item_bytes') || 0) }) });
+    await loadProductData();
+    showToast('Quota updated');
+  });
+  $$('[data-retry-job]').forEach((button) => button.addEventListener('click', async () => {
+    await request(`/projects/${encodeURIComponent(state.projectId)}/ingestion-jobs/${encodeURIComponent(button.dataset.retryJob)}/retry`, { method: 'POST' });
+    await loadProductData();
+    showToast('Ingestion job queued');
+  }));
+  $$('[data-delete-job]').forEach((button) => button.addEventListener('click', async () => {
+    await request(`/projects/${encodeURIComponent(state.projectId)}/ingestion-jobs/${encodeURIComponent(button.dataset.deleteJob)}`, { method: 'DELETE' });
+    await loadProductData();
+    showToast('Ingestion job deleted');
+  }));
   $$('.code-tabs [data-language]').forEach((button) => button.addEventListener('click', () => {
     const project = currentProject();
     const snippets = {
@@ -584,6 +751,15 @@ async function loadProjectData() {
     state.performance = { period: '24h', stats: {}, transactions: [] };
     state.logs = [];
     state.monitors = [];
+    state.cronMonitors = [];
+    state.cronCheckins = [];
+    state.feedback = [];
+    state.replays = [];
+    state.profiles = [];
+    state.metrics = { period: '24h', metrics: [] };
+    state.artifacts = [];
+    state.quotas = { default_per_minute: 0, quotas: [] };
+    state.ingestionJobs = { jobs: [] };
     await loadManagementData();
     $('#issue-count').textContent = '0';
     render();
@@ -594,6 +770,7 @@ async function loadProjectData() {
     request(`/releases?project_id=${encodeURIComponent(state.projectId)}`),
   ]);
   await loadObservabilityData();
+  await loadProductData();
   await loadManagementData();
   $('#issue-count').textContent = String(state.issues.filter((issue) => issue.status === 'unresolved').length);
   populateSelectors();
@@ -607,6 +784,9 @@ async function loadManagementData() {
     state.storage = null;
     state.alerts = [];
     state.alertDeliveries = [];
+    state.projectMemberships = [];
+    state.auditLogs = [];
+    state.mcpTokens = [];
     return;
   }
   const requests = [
@@ -624,13 +804,60 @@ async function loadManagementData() {
   state.storage = storage;
   state.alerts = alerts;
   state.alertDeliveries = deliveries;
+  if (canAdminister()) {
+    const [mcpTokens, audit] = await Promise.all([
+      request(`/organizations/${encodeURIComponent(state.organizationId)}/mcp-tokens`),
+      request(`/organizations/${encodeURIComponent(state.organizationId)}/audit-logs${state.projectId ? `?project_id=${encodeURIComponent(state.projectId)}` : ''}`),
+    ]);
+    state.mcpTokens = mcpTokens.tokens || [];
+    state.auditLogs = audit.audit_logs || [];
+  } else {
+    state.mcpTokens = [];
+    state.auditLogs = [];
+  }
+  if (state.projectId && canAdministerProject()) {
+    const memberships = await request(`/projects/${encodeURIComponent(state.projectId)}/memberships`);
+    state.projectMemberships = memberships.memberships || [];
+  } else {
+    state.projectMemberships = [];
+  }
+  render();
+}
+
+async function loadAttachments() {
+  if (!state.projectId || !state.eventId) {
+    state.attachments = [];
+  } else {
+    state.attachments = await request(`/attachments?project_id=${encodeURIComponent(state.projectId)}&event_id=${encodeURIComponent(state.eventId)}`);
+  }
+  render();
+}
+
+async function loadProductData() {
+  if (!state.projectId) return;
+  [state.cronMonitors, state.feedback, state.replays, state.profiles, state.metrics, state.artifacts, state.quotas, state.ingestionJobs] = await Promise.all([
+    request(`/cron/monitors?project_id=${encodeURIComponent(state.projectId)}`),
+    request(`/feedback?project_id=${encodeURIComponent(state.projectId)}`),
+    request(`/replays?project_id=${encodeURIComponent(state.projectId)}`),
+    request(`/profiles?project_id=${encodeURIComponent(state.projectId)}`),
+    request(`/metrics?project_id=${encodeURIComponent(state.projectId)}&period=24h`),
+    request(`/artifacts?project_id=${encodeURIComponent(state.projectId)}`),
+    request(`/projects/${encodeURIComponent(state.projectId)}/quotas`),
+    request(`/projects/${encodeURIComponent(state.projectId)}/ingestion-jobs?limit=100`),
+  ]);
+  if (state.cronMonitorId && state.cronMonitors.some((monitor) => monitor.id === state.cronMonitorId)) {
+    state.cronCheckins = await request(`/cron/checkins?monitor_id=${encodeURIComponent(state.cronMonitorId)}`);
+  } else {
+    state.cronMonitorId = '';
+    state.cronCheckins = [];
+  }
   render();
 }
 
 async function reloadSelectedIssue() {
   if (!state.issueId) return;
   state.issueDetail = await request(`/issues/${encodeURIComponent(state.issueId)}`);
-  render();
+  await loadAttachments();
 }
 
 async function updateSelectedIssue(changes) {

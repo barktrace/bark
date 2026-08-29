@@ -25,7 +25,7 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
 FROM debian:bookworm-slim
 LABEL org.opencontainers.image.title="Barktrace" \
       org.opencontainers.image.description="Lean, self-hosted observability with Sentry SDK compatibility" \
-      org.opencontainers.image.source="https://github.com/GhaziBenDahmane/barktrace"
+      org.opencontainers.image.source="https://github.com/barktrace/bark"
 WORKDIR /app
 COPY --from=server /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=server /out/barktrace /app/barktrace

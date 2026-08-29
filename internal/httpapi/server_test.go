@@ -6,9 +6,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/GhaziBenDahmane/barktrace/internal/auth"
-	"github.com/GhaziBenDahmane/barktrace/internal/config"
-	"github.com/GhaziBenDahmane/barktrace/internal/store"
+	"github.com/barktrace/bark/internal/auth"
+	"github.com/barktrace/bark/internal/config"
+	"github.com/barktrace/bark/internal/store"
 )
 
 func TestRouteRegistrationAndRootRedirect(t *testing.T) {

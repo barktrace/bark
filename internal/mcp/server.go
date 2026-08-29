@@ -14,8 +14,9 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
-	"github.com/GhaziBenDahmane/barktrace/internal/store"
+	"github.com/barktrace/bark/internal/store"
 )
 
 const protocolVersion = "2025-11-25"
@@ -27,10 +28,23 @@ var supportedProtocolVersions = map[string]bool{
 }
 
 type Service struct {
-	store        *store.Store
-	tokenHash    [32]byte
-	publicURL    string
-	publicOrigin string
+	store              *store.Store
+	legacyTokenHash    [32]byte
+	legacyTokenEnabled bool
+	publicURL          string
+	publicOrigin       string
+}
+
+type credential struct {
+	organizationID string
+	tokenID        string
+	actorUserID    string
+	scopes         map[string]bool
+	legacy         bool
+}
+
+func (c *credential) can(scope string) bool {
+	return c != nil && (c.legacy || c.scopes[scope] || (scope == "read" && c.scopes["write"]))
 }
 
 type rpcRequest struct {
@@ -64,11 +78,12 @@ func New(st *store.Store, token, publicURL string) *Service {
 	if parsed, err := url.Parse(publicURL); err == nil {
 		origin = parsed.Scheme + "://" + parsed.Host
 	}
-	return &Service{store: st, tokenHash: sha256.Sum256([]byte(token)), publicURL: publicURL, publicOrigin: origin}
+	return &Service{store: st, legacyTokenHash: sha256.Sum256([]byte(token)), legacyTokenEnabled: strings.TrimSpace(token) != "", publicURL: publicURL, publicOrigin: origin}
 }
 
 func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if !s.authorized(r) {
+	credential, ok := s.authorize(r)
+	if !ok {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="barktrace-mcp"`)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -107,7 +122,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "tools/list":
 		s.writeResult(w, id, map[string]any{"tools": tools()})
 	case "tools/call":
-		result, err := s.callTool(r, request.Params)
+		result, err := s.callTool(r, credential, request.Params)
 		if err != nil {
 			s.writeResult(w, id, toolError(err))
 			return
@@ -127,16 +142,45 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Service) authorized(r *http.Request) bool {
+func (s *Service) authorize(r *http.Request) (*credential, bool) {
 	header := strings.TrimSpace(r.Header.Get("Authorization"))
 	if !strings.HasPrefix(header, "Bearer ") {
-		return false
+		return nil, false
 	}
-	candidate := sha256.Sum256([]byte(strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))))
-	return subtle.ConstantTimeCompare(candidate[:], s.tokenHash[:]) == 1
+	plain := strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
+	if plain == "" {
+		return nil, false
+	}
+	candidate := sha256.Sum256([]byte(plain))
+	if s.legacyTokenEnabled && subtle.ConstantTimeCompare(candidate[:], s.legacyTokenHash[:]) == 1 {
+		return &credential{legacy: true, scopes: map[string]bool{"read": true, "write": true}}, true
+	}
+	var id, organizationID, createdBy string
+	var scopesJSON []byte
+	err := s.store.DB.QueryRowContext(r.Context(), `
+		SELECT id, organization_id, created_by, scopes
+		FROM mcp_tokens
+		WHERE token_hash = ? AND (expires_at IS NULL OR expires_at > ?)
+	`, candidate[:], nowUTC()).Scan(&id, &organizationID, &createdBy, &scopesJSON)
+	if err != nil {
+		return nil, false
+	}
+	var names []string
+	if json.Unmarshal(scopesJSON, &names) != nil {
+		return nil, false
+	}
+	scopes := make(map[string]bool, len(names))
+	for _, name := range names {
+		scopes[strings.ToLower(strings.TrimSpace(name))] = true
+	}
+	if !scopes["read"] && !scopes["write"] {
+		return nil, false
+	}
+	_, _ = s.store.DB.ExecContext(r.Context(), `UPDATE mcp_tokens SET last_used_at = ? WHERE id = ?`, nowUTC(), id)
+	return &credential{organizationID: organizationID, tokenID: id, actorUserID: createdBy, scopes: scopes}, true
 }
 
-func (s *Service) callTool(r *http.Request, raw json.RawMessage) (any, error) {
+func (s *Service) callTool(r *http.Request, credential *credential, raw json.RawMessage) (any, error) {
 	var call struct {
 		Name      string          `json:"name"`
 		Arguments json.RawMessage `json:"arguments"`
@@ -147,7 +191,10 @@ func (s *Service) callTool(r *http.Request, raw json.RawMessage) (any, error) {
 	ctx := r.Context()
 	switch call.Name {
 	case "list_organizations":
-		return s.listOrganizations(ctx)
+		if !credential.can("read") {
+			return nil, errors.New("read scope required")
+		}
+		return s.listOrganizations(ctx, credential)
 	case "list_projects":
 		var args struct {
 			OrganizationSlug string `json:"organization_slug"`
@@ -155,10 +202,16 @@ func (s *Service) callTool(r *http.Request, raw json.RawMessage) (any, error) {
 		if err := decodeArguments(call.Arguments, &args); err != nil {
 			return nil, err
 		}
-		return s.listProjects(ctx, args.OrganizationSlug)
+		if !credential.can("read") {
+			return nil, errors.New("read scope required")
+		}
+		return s.listProjects(ctx, credential, args.OrganizationSlug)
 	case "get_project_summary":
 		var args projectArgs
 		if err := requiredProjectArguments(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := s.requireProject(ctx, credential, args.ProjectID, "read"); err != nil {
 			return nil, err
 		}
 		return s.projectSummary(ctx, args.ProjectID)
@@ -172,6 +225,9 @@ func (s *Service) callTool(r *http.Request, raw json.RawMessage) (any, error) {
 		if err := decodeArguments(call.Arguments, &args); err != nil || args.ProjectID == "" {
 			return nil, errors.New("project_id is required")
 		}
+		if err := s.requireProject(ctx, credential, args.ProjectID, "read"); err != nil {
+			return nil, err
+		}
 		return s.listIssues(ctx, args.ProjectID, args.Status, args.Query, boundedLimit(args.Limit))
 	case "get_issue":
 		var args struct {
@@ -179,6 +235,9 @@ func (s *Service) callTool(r *http.Request, raw json.RawMessage) (any, error) {
 		}
 		if err := decodeArguments(call.Arguments, &args); err != nil || args.IssueID == "" {
 			return nil, errors.New("issue_id is required")
+		}
+		if _, err := s.requireIssue(ctx, credential, args.IssueID, "read"); err != nil {
+			return nil, err
 		}
 		return s.getIssue(ctx, args.IssueID)
 	case "update_issue_status":
@@ -189,7 +248,15 @@ func (s *Service) callTool(r *http.Request, raw json.RawMessage) (any, error) {
 		if err := decodeArguments(call.Arguments, &args); err != nil || args.IssueID == "" {
 			return nil, errors.New("issue_id is required")
 		}
-		return s.updateIssueStatus(ctx, args.IssueID, args.Status)
+		projectID, err := s.requireIssue(ctx, credential, args.IssueID, "write")
+		if err != nil {
+			return nil, err
+		}
+		result, err := s.updateIssueStatus(ctx, args.IssueID, args.Status)
+		if err == nil {
+			s.recordMutation(ctx, credential, projectID, "update_issue_status", "issue", args.IssueID, map[string]any{"status": args.Status})
+		}
+		return result, err
 	case "list_events":
 		var args struct {
 			ProjectID string `json:"project_id"`
@@ -198,6 +265,9 @@ func (s *Service) callTool(r *http.Request, raw json.RawMessage) (any, error) {
 		}
 		if err := decodeArguments(call.Arguments, &args); err != nil || args.ProjectID == "" {
 			return nil, errors.New("project_id is required")
+		}
+		if err := s.requireProject(ctx, credential, args.ProjectID, "read"); err != nil {
+			return nil, err
 		}
 		return s.listEvents(ctx, args.ProjectID, args.IssueID, boundedLimit(args.Limit))
 	case "get_event":
@@ -208,13 +278,26 @@ func (s *Service) callTool(r *http.Request, raw json.RawMessage) (any, error) {
 		if err := decodeArguments(call.Arguments, &args); err != nil || args.ProjectID == "" || args.EventID == "" {
 			return nil, errors.New("project_id and event_id are required")
 		}
+		if err := s.requireProject(ctx, credential, args.ProjectID, "read"); err != nil {
+			return nil, err
+		}
 		return s.getEvent(ctx, args.ProjectID, args.EventID)
 	case "list_releases":
 		var args projectArgs
 		if err := requiredProjectArguments(call.Arguments, &args); err != nil {
 			return nil, err
 		}
+		if err := s.requireProject(ctx, credential, args.ProjectID, "read"); err != nil {
+			return nil, err
+		}
 		return s.listReleases(ctx, args.ProjectID, boundedLimit(args.Limit))
+	case "list_transactions", "list_logs", "list_uptime_monitors", "list_uptime_checks",
+		"list_cron_monitors", "list_cron_checkins", "list_feedback", "list_replays",
+		"list_profiles", "list_metrics", "list_alert_rules", "list_alert_deliveries",
+		"list_artifacts", "list_attachments", "list_deploys", "list_commits",
+		"list_suspect_commits", "list_project_quotas", "list_ingestion_jobs",
+		"list_audit_logs", "get_storage_summary":
+		return s.callObservabilityTool(ctx, credential, call.Name, call.Arguments)
 	default:
 		return nil, fmt.Errorf("unknown tool %q", call.Name)
 	}
@@ -240,6 +323,59 @@ func requiredProjectArguments(raw json.RawMessage, args *projectArgs) error {
 		return errors.New("project_id is required")
 	}
 	return nil
+}
+
+func nowUTC() string {
+	return time.Now().UTC().Format(time.RFC3339Nano)
+}
+
+func (s *Service) requireProject(ctx context.Context, credential *credential, projectID, scope string) error {
+	if !credential.can(scope) {
+		return fmt.Errorf("%s scope required", scope)
+	}
+	if credential.legacy {
+		var exists int
+		if err := s.store.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM projects WHERE id = ?`, projectID).Scan(&exists); err != nil {
+			return err
+		}
+		if exists == 0 {
+			return errors.New("project not found")
+		}
+		return nil
+	}
+	var exists int
+	if err := s.store.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM projects WHERE id = ? AND organization_id = ?`, projectID, credential.organizationID).Scan(&exists); err != nil {
+		return err
+	}
+	if exists == 0 {
+		return errors.New("project not found or not accessible")
+	}
+	return nil
+}
+
+func (s *Service) requireIssue(ctx context.Context, credential *credential, issueID, scope string) (string, error) {
+	var projectID string
+	if err := s.store.DB.QueryRowContext(ctx, `SELECT project_id FROM issues WHERE id = ?`, issueID).Scan(&projectID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", errors.New("issue not found")
+		}
+		return "", err
+	}
+	if err := s.requireProject(ctx, credential, projectID, scope); err != nil {
+		return "", err
+	}
+	return projectID, nil
+}
+
+func (s *Service) recordMutation(ctx context.Context, credential *credential, projectID, action, targetType, targetID string, metadata any) {
+	var organizationID string
+	_ = s.store.DB.QueryRowContext(ctx, `SELECT organization_id FROM projects WHERE id = ?`, projectID).Scan(&organizationID)
+	encoded, _ := json.Marshal(metadata)
+	var actor any
+	if credential.actorUserID != "" {
+		actor = credential.actorUserID
+	}
+	_, _ = s.store.DB.ExecContext(ctx, `INSERT INTO audit_logs(organization_id, project_id, actor_user_id, actor_type, action, target_type, target_id, metadata) VALUES (NULLIF(?, ''), NULLIF(?, ''), ?, 'mcp', ?, ?, ?, ?)`, organizationID, projectID, actor, action, targetType, targetID, encoded)
 }
 
 func boundedLimit(limit int) int {
@@ -282,7 +418,34 @@ func tools() []tool {
 		{Name: "list_releases", Description: "List releases linked to a project with event counts.", InputSchema: objectSchema(map[string]any{
 			"project_id": stringProperty("Project UUID"), "limit": limitProperty,
 		}, "project_id"), Annotations: readOnly},
+		{Name: "list_transactions", Description: "List performance transactions and latency data for a project.", InputSchema: projectLimitSchema(stringProperty, limitProperty), Annotations: readOnly},
+		{Name: "list_logs", Description: "Search structured logs by level or message text.", InputSchema: objectSchema(map[string]any{
+			"project_id": stringProperty("Project UUID"), "level": stringProperty("Optional log level"), "query": stringProperty("Optional message search"), "limit": limitProperty,
+		}, "project_id"), Annotations: readOnly},
+		{Name: "list_uptime_monitors", Description: "List HTTP uptime monitors and their latest state.", InputSchema: projectLimitSchema(stringProperty, limitProperty), Annotations: readOnly},
+		{Name: "list_uptime_checks", Description: "List recent checks and incidents for an uptime monitor.", InputSchema: objectSchema(map[string]any{"project_id": stringProperty("Project UUID"), "monitor_id": stringProperty("Uptime monitor UUID"), "limit": limitProperty}, "project_id", "monitor_id"), Annotations: readOnly},
+		{Name: "list_cron_monitors", Description: "List cron/check-in monitors and current status.", InputSchema: projectLimitSchema(stringProperty, limitProperty), Annotations: readOnly},
+		{Name: "list_cron_checkins", Description: "List recent cron check-ins, optionally for one monitor.", InputSchema: objectSchema(map[string]any{"project_id": stringProperty("Project UUID"), "monitor_id": stringProperty("Optional cron monitor UUID"), "limit": limitProperty}, "project_id"), Annotations: readOnly},
+		{Name: "list_feedback", Description: "List user feedback associated with project events.", InputSchema: projectLimitSchema(stringProperty, limitProperty), Annotations: readOnly},
+		{Name: "list_replays", Description: "List replay segments and correlated errors.", InputSchema: projectLimitSchema(stringProperty, limitProperty), Annotations: readOnly},
+		{Name: "list_profiles", Description: "List profiles and transaction linkage.", InputSchema: projectLimitSchema(stringProperty, limitProperty), Annotations: readOnly},
+		{Name: "list_metrics", Description: "List metric points, optionally filtered by metric name.", InputSchema: objectSchema(map[string]any{"project_id": stringProperty("Project UUID"), "name": stringProperty("Optional metric name"), "limit": limitProperty}, "project_id"), Annotations: readOnly},
+		{Name: "list_alert_rules", Description: "List alert rules and advanced conditions.", InputSchema: projectLimitSchema(stringProperty, limitProperty), Annotations: readOnly},
+		{Name: "list_alert_deliveries", Description: "List recent alert delivery attempts.", InputSchema: projectLimitSchema(stringProperty, limitProperty), Annotations: readOnly},
+		{Name: "list_artifacts", Description: "List source maps and native debug artifacts.", InputSchema: projectLimitSchema(stringProperty, limitProperty), Annotations: readOnly},
+		{Name: "list_attachments", Description: "List event attachments and their metadata.", InputSchema: projectLimitSchema(stringProperty, limitProperty), Annotations: readOnly},
+		{Name: "list_deploys", Description: "List release deploys for a project.", InputSchema: projectLimitSchema(stringProperty, limitProperty), Annotations: readOnly},
+		{Name: "list_commits", Description: "List commits linked to project releases.", InputSchema: projectLimitSchema(stringProperty, limitProperty), Annotations: readOnly},
+		{Name: "list_suspect_commits", Description: "List suspect commits calculated for an issue.", InputSchema: objectSchema(map[string]any{"project_id": stringProperty("Project UUID"), "issue_id": stringProperty("Issue UUID"), "limit": limitProperty}, "project_id", "issue_id"), Annotations: readOnly},
+		{Name: "list_project_quotas", Description: "List category-specific ingestion quotas for a project.", InputSchema: projectLimitSchema(stringProperty, limitProperty), Annotations: readOnly},
+		{Name: "list_ingestion_jobs", Description: "Inspect durable ingestion queue jobs and failures.", InputSchema: objectSchema(map[string]any{"project_id": stringProperty("Project UUID"), "status": stringProperty("Optional pending, processing, done, or dead status"), "limit": limitProperty}, "project_id"), Annotations: readOnly},
+		{Name: "list_audit_logs", Description: "List recent organization audit entries.", InputSchema: objectSchema(map[string]any{"project_id": stringProperty("Optional project UUID"), "limit": limitProperty}), Annotations: readOnly},
+		{Name: "get_storage_summary", Description: "Get organization storage usage, retention, queue, and category totals.", InputSchema: objectSchema(nil), Annotations: readOnly},
 	}
+}
+
+func projectLimitSchema(stringProperty func(string) map[string]any, limitProperty map[string]any) map[string]any {
+	return objectSchema(map[string]any{"project_id": stringProperty("Project UUID"), "limit": limitProperty}, "project_id")
 }
 
 func objectSchema(properties map[string]any, required ...string) map[string]any {
@@ -296,13 +459,19 @@ func objectSchema(properties map[string]any, required ...string) map[string]any 
 	return schema
 }
 
-func (s *Service) listOrganizations(ctx context.Context) (any, error) {
-	rows, err := s.store.DB.QueryContext(ctx, `
+func (s *Service) listOrganizations(ctx context.Context, credential *credential) (any, error) {
+	query := `
 		SELECT o.id, o.slug, o.name,
 		       (SELECT COUNT(*) FROM projects p WHERE p.organization_id = o.id),
 		       (SELECT COUNT(*) FROM issues i JOIN projects p ON p.id = i.project_id WHERE p.organization_id = o.id)
-		FROM organizations o ORDER BY o.name
-	`)
+		FROM organizations o`
+	args := make([]any, 0, 1)
+	if !credential.legacy {
+		query += ` WHERE o.id = ?`
+		args = append(args, credential.organizationID)
+	}
+	query += ` ORDER BY o.name`
+	rows, err := s.store.DB.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -319,14 +488,22 @@ func (s *Service) listOrganizations(ctx context.Context) (any, error) {
 	return items, rows.Err()
 }
 
-func (s *Service) listProjects(ctx context.Context, organizationSlug string) (any, error) {
+func (s *Service) listProjects(ctx context.Context, credential *credential, organizationSlug string) (any, error) {
 	query := `
 		SELECT p.id, p.sentry_id, p.slug, p.name, COALESCE(p.platform, ''), p.public_key, p.created_at, o.id, o.slug, o.name
 		FROM projects p JOIN organizations o ON o.id = p.organization_id`
-	args := make([]any, 0, 1)
+	conditions := make([]string, 0, 2)
+	args := make([]any, 0, 2)
+	if !credential.legacy {
+		conditions = append(conditions, `o.id = ?`)
+		args = append(args, credential.organizationID)
+	}
 	if organizationSlug != "" {
-		query += ` WHERE o.slug = ?`
+		conditions = append(conditions, `o.slug = ?`)
 		args = append(args, organizationSlug)
+	}
+	if len(conditions) > 0 {
+		query += ` WHERE ` + strings.Join(conditions, ` AND `)
 	}
 	query += ` ORDER BY o.name, p.name`
 	rows, err := s.store.DB.QueryContext(ctx, query, args...)

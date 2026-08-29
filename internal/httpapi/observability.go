@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/GhaziBenDahmane/barktrace/internal/auth"
-	"github.com/GhaziBenDahmane/barktrace/internal/uptime"
+	"github.com/barktrace/bark/internal/auth"
+	"github.com/barktrace/bark/internal/uptime"
 	"github.com/google/uuid"
 )
 
@@ -326,12 +326,8 @@ func (s *Server) uptimeChecks(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) canManageProject(r *http.Request, principal *auth.Principal, projectID string) bool {
-	var organizationID string
-	if err := s.store.DB.QueryRowContext(r.Context(), `SELECT organization_id FROM projects WHERE id = ?`, projectID).Scan(&organizationID); err != nil {
-		return false
-	}
-	membership, ok := principal.Membership(organizationID)
-	return ok && (membership.Role == "owner" || membership.Role == "admin")
+	role, ok := s.projectRole(r, principal, projectID)
+	return ok && role == "admin"
 }
 
 func (s *Server) canAccessMonitor(r *http.Request, principal *auth.Principal, monitorID string) bool {

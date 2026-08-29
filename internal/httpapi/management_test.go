@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/GhaziBenDahmane/barktrace/internal/auth"
+	"github.com/barktrace/bark/internal/auth"
 )
 
 func TestIssueUpdateAndCommentCreateActivity(t *testing.T) {

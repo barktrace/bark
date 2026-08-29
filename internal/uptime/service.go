@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/GhaziBenDahmane/barktrace/internal/alerts"
-	"github.com/GhaziBenDahmane/barktrace/internal/store"
+	"github.com/barktrace/bark/internal/alerts"
+	"github.com/barktrace/bark/internal/store"
 	"github.com/google/uuid"
 )
 
@@ -60,6 +60,8 @@ func (s *Service) Run(ctx context.Context) {
 		}
 	}
 }
+
+func (s *Service) RunDue(ctx context.Context) { s.runDue(ctx) }
 
 func (s *Service) ValidateURL(ctx context.Context, raw string) error {
 	parsed, err := url.Parse(strings.TrimSpace(raw))

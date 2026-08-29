@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/GhaziBenDahmane/barktrace/internal/auth"
+	"github.com/barktrace/bark/internal/auth"
 	"github.com/google/uuid"
 )
 
@@ -42,7 +42,7 @@ func (s *Server) issueDetail(w http.ResponseWriter, r *http.Request) {
 
 	eventRows, err := s.store.DB.QueryContext(r.Context(), `
 		SELECT e.id, e.event_id, e.timestamp, e.environment, e.platform, e.level,
-		       COALESCE(rel.version, ''), e.payload
+		       COALESCE(rel.version, ''), COALESCE(e.processed_payload, e.payload)
 		FROM events e LEFT JOIN releases rel ON rel.id = e.release_id
 		WHERE e.issue_id = ? ORDER BY e.timestamp DESC LIMIT 100
 	`, issueID)
@@ -90,7 +90,7 @@ func (s *Server) eventDetail(w http.ResponseWriter, r *http.Request) {
 	var payload json.RawMessage
 	err := s.store.DB.QueryRowContext(r.Context(), `
 		SELECT e.project_id, e.issue_id, e.event_id, e.timestamp, e.environment, e.platform,
-		       e.level, COALESCE(r.version, ''), e.payload
+		       e.level, COALESCE(r.version, ''), COALESCE(e.processed_payload, e.payload)
 		FROM events e LEFT JOIN releases r ON r.id = e.release_id
 		WHERE e.id = ?
 	`, id).Scan(&projectID, &issueID, &eventID, &timestamp, &environment, &platform, &level, &release, &payload)
@@ -322,18 +322,19 @@ func (s *Server) issueProject(r *http.Request, issueID string) (string, bool) {
 }
 
 func (s *Server) userCanAccessProject(r *http.Request, userID, projectID string) bool {
-	var count int
-	_ = s.store.DB.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM organization_memberships m JOIN projects p ON p.organization_id = m.organization_id WHERE m.user_id = ? AND p.id = ?`, userID, projectID).Scan(&count)
-	return count > 0
+	var organizationRole, projectRole string
+	err := s.store.DB.QueryRowContext(r.Context(), `
+		SELECT m.role, COALESCE(pm.role, '')
+		FROM projects p JOIN organization_memberships m ON m.organization_id = p.organization_id AND m.user_id = ?
+		LEFT JOIN project_memberships pm ON pm.project_id = p.id AND pm.user_id = m.user_id
+		WHERE p.id = ?
+	`, userID, projectID).Scan(&organizationRole, &projectRole)
+	return err == nil && organizationRole != "" && projectRole != "none"
 }
 
 func (s *Server) canWriteProject(r *http.Request, principal *auth.Principal, projectID string) bool {
-	var organizationID string
-	if err := s.store.DB.QueryRowContext(r.Context(), `SELECT organization_id FROM projects WHERE id = ?`, projectID).Scan(&organizationID); err != nil {
-		return false
-	}
-	membership, ok := principal.Membership(organizationID)
-	return ok && membership.Role != "viewer"
+	role, ok := s.projectRole(r, principal, projectID)
+	return ok && (role == "admin" || role == "member")
 }
 
 func nullString(value sql.NullString) any {

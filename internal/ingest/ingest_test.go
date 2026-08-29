@@ -11,8 +11,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/GhaziBenDahmane/barktrace/internal/store"
 	"github.com/andybalholm/brotli"
+	"github.com/barktrace/bark/internal/store"
 	"github.com/klauspost/compress/zstd"
 )
 
@@ -186,6 +186,52 @@ func TestEnvelopeStoresSessionsAndNormalizedSpans(t *testing.T) {
 	_ = st.DB.QueryRow(`SELECT COUNT(*) FROM spans WHERE trace_id = 'trace-one' AND transaction_id IS NOT NULL`).Scan(&spans)
 	if sessions != 1 || spans != 1 {
 		t.Fatalf("sessions=%d spans=%d, want 1/1", sessions, spans)
+	}
+}
+
+func TestEnvelopeStoresProductPayloadsAndAttachments(t *testing.T) {
+	st, _ := testProject(t)
+	service := New(st, 20<<20)
+	event := `{"event_id":"abababababababababababababababab","message":"with attachment"}`
+	attachment := "diagnostic text"
+	feedback := `{"event_id":"abababababababababababababababab","name":"Ada","email":"ada@example.com","comments":"This broke checkout"}`
+	body := fmt.Sprintf("{}\n{\"type\":\"event\",\"length\":%d}\n%s\n{\"type\":\"attachment\",\"length\":%d,\"filename\":\"debug.txt\",\"content_type\":\"text/plain\"}\n%s\n{\"type\":\"user_report\",\"length\":%d}\n%s\n", len(event), event, len(attachment), attachment, len(feedback), feedback)
+	request := httptest.NewRequest(http.MethodPost, "/api/1/envelope/?sentry_key=public-key", bytes.NewBufferString(body))
+	response := httptest.NewRecorder()
+	service.Envelope(response, request, "1")
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", response.Code, response.Body.String())
+	}
+	var attachments, reports, blobs int
+	_ = st.DB.QueryRow(`SELECT COUNT(*) FROM event_attachments`).Scan(&attachments)
+	_ = st.DB.QueryRow(`SELECT COUNT(*) FROM user_feedback`).Scan(&reports)
+	_ = st.DB.QueryRow(`SELECT COUNT(*) FROM blobs`).Scan(&blobs)
+	if attachments != 1 || reports != 1 || blobs != 1 {
+		t.Fatalf("attachments=%d feedback=%d blobs=%d", attachments, reports, blobs)
+	}
+}
+
+func TestStoresCheckInsReplaysProfilesAndMetrics(t *testing.T) {
+	st, project := testProject(t)
+	service := New(st, 20<<20)
+	if err := service.StoreCheckIn(context.Background(), project, []byte(`{"check_in_id":"check-1","monitor_slug":"nightly","status":"ok","duration":2.5,"contexts":{"monitor_config":{"schedule":{"type":"interval","value":[1,"hour"]},"checkin_margin":5,"max_runtime":30,"timezone":"UTC"}}}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.StoreReplayEvent(context.Background(), project, []byte(`{"replay_id":"12121212121212121212121212121212","segment_id":0,"timestamp":"2026-08-29T10:05:00Z","replay_start_timestamp":"2026-08-29T10:00:00Z","error_ids":["one"]}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.StoreProfile(context.Background(), project, []byte(`{"profile_id":"profile-one","platform":"python","timestamp":"2026-08-29T10:00:00Z","duration_ns":250000000}`)); err != nil {
+		t.Fatal(err)
+	}
+	count, err := service.StoreMetrics(context.Background(), project, []byte(`{"buckets":[{"name":"checkout.duration","type":"distribution","value":[10,20,30],"unit":"millisecond","timestamp":1787997600}]}`))
+	if err != nil || count != 1 {
+		t.Fatalf("metrics = %d, %v", count, err)
+	}
+	for table, want := range map[string]int{"cron_monitors": 1, "cron_checkins": 1, "replays": 1, "profiles": 1, "metric_points": 1} {
+		var got int
+		if err := st.DB.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&got); err != nil || got != want {
+			t.Fatalf("%s count = %d, %v", table, got, err)
+		}
 	}
 }
 

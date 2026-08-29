@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/GhaziBenDahmane/barktrace/internal/store"
+	"github.com/barktrace/bark/internal/store"
 )
 
 type Service struct{ store *store.Store }
@@ -55,6 +55,21 @@ var targets = map[string]cleanupTarget{
 		countQuery: `SELECT COUNT(*) FROM uptime_checks WHERE monitor_id IN (SELECT m.id FROM uptime_monitors m JOIN projects p ON p.id = m.project_id WHERE p.organization_id = ?) AND checked_at < ?`,
 		deleteSQL:  `DELETE FROM uptime_checks WHERE monitor_id IN (SELECT m.id FROM uptime_monitors m JOIN projects p ON p.id = m.project_id WHERE p.organization_id = ?) AND checked_at < ?`,
 	},
+	"replays": {
+		name:       "replays",
+		countQuery: `SELECT COUNT(*) FROM replays WHERE project_id IN (SELECT id FROM projects WHERE organization_id = ?) AND finished_at < ?`,
+		deleteSQL:  `DELETE FROM replays WHERE project_id IN (SELECT id FROM projects WHERE organization_id = ?) AND finished_at < ?`,
+	},
+	"profiles": {
+		name:       "profiles",
+		countQuery: `SELECT COUNT(*) FROM profiles WHERE project_id IN (SELECT id FROM projects WHERE organization_id = ?) AND started_at < ?`,
+		deleteSQL:  `DELETE FROM profiles WHERE project_id IN (SELECT id FROM projects WHERE organization_id = ?) AND started_at < ?`,
+	},
+	"metrics": {
+		name:       "metrics",
+		countQuery: `SELECT COUNT(*) FROM metric_points WHERE project_id IN (SELECT id FROM projects WHERE organization_id = ?) AND timestamp < ?`,
+		deleteSQL:  `DELETE FROM metric_points WHERE project_id IN (SELECT id FROM projects WHERE organization_id = ?) AND timestamp < ?`,
+	},
 }
 
 func New(st *store.Store) *Service { return &Service{store: st} }
@@ -77,6 +92,8 @@ func (s *Service) Run(ctx context.Context) {
 		}
 	}
 }
+
+func (s *Service) CleanupAll(ctx context.Context) { s.cleanupAll(ctx) }
 
 func (s *Service) cleanupAll(ctx context.Context) {
 	rows, err := s.store.DB.QueryContext(ctx, `SELECT id, retention_days FROM organizations`)
@@ -109,7 +126,7 @@ func (s *Service) cleanupAll(ctx context.Context) {
 func CleanupOrganization(ctx context.Context, db *sql.DB, organizationID string, cutoff time.Time, dataTypes []string, dryRun bool) (CleanupResult, error) {
 	selected := make([]cleanupTarget, 0)
 	if len(dataTypes) == 0 {
-		dataTypes = []string{"events", "transactions", "logs", "sessions", "spans", "uptime"}
+		dataTypes = []string{"events", "transactions", "logs", "sessions", "spans", "uptime", "replays", "profiles", "metrics"}
 	}
 	for _, name := range dataTypes {
 		target, ok := targets[name]

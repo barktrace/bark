@@ -10,7 +10,8 @@ dashboard at `/ui`.
 
 The current foundation includes:
 
-- SQLite with WAL mode and one bounded connection;
+- SQLite with WAL mode and one bounded connection, plus optional replicated
+  libSQL metadata for multi-node deployments;
 - generic OpenID Connect login with PKCE, state, nonce, verified-email account
   linking, and automatic organization provisioning;
 - organization memberships and project-scoped access;
@@ -22,8 +23,16 @@ The current foundation includes:
 - structured log ingestion, filtering, and trace/release correlation;
 - scheduled HTTP uptime monitors with check and incident history;
 - webhook and Slack alert rules for new issues, regressions, and downtime;
+- SMTP email delivery, cron/metric/feedback triggers, conditions, and cooldowns;
+- cron check-ins, attachments, user feedback, replay, profile, and metric ingestion;
+- source maps, JavaScript rewriting, ELF/Breakpad debug files, and reprocessing;
+- release commits, deploy metadata, code mappings, and suspect commits;
+- `sentry-cli` build and snapshot upload/download workflows;
+- a durable leased ingestion queue with retries, dead letters, and category quotas;
+- organization and project roles plus a queryable mutation audit log;
 - configurable retention, manual cleanup previews, and storage reporting;
-- an authenticated Streamable HTTP MCP server for issue investigation;
+- an organization-scoped Streamable HTTP MCP server with 30 investigation tools;
+- optional S3-compatible shared blob storage and leased background workers;
 - one final Docker image containing the API and compiled Astro dashboard.
 
 The dashboard lists projects, grouped issues, event counts, and the first and
@@ -44,6 +53,7 @@ Detailed guides:
 
 - [Configuration](docs/configuration.md)
 - [Docker, Dokploy, backup, and upgrades](docs/deployment.md)
+- [Testing and load gates](docs/testing.md)
 - [MCP server and client setup](docs/mcp.md)
 - [Sentry SDK compatibility](docs/sentry-compatibility.md)
 - [Performance, logs, and uptime](docs/observability.md)
@@ -83,8 +93,9 @@ volume to `/data`, configure an HTTP health check on `/readyz`, and add the
 variables from `.env.example`. No PostgreSQL or second container is required.
 
 An importable production parameter template is available at
-`deploy/dokploy.env.example`. Keep one replica: SQLite does not support several
-Barktrace containers sharing the same volume.
+`deploy/dokploy.env.example`. Keep one replica with the default local database.
+For multiple replicas, use one shared replicated libSQL database and S3 blob
+storage; Barktrace remains SQLite-based and does not require PostgreSQL.
 
 The default runtime budget is `128 MiB`, with Go's soft memory limit set to
 `96 MiB`. A local production-binary probe measured roughly `13.3 MiB` idle RSS.
@@ -93,11 +104,11 @@ copying the live WAL file by itself.
 
 ## Production-readiness boundary
 
-The current version is functional and deployable as a small, single-node
-observability service. It is not complete Sentry parity.
+The current version is functional and deployable with either local SQLite on
+one node or replicated libSQL and S3 across multiple nodes. It is not complete
+Sentry parity.
 
-Check-ins, attachments, profiles, replays, metrics, email delivery,
-source maps/symbolication, commit metadata, durable ingestion queues,
-high availability, and per-tenant MCP credentials remain to be implemented.
-Unsupported envelope items are
-acknowledged and recorded as ingestion outcomes so SDKs do not retry forever.
+The common SDK and `sentry-cli` self-hosted workflows are implemented, but this
+is not a drop-in implementation of every Sentry SaaS endpoint. Discover-style
+ad-hoc querying, custom dashboards, deep replay/profile analysis, and Relay
+remain outside the current boundary.

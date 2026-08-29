@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"bufio"
+	"bytes"
 	"compress/flate"
 	"compress/gzip"
 	"context"
@@ -14,14 +15,17 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/GhaziBenDahmane/barktrace/internal/alerts"
-	"github.com/GhaziBenDahmane/barktrace/internal/store"
 	"github.com/andybalholm/brotli"
+	"github.com/barktrace/bark/internal/alerts"
+	"github.com/barktrace/bark/internal/quota"
+	"github.com/barktrace/bark/internal/store"
+	"github.com/barktrace/bark/internal/symbolicate"
 	"github.com/google/uuid"
 	"github.com/klauspost/compress/zstd"
 )
@@ -42,12 +46,16 @@ type rateWindow struct {
 }
 
 type envelopeHeader struct {
-	EventID string `json:"event_id"`
+	EventID  string `json:"event_id"`
+	ReplayID string `json:"replay_id"`
 }
 
 type itemHeader struct {
-	Type   string `json:"type"`
-	Length int64  `json:"length"`
+	Type           string `json:"type"`
+	Length         int64  `json:"length"`
+	Filename       string `json:"filename"`
+	ContentType    string `json:"content_type"`
+	AttachmentType string `json:"attachment_type"`
 }
 
 type eventPayload struct {
@@ -183,7 +191,11 @@ func (s *Service) Envelope(w http.ResponseWriter, r *http.Request, projectID str
 			continue
 		}
 		var item itemHeader
-		if err := json.Unmarshal(line, &item); err != nil || item.Length < 0 || item.Length > maxEventBytes {
+		maxItemBytes := s.maxEnvelopeBytes
+		if maxItemBytes <= 0 {
+			maxItemBytes = maxEventBytes
+		}
+		if err := json.Unmarshal(line, &item); err != nil || item.Length < 0 || item.Length > maxItemBytes {
 			writeError(w, http.StatusRequestEntityTooLarge, "invalid envelope item")
 			return
 		}
@@ -195,38 +207,34 @@ func (s *Service) Envelope(w http.ResponseWriter, r *http.Request, projectID str
 		if next, _ := buffered.Peek(1); len(next) == 1 && next[0] == '\n' {
 			_, _ = buffered.ReadByte()
 		}
-		switch item.Type {
-		case "event", "security":
-			id, err := s.StoreEvent(r.Context(), project, payload, envelope.EventID)
-			if err != nil {
-				writeError(w, http.StatusBadRequest, "event was rejected")
+		category := itemCategory(item.Type)
+		decision, quotaErr := quota.Check(r.Context(), s.store.DB, project.ID, category, item.Length, time.Now().UTC())
+		if quotaErr != nil {
+			writeError(w, http.StatusInternalServerError, "could not check project quota")
+			return
+		}
+		if !decision.Allowed {
+			if decision.Reason == "item_size" {
+				writeError(w, http.StatusRequestEntityTooLarge, "item exceeds category size quota")
+			} else {
+				writeCategoryRateLimited(w, category, decision.RetryAfter)
+			}
+			return
+		}
+		result, processingErr := s.enqueueAndProcess(r.Context(), project, item, envelope.EventID, envelope.ReplayID, acceptedID, payload)
+		if result.JobID != "" {
+			w.Header().Set("X-Barktrace-Ingestion-Job", result.JobID)
+		}
+		if processingErr != nil {
+			if !result.Queued {
+				writeError(w, http.StatusServiceUnavailable, "could not persist envelope item")
 				return
 			}
-			acceptedID = id
-		case "transaction":
-			id, err := s.StoreTransaction(r.Context(), project, payload, envelope.EventID)
-			if err != nil {
-				writeError(w, http.StatusBadRequest, "transaction was rejected")
-				return
-			}
-			acceptedID = id
-		case "log", "logs":
-			if _, err := s.StoreLogs(r.Context(), project, payload); err != nil {
-				writeError(w, http.StatusBadRequest, "logs were rejected")
-				return
-			}
-		case "session":
-			if err := s.StoreSession(r.Context(), project, payload); err != nil {
-				writeError(w, http.StatusBadRequest, "session was rejected")
-				return
-			}
-		case "span", "spans":
-			if _, err := s.StoreSpans(r.Context(), project, payload); err != nil {
-				writeError(w, http.StatusBadRequest, "spans were rejected")
-				return
-			}
-		default:
-			_, _ = s.store.DB.ExecContext(r.Context(), `INSERT INTO ingestion_outcomes(project_id, category, outcome, reason) VALUES (?, ?, 'accepted', 'processor pending')`, project.ID, item.Type)
+			slog.Warn("envelope item queued for retry", "job_id", result.JobID, "type", item.Type, "error", processingErr)
+			continue
+		}
+		if result.ID != "" {
+			acceptedID = result.ID
 		}
 	}
 	writeJSON(w, http.StatusOK, Result{ID: acceptedID})
@@ -250,12 +258,26 @@ func (s *Service) Logs(w http.ResponseWriter, r *http.Request, projectID string)
 		writeError(w, http.StatusRequestEntityTooLarge, "logs payload is too large")
 		return
 	}
-	count, err := s.StoreLogs(r.Context(), project, payload)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "logs were rejected")
+	if decision, err := quota.Check(r.Context(), s.store.DB, project.ID, "log", int64(len(payload)), time.Now().UTC()); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not check project quota")
+		return
+	} else if !decision.Allowed {
+		if decision.Reason == "item_size" {
+			writeError(w, http.StatusRequestEntityTooLarge, "logs exceed category size quota")
+		} else {
+			writeCategoryRateLimited(w, "log", decision.RetryAfter)
+		}
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"accepted": count})
+	result, err := s.enqueueAndProcess(r.Context(), project, itemHeader{Type: "logs", Length: int64(len(payload)), ContentType: "application/json"}, "", "", "", payload)
+	if err != nil && !result.Queued {
+		writeError(w, http.StatusServiceUnavailable, "could not persist logs")
+		return
+	}
+	if result.JobID != "" {
+		w.Header().Set("X-Barktrace-Ingestion-Job", result.JobID)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"accepted": result.Count, "queued": err != nil})
 }
 
 func (s *Service) Store(w http.ResponseWriter, r *http.Request, projectID string) {
@@ -274,12 +296,26 @@ func (s *Service) Store(w http.ResponseWriter, r *http.Request, projectID string
 		writeError(w, http.StatusRequestEntityTooLarge, "event is too large")
 		return
 	}
-	id, err := s.StoreEvent(r.Context(), project, payload, "")
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "event was rejected")
+	if decision, err := quota.Check(r.Context(), s.store.DB, project.ID, "error", int64(len(payload)), time.Now().UTC()); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not check project quota")
+		return
+	} else if !decision.Allowed {
+		if decision.Reason == "item_size" {
+			writeError(w, http.StatusRequestEntityTooLarge, "event exceeds category size quota")
+		} else {
+			writeCategoryRateLimited(w, "error", decision.RetryAfter)
+		}
 		return
 	}
-	writeJSON(w, http.StatusOK, Result{ID: id})
+	result, err := s.enqueueAndProcess(r.Context(), project, itemHeader{Type: "event", Length: int64(len(payload)), ContentType: "application/json"}, "", "", "", payload)
+	if err != nil && !result.Queued {
+		writeError(w, http.StatusServiceUnavailable, "could not persist event")
+		return
+	}
+	if result.JobID != "" {
+		w.Header().Set("X-Barktrace-Ingestion-Job", result.JobID)
+	}
+	writeJSON(w, http.StatusOK, Result{ID: result.ID})
 }
 
 func (s *Service) allow(projectID string) bool {
@@ -306,6 +342,44 @@ func writeRateLimited(w http.ResponseWriter) {
 	w.Header().Set("Retry-After", "60")
 	w.Header().Set("X-Sentry-Rate-Limits", "60:error:project_rate_limit")
 	writeError(w, http.StatusTooManyRequests, "project ingestion rate limit exceeded")
+}
+
+func writeCategoryRateLimited(w http.ResponseWriter, category string, retryAfter int) {
+	if retryAfter < 1 {
+		retryAfter = 60
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+	w.Header().Set("X-Sentry-Rate-Limits", strconv.Itoa(retryAfter)+":"+category+":project_quota")
+	writeError(w, http.StatusTooManyRequests, "project "+category+" quota exceeded")
+}
+
+func itemCategory(itemType string) string {
+	switch itemType {
+	case "event", "security":
+		return "error"
+	case "transaction":
+		return "transaction"
+	case "log", "logs":
+		return "log"
+	case "session":
+		return "session"
+	case "span", "spans":
+		return "span"
+	case "attachment":
+		return "attachment"
+	case "user_report", "feedback":
+		return "feedback"
+	case "replay_event", "replay_recording":
+		return "replay"
+	case "profile", "profile_chunk":
+		return "profile"
+	case "metric_buckets", "metrics", "statsd":
+		return "metric"
+	case "check_in":
+		return "check_in"
+	default:
+		return itemType
+	}
 }
 
 type Project struct {
@@ -383,15 +457,27 @@ func (s *Service) StoreEvent(ctx context.Context, project Project, raw []byte, e
 	if err != nil {
 		return "", err
 	}
+	eventInternalID := uuid.NewString()
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO events(id, event_id, project_id, issue_id, release_id, environment, platform, level, timestamp, payload)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, uuid.NewString(), eventID, project.ID, issueID, nullable(releaseID), event.Environment, event.Platform, level, timestamp, raw)
+	`, eventInternalID, eventID, project.ID, issueID, nullable(releaseID), event.Environment, event.Platform, level, timestamp, raw)
 	if err != nil {
 		return "", err
 	}
 	if err := tx.Commit(); err != nil {
 		return "", err
+	}
+	processed, changed, symbolicationErr := symbolicate.ProcessEvent(ctx, s.store, project.ID, releaseID, raw)
+	if symbolicationErr != nil {
+		slog.Warn("symbolicate event", "error", symbolicationErr, "project_id", project.ID, "event_id", eventID)
+	} else if changed {
+		if _, err := s.store.DB.ExecContext(ctx, `UPDATE events SET processed_payload = ? WHERE id = ?`, processed, eventInternalID); err != nil {
+			slog.Warn("store symbolicated event", "error", err, "event_id", eventID)
+		}
+	}
+	if releaseID != "" {
+		linkSuspectCommits(ctx, s.store.DB, issueID, releaseID, raw)
 	}
 	trigger := ""
 	if !issueExists {
@@ -405,6 +491,39 @@ func (s *Service) StoreEvent(ctx context.Context, project Project, raw []byte, e
 		}
 	}
 	return eventID, nil
+}
+
+func linkSuspectCommits(ctx context.Context, db *sql.DB, issueID, releaseID string, raw []byte) {
+	rows, err := db.QueryContext(ctx, `SELECT c.id, cf.filename FROM release_commits rc JOIN commits c ON c.id = rc.commit_id LEFT JOIN commit_files cf ON cf.commit_id = c.id WHERE rc.release_id = ? ORDER BY rc.sequence DESC LIMIT 500`, releaseID)
+	if err != nil {
+		return
+	}
+	type candidate struct {
+		id, filename string
+	}
+	candidates := make([]candidate, 0)
+	for rows.Next() {
+		var item candidate
+		if rows.Scan(&item.id, &item.filename) == nil {
+			candidates = append(candidates, item)
+		}
+	}
+	_ = rows.Close()
+	seen := make(map[string]bool)
+	for index, item := range candidates {
+		if seen[item.id] {
+			continue
+		}
+		score, reason := 10, "recent release commit"
+		filename := strings.TrimSpace(item.filename)
+		if filename != "" && (bytes.Contains(raw, []byte(filename)) || bytes.Contains(raw, []byte(path.Base(filename)))) {
+			score, reason = 100, "changed a file present in the stack trace"
+		} else if index > 4 {
+			continue
+		}
+		seen[item.id] = true
+		_, _ = db.ExecContext(ctx, `INSERT INTO issue_suspect_commits(issue_id, commit_id, score, reason) VALUES (?, ?, ?, ?) ON CONFLICT(issue_id, commit_id) DO UPDATE SET score = MAX(score, excluded.score), reason = CASE WHEN excluded.score > score THEN excluded.reason ELSE reason END`, issueID, item.id, score, reason)
+	}
 }
 
 func (s *Service) StoreTransaction(ctx context.Context, project Project, raw []byte, envelopeEventID string) (string, error) {

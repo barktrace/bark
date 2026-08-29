@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/GhaziBenDahmane/barktrace/internal/config"
-	"github.com/GhaziBenDahmane/barktrace/internal/store"
+	"github.com/barktrace/bark/internal/config"
+	"github.com/barktrace/bark/internal/store"
 )
 
 func TestSafeReturnTo(t *testing.T) {

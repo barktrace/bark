@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/GhaziBenDahmane/barktrace/internal/auth"
-	"github.com/GhaziBenDahmane/barktrace/internal/maintenance"
+	"github.com/barktrace/bark/internal/auth"
+	"github.com/barktrace/bark/internal/maintenance"
 )
 
 func (s *Server) storageUsage(w http.ResponseWriter, r *http.Request) {
@@ -59,7 +59,24 @@ func (s *Server) storageUsage(w http.ResponseWriter, r *http.Request) {
 	var pageCount, pageSize int64
 	_ = s.store.DB.QueryRowContext(r.Context(), `PRAGMA page_count`).Scan(&pageCount)
 	_ = s.store.DB.QueryRowContext(r.Context(), `PRAGMA page_size`).Scan(&pageSize)
-	writeJSON(w, http.StatusOK, map[string]any{"retention_days": retentionDays, "database_bytes": pageCount * pageSize, "totals": totals, "projects": projects})
+	queue := map[string]int64{"pending": 0, "processing": 0, "dead": 0, "payload_bytes": 0}
+	queueRows, err := s.store.DB.QueryContext(r.Context(), `
+		SELECT j.status, COUNT(*), COALESCE(SUM(b.size), 0)
+		FROM ingestion_jobs j JOIN projects p ON p.id = j.project_id LEFT JOIN blobs b ON b.id = j.blob_id
+		WHERE p.organization_id = ? AND j.status != 'done' GROUP BY j.status
+	`, organizationID)
+	if err == nil {
+		for queueRows.Next() {
+			var status string
+			var count, size int64
+			if queueRows.Scan(&status, &count, &size) == nil {
+				queue[status] = count
+				queue["payload_bytes"] += size
+			}
+		}
+		_ = queueRows.Close()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"retention_days": retentionDays, "database_bytes": pageCount * pageSize, "totals": totals, "ingestion_queue": queue, "projects": projects})
 }
 
 func (s *Server) updateRetention(w http.ResponseWriter, r *http.Request) {
