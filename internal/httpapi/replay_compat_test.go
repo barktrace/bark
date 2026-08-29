@@ -6,9 +6,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/barktrace/bark/internal/ingest"
+	"github.com/barktrace/bark/internal/maintenance"
 )
 
 func TestSentryReplaySearchCorrelationSegmentsAndDelete(t *testing.T) {
@@ -23,7 +25,7 @@ func TestSentryReplaySearchCorrelationSegmentsAndDelete(t *testing.T) {
 	if err := service.StoreReplayEvent(context.Background(), project, []byte(`{"replay_id":"`+replayID+`","segment_id":0,"timestamp":"2026-08-29T10:05:00Z","replay_start_timestamp":"2026-08-29T10:00:00Z","environment":"production","release":"app@1.0","urls":["https://example.com/checkout"],"user":{"id":"customer-1"},"error_ids":["`+eventID+`"]}`)); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.StoreReplayRecording(context.Background(), project, replayID, []byte(`{"replay_id":"`+replayID+`","segment_id":0}`+"\n"+`[{"type":2},{"type":3,"timestamp":1787997600200,"data":{"source":2,"type":2,"id":42}}]`)); err != nil {
+	if err := service.StoreReplayRecording(context.Background(), project, replayID, []byte(`{"replay_id":"`+replayID+`","segment_id":0}`+"\n"+`[{"type":2,"timestamp":1787997600000,"data":{"node":{"type":0,"id":1,"childNodes":[{"type":2,"id":42,"tagName":"button","attributes":{"id":"checkout","class":"primary"},"childNodes":[]}]}}},{"type":3,"timestamp":1787997600200,"data":{"source":2,"type":2,"id":42}},{"type":3,"timestamp":1787997600500,"data":{"source":2,"type":2,"id":42}},{"type":3,"timestamp":1787997600900,"data":{"source":2,"type":2,"id":42}},{"type":3,"timestamp":1787997601000,"data":{"source":0,"adds":[],"removes":[],"texts":[],"attributes":[]}}]`)); err != nil {
 		t.Fatal(err)
 	}
 	var legacyIssueID int64
@@ -50,8 +52,17 @@ func TestSentryReplaySearchCorrelationSegmentsAndDelete(t *testing.T) {
 	detail.SetPathValue("replay_id", replayID)
 	response = httptest.NewRecorder()
 	server.sentryReplayDetail(response, detail)
-	if response.Code != http.StatusOK || !containsAll(response.Body.String(), `"data":{`, `"duration":300`, `"count_errors":1`, `"releases":["app@1.0"]`) {
+	if response.Code != http.StatusOK || !containsAll(response.Body.String(), `"data":{`, `"duration":300`, `"count_errors":1`, `"count_rage_clicks":3`, `"count_dead_clicks":0`, `"releases":["app@1.0"]`) {
 		t.Fatalf("replay detail status=%d body=%s", response.Code, response.Body.String())
+	}
+	viewers := principalRequest(t, principal, http.MethodGet, "/api/0/projects/org/app/replays/"+replayID+"/viewed-by/", "")
+	viewers.SetPathValue("org_slug", "org")
+	viewers.SetPathValue("project_slug", "app")
+	viewers.SetPathValue("replay_id", replayID)
+	response = httptest.NewRecorder()
+	server.sentryReplayViewedBy(response, viewers)
+	if response.Code != http.StatusOK || !containsAll(response.Body.String(), `"viewed_by":[`, `"email":"user@example.com"`) {
+		t.Fatalf("replay viewers status=%d body=%s", response.Code, response.Body.String())
 	}
 
 	segments := principalRequest(t, principal, http.MethodGet, "/api/0/projects/org/app/replays/"+replayID+"/recording-segments/", "")
@@ -60,7 +71,7 @@ func TestSentryReplaySearchCorrelationSegmentsAndDelete(t *testing.T) {
 	segments.SetPathValue("replay_id", replayID)
 	response = httptest.NewRecorder()
 	server.sentryReplaySegments(response, segments)
-	if response.Code != http.StatusOK || !containsAll(response.Body.String(), `[[{"type":2}`, `"id":42`) {
+	if response.Code != http.StatusOK || !containsAll(response.Body.String(), `[[{"type":2,`, `"id":42`) {
 		t.Fatalf("replay segments status=%d body=%s", response.Code, response.Body.String())
 	}
 	segment := principalRequest(t, principal, http.MethodGet, "/api/0/projects/org/app/replays/"+replayID+"/recording-segments/0/", "")
@@ -81,6 +92,13 @@ func TestSentryReplaySearchCorrelationSegmentsAndDelete(t *testing.T) {
 	server.sentryReplayClicks(response, clicks)
 	if response.Code != http.StatusOK || !containsAll(response.Body.String(), `"node_id":42`, `"timestamp":"2026-08-29T10:00:00.2Z"`) {
 		t.Fatalf("replay clicks status=%d body=%s", response.Code, response.Body.String())
+	}
+	selectors := principalRequest(t, principal, http.MethodGet, "/api/0/organizations/org/replay-selectors/?project=1&environment=production", "")
+	selectors.SetPathValue("org_slug", "org")
+	response = httptest.NewRecorder()
+	server.sentryReplaySelectors(response, selectors)
+	if response.Code != http.StatusOK || !containsAll(response.Body.String(), `"dom_element":"button#checkout.primary"`, `"count_rage_clicks":3`, `"project_id":"1"`) {
+		t.Fatalf("replay selectors status=%d body=%s", response.Code, response.Body.String())
 	}
 	count := principalRequest(t, principal, http.MethodGet, "/api/0/organizations/org/replay-count/?data_source=events", "")
 	count.SetPathValue("org_slug", "org")
@@ -104,7 +122,7 @@ func TestSentryReplaySearchCorrelationSegmentsAndDelete(t *testing.T) {
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("delete replay status=%d body=%s", response.Code, response.Body.String())
 	}
-	for table, want := range map[string]int{"replays": 0, "replay_error_links": 0, "blobs": 0, "blob_deletion_queue": 0} {
+	for table, want := range map[string]int{"replays": 0, "replay_error_links": 0, "replay_views": 0, "replay_clicks": 0, "blobs": 0, "blob_deletion_queue": 0} {
 		var got int
 		if err := server.store.DB.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&got); err != nil || got != want {
 			t.Fatalf("%s count=%d want=%d err=%v", table, got, want, err)
@@ -113,6 +131,76 @@ func TestSentryReplaySearchCorrelationSegmentsAndDelete(t *testing.T) {
 	var audits int
 	if err := server.store.DB.QueryRow(`SELECT COUNT(*) FROM audit_logs WHERE action = 'delete_replay' AND target_id = ?`, replayID).Scan(&audits); err != nil || audits != 1 {
 		t.Fatalf("delete replay audits=%d err=%v", audits, err)
+	}
+}
+
+func TestSentryReplayDeletionJobIsDurableAndFiltered(t *testing.T) {
+	server, principal := managementFixture(t)
+	service := ingest.New(server.store, 20<<20)
+	project := ingest.Project{ID: "project", OrganizationID: "org", PublicKey: "key"}
+	for _, replay := range []struct {
+		id, environment string
+	}{
+		{"11111111111111111111111111111111", "production"},
+		{"22222222222222222222222222222222", "staging"},
+	} {
+		payload := `{"replay_id":"` + replay.id + `","segment_id":0,"timestamp":"2026-08-29T10:05:00Z","replay_start_timestamp":"2026-08-29T10:00:00Z","environment":"` + replay.environment + `","urls":["https://example.com/checkout"]}`
+		if err := service.StoreReplayEvent(context.Background(), project, []byte(payload)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := server.store.DB.Exec(`
+		INSERT INTO replay_views(project_id, replay_id, user_id) VALUES ('project', '11111111111111111111111111111111', ?), ('project', '22222222222222222222222222222222', ?);
+		INSERT INTO replay_clicks(project_id, replay_id, segment_id, sequence, node_id, timestamp, dom_element, element, is_dead) VALUES
+			('project', '11111111111111111111111111111111', 0, 0, 1, '2026-08-29T10:01:00Z', 'button.production', '{}', 1),
+			('project', '22222222222222222222222222222222', 0, 0, 2, '2026-08-29T10:01:00Z', 'button.staging', '{}', 1);
+	`, principal.UserID, principal.UserID); err != nil {
+		t.Fatal(err)
+	}
+	create := principalRequest(t, principal, http.MethodPost, "/api/0/projects/org/app/replays/jobs/delete/", `{"data":{"rangeStart":"2026-08-29T00:00:00Z","rangeEnd":"2026-08-30T00:00:00Z","environments":["production"],"query":"checkout"}}`)
+	create.SetPathValue("org_slug", "org")
+	create.SetPathValue("project_slug", "app")
+	response := httptest.NewRecorder()
+	server.sentryReplayDeletionJob(response, create)
+	if response.Code != http.StatusCreated || !strings.Contains(response.Body.String(), `"status":"pending"`) {
+		t.Fatalf("create deletion job status=%d body=%s", response.Code, response.Body.String())
+	}
+	var created struct {
+		Data struct {
+			ID int64 `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil || created.Data.ID <= 0 {
+		t.Fatalf("decode deletion job: %#v err=%v", created, err)
+	}
+	maintenance.New(server.store).RunReplayDeletionJobs(context.Background())
+	status := principalRequest(t, principal, http.MethodGet, "/api/0/projects/org/app/replays/jobs/delete/"+strconv.FormatInt(created.Data.ID, 10)+"/", "")
+	status.SetPathValue("org_slug", "org")
+	status.SetPathValue("project_slug", "app")
+	status.SetPathValue("job_id", strconv.FormatInt(created.Data.ID, 10))
+	response = httptest.NewRecorder()
+	server.sentryReplayDeletionJob(response, status)
+	if response.Code != http.StatusOK || !containsAll(response.Body.String(), `"status":"completed"`, `"countDeleted":1`) {
+		t.Fatalf("deletion job status=%d body=%s", response.Code, response.Body.String())
+	}
+	var production, staging int
+	_ = server.store.DB.QueryRow(`SELECT COUNT(*) FROM replays WHERE environment = 'production'`).Scan(&production)
+	_ = server.store.DB.QueryRow(`SELECT COUNT(*) FROM replays WHERE environment = 'staging'`).Scan(&staging)
+	if production != 0 || staging != 1 {
+		t.Fatalf("filtered replay counts production=%d staging=%d", production, staging)
+	}
+	for _, table := range []string{"replay_views", "replay_clicks"} {
+		var removed, retained int
+		_ = server.store.DB.QueryRow(`SELECT COUNT(*) FROM ` + table + ` WHERE replay_id = '11111111111111111111111111111111'`).Scan(&removed)
+		_ = server.store.DB.QueryRow(`SELECT COUNT(*) FROM ` + table + ` WHERE replay_id = '22222222222222222222222222222222'`).Scan(&retained)
+		if removed != 0 || retained != 1 {
+			t.Fatalf("%s filtered rows removed=%d retained=%d", table, removed, retained)
+		}
+	}
+	var audits int
+	_ = server.store.DB.QueryRow(`SELECT COUNT(*) FROM audit_logs WHERE action = 'create_replay_deletion_job'`).Scan(&audits)
+	if audits != 1 {
+		t.Fatalf("deletion job audits=%d", audits)
 	}
 }
 

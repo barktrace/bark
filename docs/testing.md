@@ -97,7 +97,8 @@ views, uploads and applies a distribution-specific indexed source map by debug
 ID, verifies Sentry-compatible organization/project/key/issue/event detail
 routes, runs a Discover query, creates a saved dashboard widget, renders an
 interactive rrweb replay, verifies Sentry-compatible replay search, issue
-correlation, segment discovery, and dashboard/MCP filters, analyzes a sampled
+correlation, decoded segments, click classification, viewer history, durable
+batch deletion, and dashboard/MCP filters, analyzes a sampled
 profile, exercises team ownership and assignment plus MCP triage, quota,
 retention, alert, uptime, and cron operations, and signs out.
 

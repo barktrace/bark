@@ -94,6 +94,7 @@ func run() error {
 	cronService := cronmon.New(st)
 	go coordinator.Run(ctx, "uptime", 0, 5*time.Second, uptimeService.RunDue)
 	go coordinator.Run(ctx, "retention", time.Minute, 6*time.Hour, maintenanceService.CleanupAll)
+	go coordinator.Run(ctx, "replay-deletions", 0, 5*time.Second, maintenanceService.RunReplayDeletionJobs)
 	go coordinator.Run(ctx, "alerts", 0, 10*time.Second, alertService.DeliverPending)
 	go coordinator.Run(ctx, "cron", time.Minute, time.Minute, func(ctx context.Context) { cronService.MarkMissed(ctx, time.Now().UTC()) })
 	api := httpapi.New(cfg, st, authentication, uptimeService)

@@ -82,12 +82,19 @@ Sentry-compatible clients can use:
 - `GET /api/0/projects/{organization}/{project}/replays/{replay_id}/recording-segments/`
 - `GET /api/0/projects/{organization}/{project}/replays/{replay_id}/recording-segments/{segment_id}/`
 - `GET /api/0/projects/{organization}/{project}/replays/{replay_id}/viewed-by/`
+- `POST /api/0/projects/{organization}/{project}/replays/jobs/delete/`
+- `GET /api/0/projects/{organization}/{project}/replays/jobs/delete/{job_id}/`
 
 The organization list accepts Sentry project, environment, release, time-range,
 free-text, `has:error`, and `issue:{id}` filters. Deleting a session requires
 project administrator access, removes all segments and correlations, records an
-audit event, and queues unreferenced backing objects for durable deletion. The
-selector endpoint remains empty until dead/rage-click classification is enabled.
+audit event, and queues unreferenced backing objects for durable deletion.
+Batch deletion jobs are persisted, processed in bounded batches under a
+multi-node lease, and resume after restart. Click targets are resolved from
+rrweb snapshots and mutations; three same-node clicks within one second are
+classified as rage clicks, while clicks followed by seven seconds without a DOM
+mutation or navigation are classified as dead clicks. Form values are never
+stored in the selector index.
 
 ## Profiling
 

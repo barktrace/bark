@@ -52,6 +52,7 @@ func TestCleanupStoreRemovesReplayBlobAndMetadata(t *testing.T) {
 	t.Cleanup(func() { _ = st.Close() })
 	if _, err := st.DB.Exec(`
 		INSERT INTO organizations(id, slug, name) VALUES ('org', 'org', 'Org');
+		INSERT INTO users(id, email, name) VALUES ('user', 'viewer@example.com', 'Viewer');
 		INSERT INTO projects(id, sentry_id, organization_id, slug, name, public_key) VALUES ('project', '1', 'org', 'app', 'App', 'key');
 	`); err != nil {
 		t.Fatal(err)
@@ -64,6 +65,8 @@ func TestCleanupStoreRemovesReplayBlobAndMetadata(t *testing.T) {
 		INSERT INTO blobs(id, organization_id, project_id, kind, storage_key, checksum, size) VALUES ('blob', 'org', 'project', 'replay_recording', ?, ?, ?);
 		INSERT INTO replays(id, replay_id, project_id, recording_blob_id, started_at, finished_at) VALUES ('replay', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'project', 'blob', '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z');
 		INSERT INTO replay_error_links(project_id, replay_id, segment_id, event_id) VALUES ('project', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 0, 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+		INSERT INTO replay_views(project_id, replay_id, user_id, viewed_at) VALUES ('project', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'user', '2020-01-01T00:00:00Z');
+		INSERT INTO replay_clicks(project_id, replay_id, segment_id, sequence, node_id, timestamp, dom_element, element, is_rage) VALUES ('project', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 0, 1, 42, '2020-01-01T00:00:00Z', 'button#checkout', '{}', 1);
 	`, stored.Key, stored.Checksum, stored.Size); err != nil {
 		t.Fatal(err)
 	}
@@ -74,12 +77,14 @@ func TestCleanupStoreRemovesReplayBlobAndMetadata(t *testing.T) {
 	if result.Deleted["replays"] != 1 || result.Deleted["blobs"] != 1 {
 		t.Fatalf("cleanup result = %#v", result)
 	}
-	var blobs, queued, links int
+	var blobs, queued, links, views, clicks int
 	_ = st.DB.QueryRow(`SELECT COUNT(*) FROM blobs`).Scan(&blobs)
 	_ = st.DB.QueryRow(`SELECT COUNT(*) FROM blob_deletion_queue`).Scan(&queued)
 	_ = st.DB.QueryRow(`SELECT COUNT(*) FROM replay_error_links`).Scan(&links)
-	if blobs != 0 || queued != 0 || links != 0 {
-		t.Fatalf("blobs=%d queued=%d links=%d", blobs, queued, links)
+	_ = st.DB.QueryRow(`SELECT COUNT(*) FROM replay_views`).Scan(&views)
+	_ = st.DB.QueryRow(`SELECT COUNT(*) FROM replay_clicks`).Scan(&clicks)
+	if blobs != 0 || queued != 0 || links != 0 || views != 0 || clicks != 0 {
+		t.Fatalf("blobs=%d queued=%d links=%d views=%d clicks=%d", blobs, queued, links, views, clicks)
 	}
 	if file, err := st.Blobs.Open(stored.Key); err == nil {
 		_ = file.Close()

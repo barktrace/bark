@@ -60,8 +60,8 @@ func TestInitializeAndListTools(t *testing.T) {
 	listed := call(t, service, `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
 	toolsResult := listed["result"].(map[string]any)
 	available := toolsResult["tools"].([]any)
-	if len(available) != 58 {
-		t.Fatalf("tool count = %d, want 58", len(available))
+	if len(available) != 60 {
+		t.Fatalf("tool count = %d, want 60", len(available))
 	}
 }
 
@@ -499,6 +499,15 @@ func TestTelemetryAnalysisToolsUseStoredReplayAndProfilePayloads(t *testing.T) {
 	replayAnalysis := replayContent["analysis"].(map[string]any)
 	if replayAnalysis["duration_ms"] != float64(100) || len(replayAnalysis["timeline"].([]any)) != 2 {
 		t.Fatalf("unexpected replay analysis: %#v", replayAnalysis)
+	}
+	for index, params := range []string{
+		`{"name":"list_replay_clicks","arguments":{"project_id":"project","replay_id":"12121212121212121212121212121212"}}`,
+		`{"name":"list_replay_selectors","arguments":{"project_id":"project"}}`,
+	} {
+		result := call(t, service, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":`+params+`}`)["result"].(map[string]any)
+		if result["isError"] != false {
+			t.Fatalf("replay interaction tool %d failed: %#v", index, result)
+		}
 	}
 	profileResult := call(t, service, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"analyze_profile","arguments":{"project_id":"project","profile_id":"`+profileID+`"}}}`)["result"].(map[string]any)
 	if profileResult["isError"] != false {

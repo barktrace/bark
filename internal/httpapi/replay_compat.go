@@ -45,7 +45,7 @@ func (s *Server) sentryOrganizationReplays(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, "could not list replay projects")
 		return
 	}
-	items, err := s.loadReplaySessions(r, projects, "")
+	items, err := s.loadReplaySessions(r, projects, "", principal.UserID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -70,7 +70,7 @@ func (s *Server) sentryReplayCount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not list replay projects")
 		return
 	}
-	items, err := s.loadReplaySessions(r, projects, "")
+	items, err := s.loadReplaySessions(r, projects, "", principal.UserID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -85,13 +85,90 @@ func (s *Server) sentryReplayCount(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) sentryReplaySelectors(w http.ResponseWriter, r *http.Request) {
 	principal, _ := auth.PrincipalFromContext(r.Context())
-	if _, ok := s.authorizedOrganizationSlug(r, principal, r.PathValue("org_slug")); !ok {
+	organizationID, ok := s.authorizedOrganizationSlug(r, principal, r.PathValue("org_slug"))
+	if !ok {
 		writeError(w, http.StatusNotFound, "organization not found")
 		return
 	}
-	// Selector aggregation depends on dead/rage-click classification. Return the
-	// canonical empty collection until those heuristics identify selectors.
-	writeJSON(w, http.StatusOK, map[string]any{"data": []any{}})
+	projects, err := s.authorizedReplayProjects(r, principal, organizationID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not list replay projects")
+		return
+	}
+	if len(projects) == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"data": []any{}})
+		return
+	}
+	clauses := []string{"rc.project_id IN (" + placeholders(len(projects)) + ")", "(rc.is_dead = 1 OR rc.is_rage = 1)"}
+	arguments := make([]any, 0, len(projects)+10)
+	for _, projectID := range projects {
+		arguments = append(arguments, projectID)
+	}
+	requestedProjects := append([]string(nil), r.URL.Query()["project"]...)
+	requestedProjects = append(requestedProjects, r.URL.Query()["projectSlug"]...)
+	if len(requestedProjects) > 0 {
+		parts := make([]string, 0, len(requestedProjects))
+		for _, project := range requestedProjects {
+			parts = append(parts, "(p.id = ? OR p.sentry_id = ? OR p.slug = ?)")
+			arguments = append(arguments, project, project, project)
+		}
+		clauses = append(clauses, "("+strings.Join(parts, " OR ")+")")
+	}
+	if environments := r.URL.Query()["environment"]; len(environments) > 0 {
+		clauses = append(clauses, "rp.environment IN ("+placeholders(len(environments))+")")
+		for _, environment := range environments {
+			arguments = append(arguments, environment)
+		}
+	}
+	for parameter, column := range map[string]string{"start": "rc.timestamp >=", "end": "rc.timestamp <="} {
+		if value := strings.TrimSpace(r.URL.Query().Get(parameter)); value != "" {
+			parsed, parseErr := time.Parse(time.RFC3339, value)
+			if parseErr != nil {
+				writeError(w, http.StatusBadRequest, parameter+" must be RFC3339")
+				return
+			}
+			clauses = append(clauses, column+" ?")
+			arguments = append(arguments, parsed.UTC().Format(time.RFC3339Nano))
+		}
+	}
+	if query := strings.TrimSpace(r.URL.Query().Get("query")); query != "" {
+		clauses = append(clauses, "rc.dom_element LIKE ?")
+		arguments = append(arguments, "%"+query+"%")
+	}
+	limit := 100
+	if requested, parseErr := strconv.Atoi(r.URL.Query().Get("per_page")); parseErr == nil && requested > 0 && requested <= 100 {
+		limit = requested
+	}
+	order := "SUM(rc.is_dead) + SUM(rc.is_rage) DESC"
+	switch firstNonEmpty(r.URL.Query().Get("sortBy"), r.URL.Query().Get("orderBy"), r.URL.Query().Get("sort")) {
+	case "count_dead_clicks", "-count_dead_clicks":
+		order = "SUM(rc.is_dead) DESC"
+	case "count_rage_clicks", "-count_rage_clicks":
+		order = "SUM(rc.is_rage) DESC"
+	case "dom_element":
+		order = "rc.dom_element ASC"
+	}
+	arguments = append(arguments, limit)
+	rows, err := s.store.DB.QueryContext(r.Context(), `SELECT p.sentry_id, rc.dom_element, rc.element, SUM(rc.is_dead), SUM(rc.is_rage) FROM replay_clicks rc JOIN replays rp ON rp.project_id = rc.project_id AND rp.replay_id = rc.replay_id AND rp.segment_id = rc.segment_id JOIN projects p ON p.id = rc.project_id WHERE `+strings.Join(clauses, " AND ")+` GROUP BY p.sentry_id, rc.dom_element, rc.element ORDER BY `+order+` LIMIT ?`, arguments...)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not list replay selectors")
+		return
+	}
+	items := make([]map[string]any, 0)
+	for rows.Next() {
+		var projectID, domElement, encodedElement string
+		var dead, rage int
+		if err := rows.Scan(&projectID, &domElement, &encodedElement, &dead, &rage); err != nil {
+			_ = rows.Close()
+			writeError(w, http.StatusInternalServerError, "could not list replay selectors")
+			return
+		}
+		element := map[string]any{}
+		_ = json.Unmarshal([]byte(encodedElement), &element)
+		items = append(items, map[string]any{"project_id": projectID, "dom_element": domElement, "element": element, "count_dead_clicks": dead, "count_rage_clicks": rage})
+	}
+	_ = rows.Close()
+	writeJSON(w, http.StatusOK, map[string]any{"data": items})
 }
 
 func (s *Server) sentryReplayDetail(w http.ResponseWriter, r *http.Request) {
@@ -106,7 +183,7 @@ func (s *Server) sentryReplayDetail(w http.ResponseWriter, r *http.Request) {
 		s.deleteReplaySession(w, r, principal, projects, replayID)
 		return
 	}
-	items, err := s.loadReplaySessions(r, projects, replayID)
+	items, err := s.loadReplaySessions(r, projects, replayID, principal.UserID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -115,6 +192,12 @@ func (s *Server) sentryReplayDetail(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "replay not found")
 		return
 	}
+	projectID, _ := replayProject(projects, replayID, s, r)
+	if _, err := s.store.DB.ExecContext(r.Context(), `INSERT INTO replay_views(project_id, replay_id, user_id, viewed_at) VALUES (?, ?, ?, ?) ON CONFLICT(project_id, replay_id, user_id) DO UPDATE SET viewed_at = excluded.viewed_at`, projectID, replayID, principal.UserID, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not record replay view")
+		return
+	}
+	items[0]["has_viewed"] = true
 	writeJSON(w, http.StatusOK, map[string]any{"data": items[0]})
 }
 
@@ -213,53 +296,35 @@ func (s *Server) sentryReplayClicks(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "replay not found")
 		return
 	}
-	rows, err := s.store.DB.QueryContext(r.Context(), `SELECT b.storage_key FROM replays rp JOIN blobs b ON b.id = rp.recording_blob_id WHERE rp.project_id = ? AND rp.replay_id = ? ORDER BY rp.segment_id LIMIT 1000`, projectID, replayID)
+	limit := 1000
+	if requested, parseErr := strconv.Atoi(r.URL.Query().Get("per_page")); parseErr == nil && requested > 0 && requested <= 1000 {
+		limit = requested
+	}
+	rows, err := s.store.DB.QueryContext(r.Context(), `SELECT node_id, timestamp FROM replay_clicks WHERE project_id = ? AND replay_id = ? ORDER BY timestamp LIMIT ?`, projectID, replayID, limit)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not list replay segments")
+		writeError(w, http.StatusInternalServerError, "could not list replay clicks")
 		return
 	}
-	keys := make([]string, 0)
+	clicks := make([]map[string]any, 0)
 	for rows.Next() {
-		var key string
-		if err := rows.Scan(&key); err != nil {
+		var nodeID int
+		var timestamp string
+		if err := rows.Scan(&nodeID, &timestamp); err != nil {
 			_ = rows.Close()
-			writeError(w, http.StatusInternalServerError, "could not list replay segments")
+			writeError(w, http.StatusInternalServerError, "could not list replay clicks")
 			return
 		}
-		keys = append(keys, key)
+		clicks = append(clicks, map[string]any{"node_id": nodeID, "timestamp": normalizeReplayTime(timestamp)})
 	}
 	_ = rows.Close()
-	playback := telemetryanalysis.NewReplayPlayback()
-	for _, key := range keys {
-		payload, readErr := s.readAnalysisBlob(key)
-		if readErr != nil {
-			writeError(w, http.StatusInternalServerError, readErr.Error())
-			return
-		}
-		if decodeErr := playback.AddRecording(payload); decodeErr != nil {
-			writeError(w, http.StatusUnprocessableEntity, "could not decode replay segment")
-			return
-		}
-		if playback.Truncated {
-			break
-		}
-	}
-	clicks := make([]map[string]any, 0)
-	for _, raw := range playback.Events {
-		var event struct {
-			Type      int     `json:"type"`
-			Timestamp float64 `json:"timestamp"`
-			Data      struct {
-				Source int `json:"source"`
-				Type   int `json:"type"`
-				ID     int `json:"id"`
-			} `json:"data"`
-		}
-		if json.Unmarshal(raw, &event) == nil && event.Type == 3 && event.Data.Source == 2 && event.Data.Type == 2 {
-			clicks = append(clicks, map[string]any{"node_id": event.Data.ID, "timestamp": replayEventTime(event.Timestamp)})
-		}
-	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": clicks})
+}
+
+func normalizeReplayTime(value string) string {
+	if parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(value)); err == nil {
+		return parsed.UTC().Format(time.RFC3339Nano)
+	}
+	return normalizeAPITime(value)
 }
 
 func (s *Server) sentryReplayViewedBy(w http.ResponseWriter, r *http.Request) {
@@ -270,18 +335,144 @@ func (s *Server) sentryReplayViewedBy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	replayID := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(r.PathValue("replay_id")), "-", ""))
-	if _, ok := replayProject(projects, replayID, s, r); !ok {
+	projectID, ok := replayProject(projects, replayID, s, r)
+	if !ok {
 		writeError(w, http.StatusNotFound, "replay not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"viewed_by": []any{}}})
+	rows, err := s.store.DB.QueryContext(r.Context(), `SELECT u.id, u.name, u.email, COALESCE(u.avatar_url, ''), rv.viewed_at FROM replay_views rv JOIN users u ON u.id = rv.user_id WHERE rv.project_id = ? AND rv.replay_id = ? ORDER BY rv.viewed_at DESC LIMIT 100`, projectID, replayID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not list replay viewers")
+		return
+	}
+	viewers := make([]map[string]any, 0)
+	for rows.Next() {
+		var id, name, email, avatarURL, viewedAt string
+		if err := rows.Scan(&id, &name, &email, &avatarURL, &viewedAt); err != nil {
+			_ = rows.Close()
+			writeError(w, http.StatusInternalServerError, "could not list replay viewers")
+			return
+		}
+		viewers = append(viewers, map[string]any{"id": id, "name": firstNonEmpty(name, email), "username": email, "email": email, "avatarUrl": avatarURL, "isActive": true, "lastActive": normalizeAPITime(viewedAt), "type": "user"})
+	}
+	_ = rows.Close()
+	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"viewed_by": viewers}})
 }
 
-func replayEventTime(timestamp float64) string {
-	if timestamp > 1e11 {
-		return time.Unix(0, int64(timestamp*float64(time.Millisecond))).UTC().Format(time.RFC3339Nano)
+func (s *Server) sentryReplayDeletionJob(w http.ResponseWriter, r *http.Request) {
+	principal, _ := auth.PrincipalFromContext(r.Context())
+	projects, organizationID, err := s.replayProjectsForRequest(r, principal)
+	if err != nil || len(projects) != 1 {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
 	}
-	return time.Unix(0, int64(timestamp*float64(time.Second))).UTC().Format(time.RFC3339Nano)
+	projectID := projects[0]
+	if !s.canManageProject(r, principal, projectID) {
+		writeError(w, http.StatusForbidden, "project administrator access required")
+		return
+	}
+	if r.Method == http.MethodGet {
+		jobID, parseErr := strconv.ParseInt(r.PathValue("job_id"), 10, 64)
+		if parseErr != nil || jobID <= 0 {
+			writeError(w, http.StatusNotFound, "replay deletion job not found")
+			return
+		}
+		job, loadErr := s.loadReplayDeletionJob(r.Context(), projectID, jobID)
+		if errors.Is(loadErr, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "replay deletion job not found")
+			return
+		}
+		if loadErr != nil {
+			writeError(w, http.StatusInternalServerError, "could not load replay deletion job")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": job})
+		return
+	}
+	var input struct {
+		Data struct {
+			RangeStart   string   `json:"rangeStart"`
+			RangeEnd     string   `json:"rangeEnd"`
+			Environments []string `json:"environments"`
+			Query        *string  `json:"query"`
+		} `json:"data"`
+	}
+	if err := decodeJSON(w, r, &input); err != nil {
+		return
+	}
+	start, startErr := time.Parse(time.RFC3339, strings.TrimSpace(input.Data.RangeStart))
+	end, endErr := time.Parse(time.RFC3339, strings.TrimSpace(input.Data.RangeEnd))
+	if startErr != nil || endErr != nil || !end.After(start) {
+		writeError(w, http.StatusBadRequest, "rangeStart and rangeEnd must be an increasing RFC3339 range")
+		return
+	}
+	if len(input.Data.Environments) > 100 {
+		writeError(w, http.StatusBadRequest, "at most 100 environments are allowed")
+		return
+	}
+	environments := make([]string, 0, len(input.Data.Environments))
+	seen := make(map[string]struct{})
+	for _, value := range input.Data.Environments {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		environments = append(environments, value)
+	}
+	query := ""
+	if input.Data.Query != nil {
+		query = strings.TrimSpace(*input.Data.Query)
+	}
+	if len(query) > 500 {
+		writeError(w, http.StatusBadRequest, "query is limited to 500 characters")
+		return
+	}
+	encodedEnvironments, _ := json.Marshal(environments)
+	tx, err := s.store.DB.BeginTx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not create replay deletion job")
+		return
+	}
+	defer tx.Rollback()
+	var jobID int64
+	err = tx.QueryRowContext(r.Context(), `INSERT INTO replay_deletion_jobs(project_id, range_start, range_end, environments, query) VALUES (?, ?, ?, ?, ?) RETURNING id`, projectID, start.UTC().Format(time.RFC3339Nano), end.UTC().Format(time.RFC3339Nano), string(encodedEnvironments), query).Scan(&jobID)
+	if err == nil {
+		_, err = tx.ExecContext(r.Context(), `INSERT INTO audit_logs(organization_id, project_id, actor_user_id, action, target_type, target_id) VALUES (?, ?, ?, 'create_replay_deletion_job', 'replay_deletion_job', ?)`, organizationID, projectID, principal.UserID, strconv.FormatInt(jobID, 10))
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not create replay deletion job")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not create replay deletion job")
+		return
+	}
+	job, err := s.loadReplayDeletionJob(r.Context(), projectID, jobID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load replay deletion job")
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"data": job})
+}
+
+func (s *Server) loadReplayDeletionJob(ctx context.Context, projectID string, jobID int64) (map[string]any, error) {
+	var rangeStart, rangeEnd, encodedEnvironments, query, status, createdAt, updatedAt string
+	var countDeleted int
+	err := s.store.DB.QueryRowContext(ctx, `SELECT range_start, range_end, environments, query, status, count_deleted, created_at, updated_at FROM replay_deletion_jobs WHERE id = ? AND project_id = ?`, jobID, projectID).Scan(&rangeStart, &rangeEnd, &encodedEnvironments, &query, &status, &countDeleted, &createdAt, &updatedAt)
+	if err != nil {
+		return nil, err
+	}
+	environments := []string{}
+	_ = json.Unmarshal([]byte(encodedEnvironments), &environments)
+	return map[string]any{
+		"id": jobID, "dateCreated": normalizeAPITime(createdAt), "dateUpdated": normalizeAPITime(updatedAt),
+		"rangeStart": normalizeAPITime(rangeStart), "rangeEnd": normalizeAPITime(rangeEnd), "environments": environments,
+		"status": status, "query": query, "countDeleted": countDeleted,
+	}, nil
 }
 
 func (s *Server) replayProjectsForRequest(r *http.Request, principal *auth.Principal) ([]string, string, error) {
@@ -333,7 +524,7 @@ func (s *Server) authorizedReplayProjects(r *http.Request, principal *auth.Princ
 	return projects, nil
 }
 
-func (s *Server) loadReplaySessions(r *http.Request, projects []string, replayID string) ([]map[string]any, error) {
+func (s *Server) loadReplaySessions(r *http.Request, projects []string, replayID, viewerID string) ([]map[string]any, error) {
 	if len(projects) == 0 {
 		return []map[string]any{}, nil
 	}
@@ -476,6 +667,18 @@ func (s *Server) loadReplaySessions(r *http.Request, projects []string, replayID
 		if session.URL != "" {
 			urls = append(urls, session.URL)
 		}
+		hasViewed := false
+		if viewerID != "" {
+			var views int
+			if err := s.store.DB.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM replay_views WHERE project_id = ? AND replay_id = ? AND user_id = ?`, session.ProjectID, session.ReplayID, viewerID).Scan(&views); err != nil {
+				return nil, err
+			}
+			hasViewed = views > 0
+		}
+		deadClicks, rageClicks := 0, 0
+		if err := s.store.DB.QueryRowContext(r.Context(), `SELECT COALESCE(SUM(is_dead), 0), COALESCE(SUM(is_rage), 0) FROM replay_clicks WHERE project_id = ? AND replay_id = ?`, session.ProjectID, session.ReplayID).Scan(&deadClicks, &rageClicks); err != nil {
+			return nil, err
+		}
 		items = append(items, map[string]any{
 			"id": session.ReplayID, "replayId": session.ReplayID,
 			"projectId": session.SentryProject, "project_id": session.SentryProject, "projectSlug": session.ProjectSlug,
@@ -488,8 +691,8 @@ func (s *Server) loadReplaySessions(r *http.Request, projects []string, replayID
 			"hasRecording": session.RecordSegments > 0, "eventSegmentCount": session.EventSegments,
 			"error_ids": errorIDs, "errorIds": errorIDs, "issues": issues,
 			"activity": 0, "is_archived": false, "tags": []any{}, "trace_ids": []any{}, "count_urls": len(urls),
-			"count_dead_clicks": 0, "count_rage_clicks": 0, "count_warnings": 0, "count_infos": 0,
-			"replay_type": "session", "platform": nil, "has_viewed": false,
+			"count_dead_clicks": deadClicks, "count_rage_clicks": rageClicks, "count_warnings": 0, "count_infos": 0,
+			"replay_type": "session", "platform": nil, "has_viewed": hasViewed,
 			"browser": map[string]string{}, "device": map[string]string{}, "os": map[string]string{}, "sdk": map[string]string{},
 		})
 	}
@@ -573,6 +776,12 @@ func (s *Server) deleteReplaySession(w http.ResponseWriter, r *http.Request, pri
 	_, err = tx.ExecContext(r.Context(), `INSERT INTO audit_logs(organization_id, project_id, actor_user_id, action, target_type, target_id) VALUES (?, ?, ?, 'delete_replay', 'replay', ?)`, organizationID, projectID, principal.UserID, replayID)
 	if err == nil {
 		_, err = tx.ExecContext(r.Context(), `DELETE FROM replay_error_links WHERE project_id = ? AND replay_id = ?`, projectID, replayID)
+	}
+	if err == nil {
+		_, err = tx.ExecContext(r.Context(), `DELETE FROM replay_views WHERE project_id = ? AND replay_id = ?`, projectID, replayID)
+	}
+	if err == nil {
+		_, err = tx.ExecContext(r.Context(), `DELETE FROM replay_clicks WHERE project_id = ? AND replay_id = ?`, projectID, replayID)
 	}
 	if err == nil {
 		_, err = tx.ExecContext(r.Context(), `DELETE FROM replays WHERE project_id = ? AND replay_id = ?`, projectID, replayID)

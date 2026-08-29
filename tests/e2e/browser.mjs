@@ -147,7 +147,7 @@ try {
                   type: 2,
                   id: 5,
                   tagName: 'button',
-                  attributes: { type: 'button' },
+                  attributes: { type: 'button', id: 'checkout', class: 'primary' },
                   childNodes: [{ type: 3, id: 6, textContent: 'Place order' }],
                 }],
               },
@@ -158,6 +158,9 @@ try {
       },
     },
     { type: 3, timestamp: 1787997600200, data: { source: 2, type: 2, id: 5, x: 20, y: 12 } },
+    { type: 3, timestamp: 1787997600500, data: { source: 2, type: 2, id: 5, x: 20, y: 12 } },
+    { type: 3, timestamp: 1787997600900, data: { source: 2, type: 2, id: 5, x: 20, y: 12 } },
+    { type: 3, timestamp: 1787997601000, data: { source: 0, adds: [], removes: [], texts: [], attributes: [] } },
   ]));
   await ingestEnvelope({}, 'profile', JSON.stringify({
     profile_id: 'profile-e2e',
@@ -204,11 +207,21 @@ try {
   const replaySearch = await page.request.get(`/api/0/organizations/e2e/replays/?project=${encodeURIComponent(sentryProject.id)}&query=${encodeURIComponent(`environment:e2e issue:${sentryIssues[0].id}`)}`);
   const replaySearchBody = await replaySearch.json();
   if (!replaySearch.ok() || replaySearchBody.data?.[0]?.replayId !== replayID || replaySearchBody.data[0].issues?.[0]?.id !== sentryIssues[0].id) throw new Error(`Sentry replay search/correlation failed: ${JSON.stringify(replaySearchBody)}`);
-	const replaySegments = await page.request.get(`/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/replays/${replayID}/recording-segments/`);
-	const replaySegmentBody = await replaySegments.json();
-	if (!replaySegments.ok() || replaySegmentBody?.[0]?.[0]?.type !== 4) throw new Error(`Sentry replay segment listing failed: ${JSON.stringify(replaySegmentBody)}`);
-	const replaySegment = await page.request.get(`/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/replays/${replayID}/recording-segments/0/`);
-	if (!replaySegment.ok() || (await replaySegment.json()).data?.segmentId !== 0) throw new Error('Sentry replay segment detail failed');
+  const replayDetail = await page.request.get(`/api/0/organizations/e2e/replays/${replayID}/`);
+  const replayDetailBody = await replayDetail.json();
+  if (!replayDetail.ok() || replayDetailBody.data?.count_rage_clicks !== 3 || !replayDetailBody.data?.has_viewed) throw new Error(`Sentry replay detail failed: ${JSON.stringify(replayDetailBody)}`);
+  const replaySegments = await page.request.get(`/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/replays/${replayID}/recording-segments/`);
+  const replaySegmentBody = await replaySegments.json();
+  if (!replaySegments.ok() || replaySegmentBody?.[0]?.[0]?.type !== 4) throw new Error(`Sentry replay segment listing failed: ${JSON.stringify(replaySegmentBody)}`);
+  const replaySegment = await page.request.get(`/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/replays/${replayID}/recording-segments/0/`);
+  if (!replaySegment.ok() || (await replaySegment.json()).data?.segmentId !== 0) throw new Error('Sentry replay segment detail failed');
+  const replayClicks = await page.request.get(`/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/replays/${replayID}/clicks/`);
+  if (!replayClicks.ok() || (await replayClicks.json()).data?.length !== 3) throw new Error('Sentry replay click listing failed');
+  const replaySelectors = await page.request.get('/api/0/organizations/e2e/replay-selectors/?project=1&environment=e2e');
+  const replaySelectorsBody = await replaySelectors.json();
+  if (!replaySelectors.ok() || replaySelectorsBody.data?.[0]?.dom_element !== 'button#checkout.primary' || replaySelectorsBody.data[0].count_rage_clicks !== 3) throw new Error(`Sentry replay selectors failed: ${JSON.stringify(replaySelectorsBody)}`);
+  const replayViewers = await page.request.get(`/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/replays/${replayID}/viewed-by/`);
+  if (!replayViewers.ok() || (await replayViewers.json()).data?.viewed_by?.[0]?.email !== 'e2e@barktrace.test') throw new Error('Sentry replay viewer history failed');
 
   await page.getByRole('link', { name: 'Discover' }).click();
   await page.locator('#discover-form input[name="query"]').fill('environment:e2e');
@@ -240,7 +253,7 @@ try {
   await page.getByRole('heading', { name: 'https://shop.example/checkout' }).waitFor();
   await page.locator('#replay-player[data-mounted="true"] .rr-controller').waitFor();
   await page.locator('#replay-player iframe').waitFor();
-  await page.locator('.timeline-list strong').getByText('click', { exact: true }).waitFor();
+  await page.locator('.timeline-list strong').getByText('click', { exact: true }).first().waitFor();
   await page.getByRole('button', { name: 'Profiles' }).click();
   const profileRow = page.locator('.management-row', { hasText: 'profile-e2e' });
   await profileRow.getByRole('button', { name: 'Analyze' }).click();
@@ -282,6 +295,10 @@ try {
   if (mcpIssue.priority !== 'critical' || !mcpIssue.bookmarked) throw new Error('MCP advanced issue update failed');
   const mcpReplays = await mcpCall(18, 'list_replays', { project_id: nativeProject.id, query: 'checkout', environment: 'e2e', release: 'checkout@1.0.0', issue_id: nativeIssues[0].id, has_error: true });
   if (!mcpReplays.some((replay) => replay.replay_id === replayID)) throw new Error('MCP replay filtering failed');
+  const mcpReplayClicks = await mcpCall(19, 'list_replay_clicks', { project_id: nativeProject.id, replay_id: replayID });
+  if (mcpReplayClicks.length !== 3 || !mcpReplayClicks.every((click) => click.is_rage)) throw new Error('MCP replay click listing failed');
+  const mcpReplaySelectors = await mcpCall(20, 'list_replay_selectors', { project_id: nativeProject.id });
+  if (mcpReplaySelectors[0]?.dom_element !== 'button#checkout.primary') throw new Error('MCP replay selector listing failed');
   const mcpQuota = await mcpCall(4, 'set_project_quota', { project_id: nativeProject.id, category: 'error', per_minute: 120, per_day: 5000, max_item_bytes: 1048576 });
   if (!mcpQuota.configured || mcpQuota.per_minute !== 120) throw new Error('MCP quota update failed');
   const mcpRetention = await mcpCall(5, 'update_retention', { organization_id: nativeOrganization.organization_id, days: 45 });
@@ -335,6 +352,19 @@ try {
   await page.getByRole('heading', { name: 'Teams' }).waitFor();
   await page.getByText('E2E Responders', { exact: true }).waitFor();
 
+  const deleteJobResponse = await page.request.post(`/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/replays/jobs/delete/`, { data: { data: { rangeStart: '2026-08-29T00:00:00Z', rangeEnd: '2026-08-30T00:00:00Z', environments: ['e2e'], query: 'checkout' } } });
+  const deleteJob = await deleteJobResponse.json();
+  if (!deleteJobResponse.ok() || !deleteJob.data?.id) throw new Error(`create Replay deletion job failed: ${JSON.stringify(deleteJob)}`);
+  let deletionComplete = false;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const jobResponse = await page.request.get(`/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/replays/jobs/delete/${deleteJob.data.id}/`);
+    const job = await jobResponse.json();
+    if (job.data?.status === 'completed' && job.data?.countDeleted === 1) { deletionComplete = true; break; }
+    if (job.data?.status === 'failed') throw new Error(`Replay deletion job failed: ${JSON.stringify(job)}`);
+    await page.waitForTimeout(500);
+  }
+  if (!deletionComplete) throw new Error('Replay deletion job did not complete');
+
   await page.locator('#account-button').click();
   await page.getByRole('button', { name: 'Sign out' }).click();
   await page.waitForURL(`${baseURL}/ui/login/`);
@@ -342,7 +372,7 @@ try {
   if (me.status() !== 401) throw new Error(`logout left session active: /auth/me returned ${me.status()}`);
 
   if (browserErrors.length) throw new Error(browserErrors.join('\n'));
-  console.log('browser E2E passed: OIDC, ingestion, debug-ID/indexed source-map symbolication, Sentry API details, Discover, dashboards, teams, interactive replay, profile analysis, telemetry, MCP operations, and logout');
+  console.log('browser E2E passed: OIDC, ingestion, source-map symbolication, Sentry Replay interactions/deletion, Discover, dashboards, teams, profiles, telemetry, MCP, and logout');
 } finally {
   await browser.close();
 }

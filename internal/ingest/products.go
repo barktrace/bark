@@ -16,6 +16,7 @@ import (
 	"github.com/barktrace/bark/internal/blobstore"
 	"github.com/barktrace/bark/internal/cronmon"
 	"github.com/barktrace/bark/internal/quota"
+	telemetryanalysis "github.com/barktrace/bark/internal/telemetry"
 	"github.com/google/uuid"
 )
 
@@ -242,19 +243,44 @@ func (s *Service) StoreReplayRecording(ctx context.Context, project Project, env
 	if replayID == "" {
 		return errors.New("replay id is required")
 	}
+	interactions, _ := telemetryanalysis.AnalyzeReplayInteractions(raw)
 	blobID, err := s.storeBlob(ctx, project, "replay_recording", "application/octet-stream", raw)
 	if err != nil {
 		return err
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	result, err := s.store.DB.ExecContext(ctx, `UPDATE replays SET recording_blob_id = ? WHERE id = (SELECT id FROM replays WHERE project_id = ? AND replay_id = ? AND segment_id = ? ORDER BY created_at DESC LIMIT 1)`, blobID, project.ID, replayID, header.SegmentID)
+	tx, err := s.store.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE replays SET recording_blob_id = ? WHERE id = (SELECT id FROM replays WHERE project_id = ? AND replay_id = ? AND segment_id = ? ORDER BY created_at DESC LIMIT 1)`, blobID, project.ID, replayID, header.SegmentID)
 	if err != nil {
 		return err
 	}
 	if count, _ := result.RowsAffected(); count == 0 {
-		_, err = s.store.DB.ExecContext(ctx, `INSERT INTO replays(id, replay_id, project_id, recording_blob_id, segment_id, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, uuid.NewString(), replayID, project.ID, blobID, header.SegmentID, now, now)
+		_, err = tx.ExecContext(ctx, `INSERT INTO replays(id, replay_id, project_id, recording_blob_id, segment_id, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, uuid.NewString(), replayID, project.ID, blobID, header.SegmentID, now, now)
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM replay_clicks WHERE project_id = ? AND replay_id = ? AND segment_id = ?`, project.ID, replayID, header.SegmentID); err != nil {
+		return err
+	}
+	for sequence, click := range interactions {
+		element, _ := json.Marshal(click.Element)
+		dead, rage := 0, 0
+		if click.Dead {
+			dead = 1
+		}
+		if click.Rage {
+			rage = 1
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO replay_clicks(project_id, replay_id, segment_id, sequence, node_id, timestamp, dom_element, element, is_dead, is_rage) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, project.ID, replayID, header.SegmentID, sequence, click.NodeID, time.UnixMilli(click.Timestamp).UTC().Format(time.RFC3339Nano), click.DOMElement, string(element), dead, rage); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Service) StoreProfile(ctx context.Context, project Project, raw []byte) error {

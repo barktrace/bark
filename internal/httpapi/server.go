@@ -229,6 +229,8 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/0/projects/{org_slug}/{project_slug}/replays/{replay_id}/recording-segments/", s.auth.Require(http.HandlerFunc(s.sentryReplaySegments)))
 	s.mux.Handle("GET /api/0/projects/{org_slug}/{project_slug}/replays/{replay_id}/recording-segments/{segment_id}/", s.auth.Require(http.HandlerFunc(s.sentryReplaySegments)))
 	s.mux.Handle("GET /api/0/projects/{org_slug}/{project_slug}/replays/{replay_id}/viewed-by/", s.auth.Require(http.HandlerFunc(s.sentryReplayViewedBy)))
+	s.mux.Handle("POST /api/0/projects/{org_slug}/{project_slug}/replays/jobs/delete/", s.auth.Require(http.HandlerFunc(s.sentryReplayDeletionJob)))
+	s.mux.Handle("GET /api/0/projects/{org_slug}/{project_slug}/replays/jobs/delete/{job_id}/", s.auth.Require(http.HandlerFunc(s.sentryReplayDeletionJob)))
 	s.mux.Handle("GET /api/0/issues/{issue_id}/", s.auth.Require(http.HandlerFunc(s.sentryIssueDetail)))
 	s.mux.Handle("PUT /api/0/issues/{issue_id}/", s.auth.Require(http.HandlerFunc(s.sentryIssueDetail)))
 	s.mux.Handle("DELETE /api/0/issues/{issue_id}/", s.auth.Require(http.HandlerFunc(s.sentryIssueDetail)))

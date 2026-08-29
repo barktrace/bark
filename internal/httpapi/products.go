@@ -250,7 +250,7 @@ func (s *Server) replays(w http.ResponseWriter, r *http.Request) {
 		clauses = append(clauses, `EXISTS (SELECT 1 FROM replay_error_links rel JOIN events e ON e.project_id = rel.project_id AND e.event_id = rel.event_id WHERE rel.project_id = rp.project_id AND rel.replay_id = rp.replay_id AND e.issue_id = ?)`)
 		arguments = append(arguments, issueID)
 	}
-	rows, err := s.store.DB.QueryContext(r.Context(), `SELECT rp.id, rp.replay_id, rp.segment_id, rp.environment, rp.release, rp.user_id, rp.started_at, rp.finished_at, rp.error_count, rp.url, rp.event_blob_id IS NOT NULL, rp.recording_blob_id IS NOT NULL FROM replays rp WHERE `+strings.Join(clauses, " AND ")+` ORDER BY rp.finished_at DESC LIMIT 200`, arguments...)
+	rows, err := s.store.DB.QueryContext(r.Context(), `SELECT rp.id, rp.replay_id, rp.segment_id, rp.environment, rp.release, rp.user_id, rp.started_at, rp.finished_at, rp.error_count, rp.url, rp.event_blob_id IS NOT NULL, rp.recording_blob_id IS NOT NULL, (SELECT COALESCE(SUM(rc.is_dead), 0) FROM replay_clicks rc WHERE rc.project_id = rp.project_id AND rc.replay_id = rp.replay_id AND rc.segment_id = rp.segment_id), (SELECT COALESCE(SUM(rc.is_rage), 0) FROM replay_clicks rc WHERE rc.project_id = rp.project_id AND rc.replay_id = rp.replay_id AND rc.segment_id = rp.segment_id) FROM replays rp WHERE `+strings.Join(clauses, " AND ")+` ORDER BY rp.finished_at DESC LIMIT 200`, arguments...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not list replays")
 		return
@@ -259,10 +259,10 @@ func (s *Server) replays(w http.ResponseWriter, r *http.Request) {
 	items := make([]map[string]any, 0)
 	for rows.Next() {
 		var id, replayID, environment, release, userID, started, finished, targetURL string
-		var segmentID, errorCount int
+		var segmentID, errorCount, deadClicks, rageClicks int
 		var hasEvent, hasRecording bool
-		if rows.Scan(&id, &replayID, &segmentID, &environment, &release, &userID, &started, &finished, &errorCount, &targetURL, &hasEvent, &hasRecording) == nil {
-			items = append(items, map[string]any{"id": id, "replay_id": replayID, "segment_id": segmentID, "environment": environment, "release": release, "user_id": userID, "started_at": started, "finished_at": finished, "error_count": errorCount, "url": targetURL, "has_event": hasEvent, "has_recording": hasRecording})
+		if rows.Scan(&id, &replayID, &segmentID, &environment, &release, &userID, &started, &finished, &errorCount, &targetURL, &hasEvent, &hasRecording, &deadClicks, &rageClicks) == nil {
+			items = append(items, map[string]any{"id": id, "replay_id": replayID, "segment_id": segmentID, "environment": environment, "release": release, "user_id": userID, "started_at": started, "finished_at": finished, "error_count": errorCount, "dead_click_count": deadClicks, "rage_click_count": rageClicks, "url": targetURL, "has_event": hasEvent, "has_recording": hasRecording})
 		}
 	}
 	writeJSON(w, http.StatusOK, items)

@@ -286,6 +286,12 @@ func CleanupOrganization(ctx context.Context, db *sql.DB, organizationID string,
 		if _, err := tx.ExecContext(ctx, `DELETE FROM replay_error_links WHERE project_id IN (SELECT id FROM projects WHERE organization_id = ?) AND NOT EXISTS (SELECT 1 FROM replays rp WHERE rp.project_id = replay_error_links.project_id AND rp.replay_id = replay_error_links.replay_id)`, organizationID); err != nil {
 			return result, err
 		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM replay_views WHERE project_id IN (SELECT id FROM projects WHERE organization_id = ?) AND NOT EXISTS (SELECT 1 FROM replays rp WHERE rp.project_id = replay_views.project_id AND rp.replay_id = replay_views.replay_id)`, organizationID); err != nil {
+			return result, err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM replay_clicks WHERE project_id IN (SELECT id FROM projects WHERE organization_id = ?) AND NOT EXISTS (SELECT 1 FROM replays rp WHERE rp.project_id = replay_clicks.project_id AND rp.replay_id = replay_clicks.replay_id AND rp.segment_id = replay_clicks.segment_id)`, organizationID); err != nil {
+			return result, err
+		}
 	}
 	if _, includesEvents := result.Deleted["events"]; includesEvents {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM issues WHERE project_id IN (SELECT id FROM projects WHERE organization_id = ?) AND NOT EXISTS (SELECT 1 FROM events e WHERE e.issue_id = issues.id)`, organizationID); err != nil {

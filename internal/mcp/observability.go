@@ -77,6 +77,13 @@ func (s *Service) callObservabilityTool(ctx context.Context, credential *credent
 		return s.listFeedback(ctx, args.ProjectID, limit)
 	case "list_replays":
 		return s.listReplays(ctx, args.ProjectID, args.Query, args.Environment, args.Release, args.UserID, args.IssueID, args.HasError, limit)
+	case "list_replay_clicks":
+		if args.ReplayID == "" {
+			return nil, errors.New("replay_id is required")
+		}
+		return s.listReplayClicks(ctx, args.ProjectID, args.ReplayID, limit)
+	case "list_replay_selectors":
+		return s.listReplaySelectors(ctx, args.ProjectID, limit)
 	case "analyze_replay":
 		if args.ReplayID == "" {
 			return nil, errors.New("replay_id is required")
@@ -299,7 +306,7 @@ func (s *Service) listReplays(ctx context.Context, projectID, query, environment
 		arguments = append(arguments, issueID)
 	}
 	arguments = append(arguments, limit)
-	rows, err := s.store.DB.QueryContext(ctx, `SELECT rp.replay_id, rp.segment_id, rp.environment, rp.release, rp.user_id, rp.started_at, rp.finished_at, rp.error_count, rp.url, rp.created_at FROM replays rp WHERE `+strings.Join(clauses, " AND ")+` ORDER BY rp.finished_at DESC LIMIT ?`, arguments...)
+	rows, err := s.store.DB.QueryContext(ctx, `SELECT rp.replay_id, rp.segment_id, rp.environment, rp.release, rp.user_id, rp.started_at, rp.finished_at, rp.error_count, rp.url, rp.created_at, (SELECT COALESCE(SUM(rc.is_dead), 0) FROM replay_clicks rc WHERE rc.project_id = rp.project_id AND rc.replay_id = rp.replay_id AND rc.segment_id = rp.segment_id), (SELECT COALESCE(SUM(rc.is_rage), 0) FROM replay_clicks rc WHERE rc.project_id = rp.project_id AND rc.replay_id = rp.replay_id AND rc.segment_id = rp.segment_id) FROM replays rp WHERE `+strings.Join(clauses, " AND ")+` ORDER BY rp.finished_at DESC LIMIT ?`, arguments...)
 	if err != nil {
 		return nil, err
 	}
@@ -307,11 +314,51 @@ func (s *Service) listReplays(ctx context.Context, projectID, query, environment
 	items := make([]map[string]any, 0)
 	for rows.Next() {
 		var replayID, environment, release, userID, startedAt, finishedAt, targetURL, createdAt string
-		var segmentID, errorCount int
-		if err := rows.Scan(&replayID, &segmentID, &environment, &release, &userID, &startedAt, &finishedAt, &errorCount, &targetURL, &createdAt); err != nil {
+		var segmentID, errorCount, deadClicks, rageClicks int
+		if err := rows.Scan(&replayID, &segmentID, &environment, &release, &userID, &startedAt, &finishedAt, &errorCount, &targetURL, &createdAt, &deadClicks, &rageClicks); err != nil {
 			return nil, err
 		}
-		items = append(items, map[string]any{"replay_id": replayID, "segment_id": segmentID, "environment": environment, "release": release, "user_id": userID, "started_at": startedAt, "finished_at": finishedAt, "error_count": errorCount, "url": targetURL, "created_at": createdAt})
+		items = append(items, map[string]any{"replay_id": replayID, "segment_id": segmentID, "environment": environment, "release": release, "user_id": userID, "started_at": startedAt, "finished_at": finishedAt, "error_count": errorCount, "dead_click_count": deadClicks, "rage_click_count": rageClicks, "url": targetURL, "created_at": createdAt})
+	}
+	return items, rows.Err()
+}
+
+func (s *Service) listReplayClicks(ctx context.Context, projectID, replayID string, limit int) (any, error) {
+	rows, err := s.store.DB.QueryContext(ctx, `SELECT segment_id, sequence, node_id, timestamp, dom_element, element, is_dead, is_rage FROM replay_clicks WHERE project_id = ? AND replay_id = ? ORDER BY timestamp LIMIT ?`, projectID, strings.ToLower(strings.ReplaceAll(strings.TrimSpace(replayID), "-", "")), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]map[string]any, 0)
+	for rows.Next() {
+		var segmentID, sequence, nodeID, dead, rage int
+		var timestamp, selector, encodedElement string
+		if err := rows.Scan(&segmentID, &sequence, &nodeID, &timestamp, &selector, &encodedElement, &dead, &rage); err != nil {
+			return nil, err
+		}
+		element := map[string]any{}
+		_ = json.Unmarshal([]byte(encodedElement), &element)
+		items = append(items, map[string]any{"segment_id": segmentID, "sequence": sequence, "node_id": nodeID, "timestamp": timestamp, "dom_element": selector, "element": element, "is_dead": dead != 0, "is_rage": rage != 0})
+	}
+	return items, rows.Err()
+}
+
+func (s *Service) listReplaySelectors(ctx context.Context, projectID string, limit int) (any, error) {
+	rows, err := s.store.DB.QueryContext(ctx, `SELECT dom_element, element, SUM(is_dead), SUM(is_rage) FROM replay_clicks WHERE project_id = ? AND (is_dead = 1 OR is_rage = 1) GROUP BY dom_element, element ORDER BY SUM(is_dead) + SUM(is_rage) DESC LIMIT ?`, projectID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]map[string]any, 0)
+	for rows.Next() {
+		var selector, encodedElement string
+		var dead, rage int
+		if err := rows.Scan(&selector, &encodedElement, &dead, &rage); err != nil {
+			return nil, err
+		}
+		element := map[string]any{}
+		_ = json.Unmarshal([]byte(encodedElement), &element)
+		items = append(items, map[string]any{"dom_element": selector, "element": element, "count_dead_clicks": dead, "count_rage_clicks": rage})
 	}
 	return items, rows.Err()
 }

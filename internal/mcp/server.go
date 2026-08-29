@@ -22,7 +22,7 @@ import (
 
 const (
 	protocolVersion = "2025-11-25"
-	serverVersion   = "0.29.0"
+	serverVersion   = "0.31.0"
 )
 
 var supportedProtocolVersions = map[string]bool{
@@ -306,7 +306,7 @@ func (s *Service) callTool(r *http.Request, credential *credential, raw json.Raw
 		"delete_uptime_monitor", "create_cron_monitor", "delete_cron_monitor":
 		return s.callAdministrationTool(ctx, credential, call.Name, call.Arguments)
 	case "list_transactions", "list_logs", "list_uptime_monitors", "list_uptime_checks",
-		"list_cron_monitors", "list_cron_checkins", "list_feedback", "list_replays",
+		"list_cron_monitors", "list_cron_checkins", "list_feedback", "list_replays", "list_replay_clicks", "list_replay_selectors",
 		"analyze_replay", "list_profiles", "analyze_profile", "list_metrics", "list_alert_rules", "list_alert_deliveries",
 		"list_artifacts", "list_attachments", "list_deploys", "list_commits",
 		"list_suspect_commits", "list_project_quotas", "list_ingestion_jobs",
@@ -468,6 +468,8 @@ func tools() []tool {
 			"user_id": stringProperty("Optional replay user ID"), "issue_id": stringProperty("Optional correlated issue UUID"),
 			"has_error": map[string]any{"type": "boolean", "default": false}, "limit": limitProperty,
 		}, "project_id"), Annotations: readOnly},
+		{Name: "list_replay_clicks", Description: "List classified clicks and resolved DOM selectors for a Replay session.", InputSchema: objectSchema(map[string]any{"project_id": stringProperty("Project UUID"), "replay_id": stringProperty("Replay session ID"), "limit": limitProperty}, "project_id", "replay_id"), Annotations: readOnly},
+		{Name: "list_replay_selectors", Description: "Aggregate dead and rage clicks by DOM selector for a project.", InputSchema: projectLimitSchema(stringProperty, limitProperty), Annotations: readOnly},
 		{Name: "analyze_replay", Description: "Decode a replay segment into navigation, interaction, mutation, and breadcrumb timelines without exposing form input values.", InputSchema: objectSchema(map[string]any{"project_id": stringProperty("Project UUID"), "replay_id": stringProperty("Internal replay segment UUID")}, "project_id", "replay_id"), Annotations: readOnly},
 		{Name: "list_profiles", Description: "List profiles and transaction linkage.", InputSchema: projectLimitSchema(stringProperty, limitProperty), Annotations: readOnly},
 		{Name: "analyze_profile", Description: "Analyze a sampled profile into thread totals, hotspots, and a flamegraph tree.", InputSchema: objectSchema(map[string]any{"project_id": stringProperty("Project UUID"), "profile_id": stringProperty("Internal profile UUID")}, "project_id", "profile_id"), Annotations: readOnly},
