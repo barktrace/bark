@@ -14,6 +14,10 @@ const state = {
   transactionDetail: null,
   logs: [],
   logLevel: 'all',
+  discover: { dataset: 'errors', fields: 'title,count()', query: '', statsPeriod: '24h', orderBy: '-count()', result: null, error: '' },
+  dashboards: [],
+  dashboardId: '',
+  dashboardResults: {},
   monitors: [],
   monitorId: '',
   monitorDetails: { checks: [], incidents: [] },
@@ -53,6 +57,8 @@ const routeMeta = {
   settings: ['Organization', 'Membership, identity, and workspace settings.'],
   performance: ['Performance', 'Transactions, traces, and latency.'],
   logs: ['Logs', 'Structured application logs in context.'],
+  discover: ['Discover', 'Query errors, transactions, spans, logs, and metrics.'],
+  dashboards: ['Dashboards', 'Saved views of the signals that matter to your team.'],
   uptime: ['Uptime', 'Endpoint checks and incident history.'],
   telemetry: ['Telemetry', 'Cron checks, feedback, replays, profiles, metrics, artifacts, and ingestion health.'],
 };
@@ -328,6 +334,67 @@ function renderLogs() {
     <section class="card log-stream">${rows.length ? rows.map((entry) => `<details class="log-row"><summary><time>${escapeHTML(new Date(entry.timestamp).toLocaleTimeString())}</time><span class="log-level ${escapeHTML(entry.level)}">${escapeHTML(entry.level)}</span><strong>${escapeHTML(entry.message)}</strong><span class="secondary-cell">${escapeHTML(entry.environment || entry.release || '')}</span></summary><div class="log-context"><dl><div><dt>Timestamp</dt><dd class="mono">${escapeHTML(entry.timestamp)}</dd></div><div><dt>Trace</dt><dd class="mono">${escapeHTML(entry.trace_id || '—')}</dd></div><div><dt>Span</dt><dd class="mono">${escapeHTML(entry.span_id || '—')}</dd></div><div><dt>Release</dt><dd class="mono">${escapeHTML(entry.release || '—')}</dd></div></dl><pre>${escapeHTML(JSON.stringify(entry.attributes || {}, null, 2))}</pre></div></details>`).join('') : `<div class="empty-state">${icon('log')}<h3>No matching logs</h3><p>Send structured logs through the Sentry envelope or Barktrace logs endpoint.</p></div>`}</section>`;
 }
 
+function resultTable(result, empty = 'No matching data.') {
+  const rows = result?.data || [];
+  const fields = Object.keys(result?.meta?.fields || rows[0] || {});
+  if (!rows.length) return `<div class="empty-state">${icon('search')}<h3>No results</h3><p>${escapeHTML(empty)}</p></div>`;
+  return `<div class="discover-table"><div class="discover-row discover-head">${fields.map((field) => `<span>${escapeHTML(field)}</span>`).join('')}</div>${rows.map((row) => `<div class="discover-row">${fields.map((field) => `<span title="${escapeHTML(row[field] ?? '')}">${escapeHTML(formatDiscoverValue(row[field], result.meta.fields[field]))}</span>`).join('')}</div>`).join('')}</div>`;
+}
+
+function formatDiscoverValue(value, type) {
+  if (value == null || value === '') return '—';
+  if (type === 'duration') return formatMS(value);
+  if (type === 'date') return new Date(value).toLocaleString();
+  if (typeof value === 'number') return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  return String(value);
+}
+
+function renderDiscover() {
+  const model = state.discover;
+  return `<section class="card discover-builder"><form id="discover-form"><div class="discover-controls"><label>Dataset<select name="dataset"><option value="errors">Errors</option><option value="transactions">Transactions</option><option value="spans">Spans</option><option value="logs">Logs</option><option value="metrics">Metrics</option></select></label><label class="discover-fields">Fields<input name="fields" value="${escapeHTML(model.fields)}" placeholder="title, count()" required /></label><label>Period<select name="stats_period"><option value="1h">1 hour</option><option value="24h">24 hours</option><option value="7d">7 days</option><option value="30d">30 days</option><option value="90d">90 days</option></select></label><label>Order<input name="order_by" value="${escapeHTML(model.orderBy)}" placeholder="-count()" /></label></div><div class="discover-search"><input name="query" value="${escapeHTML(model.query)}" placeholder='environment:production level:error "checkout failed"' /><button class="button" type="submit">Run query</button></div><p class="form-help">Filters use <code>field:value</code>, <code>-field:value</code>, wildcards, or quoted text. Results are capped at 100 rows and 90 days.</p></form></section>${model.error ? `<p class="query-error">${escapeHTML(model.error)}</p>` : ''}<section class="card discover-results"><div class="card-heading"><div><p class="eyebrow">Results</p><h2>${escapeHTML(model.result?.meta?.dataset || model.dataset)}</h2></div><span class="result-count">${model.result?.data?.length || 0} rows</span></div>${model.result ? resultTable(model.result) : `<div class="empty-state">${icon('search')}<h3>Build a query</h3><p>Select fields and run a bounded query across the current project.</p></div>`}</section>`;
+}
+
+function renderWidget(widget, dashboard) {
+  const result = state.dashboardResults[widget.id];
+  let body = resultTable(result, 'No data in this widget’s time range.');
+  if (widget.display_type === 'number') {
+    const first = result?.data?.[0] || {};
+    const field = widget.fields[0];
+    body = `<div class="widget-number">${escapeHTML(formatDiscoverValue(first[field], result?.meta?.fields?.[field]))}<small>${escapeHTML(field)}</small></div>`;
+  } else if (['bar', 'line', 'area'].includes(widget.display_type)) {
+    body = renderWidgetChart(result, widget.display_type);
+  }
+  return `<article class="card dashboard-widget"><div class="card-heading"><div><p class="eyebrow">${escapeHTML(widget.dataset)} · ${escapeHTML(widget.stats_period)}</p><h2>${escapeHTML(widget.title)}</h2></div>${canAdminister() ? `<button class="icon-text-button danger-text" data-delete-widget="${escapeHTML(widget.id)}" data-dashboard-id="${escapeHTML(dashboard.id)}">Delete</button>` : ''}</div>${body}</article>`;
+}
+
+function renderWidgetChart(result, type) {
+  const rows = result?.data || [];
+  const fields = Object.keys(result?.meta?.fields || {});
+  const valueField = fields.find((field) => ['integer', 'number', 'duration'].includes(result.meta.fields[field]));
+  const labelField = fields.find((field) => field !== valueField);
+  if (!rows.length || !valueField) return `<div class="empty-state"><p>No numeric data to chart.</p></div>`;
+  const values = rows.map((row) => Number(row[valueField] || 0));
+  const maximum = Math.max(...values, 1);
+  if (type === 'bar') {
+    return `<div class="bar-chart">${rows.map((row, index) => `<div><span title="${escapeHTML(row[labelField] ?? index + 1)}" style="height:${Math.max(3, values[index] / maximum * 100)}%"></span><small>${escapeHTML(row[labelField] ?? index + 1)}</small></div>`).join('')}</div>`;
+  }
+  const width = 640;
+  const height = 180;
+  const points = values.map((value, index) => `${values.length === 1 ? width / 2 : index * width / (values.length - 1)},${height - (value / maximum * (height - 12))}`).join(' ');
+  const area = `0,${height} ${points} ${width},${height}`;
+  return `<div class="line-chart"><svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHTML(valueField)} chart">${type === 'area' ? `<polygon points="${area}" class="chart-area" />` : ''}<polyline points="${points}" /><g>${values.map((value, index) => `<circle cx="${values.length === 1 ? width / 2 : index * width / (values.length - 1)}" cy="${height - (value / maximum * (height - 12))}" r="4"><title>${escapeHTML(rows[index][labelField] ?? index + 1)}: ${escapeHTML(formatDiscoverValue(value, result.meta.fields[valueField]))}</title></circle>`).join('')}</g></svg><small>${escapeHTML(valueField)}</small></div>`;
+}
+
+function renderDashboards() {
+  const selected = state.dashboards.find((item) => item.id === state.dashboardId) || state.dashboards[0];
+  const dashboardOptions = state.dashboards.map((item) => `<button class="dashboard-picker ${selected?.id === item.id ? 'selected' : ''}" data-dashboard-id="${escapeHTML(item.id)}"><span><strong>${escapeHTML(item.title)}</strong><small>${item.widgets.length} widget${item.widgets.length === 1 ? '' : 's'}${item.project_id ? ' · project scoped' : ''}</small></span>${icon('chevron')}</button>`).join('');
+  const create = canAdminister() ? `<form id="create-dashboard" class="stack-form"><p class="eyebrow">New dashboard</p><input name="title" required maxlength="120" placeholder="Production health" /><input name="description" placeholder="Optional description" /><label class="check-field"><input name="project_scoped" type="checkbox" checked /> Scope to current project</label><button class="button small">Create dashboard</button></form>` : '';
+  if (!selected) return `<div class="dashboard-layout"><aside class="card dashboard-list">${create || '<p class="muted padded">No saved dashboards.</p>'}</aside><section class="card empty-state">${icon('grid')}<h3>No dashboards yet</h3><p>An organization administrator can create a saved view.</p></section></div>`;
+  const widgets = selected.widgets.map((widget) => renderWidget(widget, selected)).join('');
+  const addWidget = canAdminister() ? `<section class="card add-widget"><p class="eyebrow">Add widget</p><h2>Discover query</h2><form id="add-widget" class="stack-form"><input name="title" required maxlength="120" placeholder="Error volume" /><div class="form-grid"><select name="dataset"><option value="errors">Errors</option><option value="transactions">Transactions</option><option value="spans">Spans</option><option value="logs">Logs</option><option value="metrics">Metrics</option></select><select name="display_type"><option value="table">Table</option><option value="number">Big number</option><option value="bar">Bar</option><option value="line">Line</option><option value="area">Area</option></select></div><input name="fields" required value="count()" placeholder="project, count()" /><input name="query" placeholder="environment:production" /><div class="form-grid"><select name="stats_period"><option value="24h">24 hours</option><option value="7d">7 days</option><option value="30d">30 days</option><option value="90d">90 days</option></select><input name="order_by" placeholder="-count()" /></div><button class="button small">Add widget</button></form></section>` : '';
+  return `<div class="dashboard-layout"><aside class="card dashboard-list"><div class="card-heading"><div><p class="eyebrow">Saved views</p><h2>Dashboards</h2></div></div>${dashboardOptions}${create}</aside><div class="dashboard-content"><section class="dashboard-title"><div><h2>${escapeHTML(selected.title)}</h2><p class="muted">${escapeHTML(selected.description || 'Saved organization telemetry.')}</p></div>${canAdminister() ? `<button class="button danger small" data-delete-dashboard="${escapeHTML(selected.id)}">Delete dashboard</button>` : ''}</section><div class="widget-grid">${widgets || `<section class="card empty-state">${icon('grid')}<h3>No widgets</h3><p>Add a Discover query to build this dashboard.</p></section>`}${addWidget}</div></div></div>`;
+}
+
 function renderUptime() {
   const selected = state.monitors.find((monitor) => monitor.id === state.monitorId);
   const monitorRows = state.monitors.length ? state.monitors.map((monitor) => `<button class="monitor-row ${monitor.id === state.monitorId ? 'selected' : ''}" data-monitor-id="${escapeHTML(monitor.id)}"><i class="monitor-state ${escapeHTML(monitor.last_status)}"></i><span><strong>${escapeHTML(monitor.name)}</strong><small>${escapeHTML(monitor.url)}</small></span><span><b>${Number(monitor.availability_24h).toFixed(2)}%</b><small>last 24 hours</small></span><span><b>${escapeHTML(monitor.last_status)}</b><small>${monitor.last_checked_at ? escapeHTML(relative(monitor.last_checked_at)) : 'not checked yet'}</small></span>${icon('chevron')}</button>`).join('') : `<div class="empty-state">${icon('clock')}<h3>No uptime monitors</h3><p>Create an HTTP monitor to begin scheduled checks and incident tracking.</p><button class="button" data-open-monitor>${icon('plus')} Create monitor</button></div>`;
@@ -380,10 +447,19 @@ function render() {
     settings: renderSettings,
     performance: renderPerformance,
     logs: renderLogs,
+    discover: renderDiscover,
+    dashboards: renderDashboards,
     uptime: renderUptime,
     telemetry: renderTelemetry,
   };
   $('#view').innerHTML = (renderers[state.route] || renderOverview)();
+  if (state.route === 'discover') {
+    const form = $('#discover-form');
+    if (form) {
+      form.elements.dataset.value = state.discover.dataset;
+      form.elements.stats_period.value = state.discover.statsPeriod;
+    }
+  }
   bindView();
 }
 
@@ -403,6 +479,51 @@ function bindView() {
   $$('[data-telemetry-tab]').forEach((button) => button.addEventListener('click', () => {
     state.telemetryTab = button.dataset.telemetryTab;
     render();
+  }));
+  $('#discover-form')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const input = new FormData(event.currentTarget);
+    state.discover = { ...state.discover, dataset: input.get('dataset'), fields: input.get('fields'), query: input.get('query'), statsPeriod: input.get('stats_period'), orderBy: input.get('order_by'), error: '' };
+    try {
+      state.discover.result = await runDiscover(state.discover, state.projectId);
+    } catch (error) {
+      state.discover.result = null;
+      state.discover.error = error.message;
+    }
+    render();
+  });
+  $$('[data-dashboard-id].dashboard-picker').forEach((button) => button.addEventListener('click', async () => {
+    state.dashboardId = button.dataset.dashboardId;
+    await loadDashboardResults();
+    render();
+  }));
+  $('#create-dashboard')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const input = new FormData(event.currentTarget);
+    const dashboard = await request(`/organizations/${encodeURIComponent(state.organizationId)}/dashboards`, { method: 'POST', body: JSON.stringify({ project_id: input.get('project_scoped') ? state.projectId : '', title: input.get('title'), description: input.get('description') }) });
+    state.dashboardId = dashboard.id;
+    await loadDashboards();
+    showToast('Dashboard created');
+  });
+  $('#add-widget')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const input = new FormData(event.currentTarget);
+    await request(`/dashboards/${encodeURIComponent(state.dashboardId)}/widgets`, { method: 'POST', body: JSON.stringify({ title: input.get('title'), dataset: input.get('dataset'), display_type: input.get('display_type'), fields: String(input.get('fields')).split(',').map((item) => item.trim()).filter(Boolean), query: input.get('query'), stats_period: input.get('stats_period'), order_by: input.get('order_by'), limit: 20, position: state.dashboards.find((item) => item.id === state.dashboardId)?.widgets.length || 0 }) });
+    await loadDashboards();
+    showToast('Widget added');
+  });
+  $$('[data-delete-widget]').forEach((button) => button.addEventListener('click', async () => {
+    if (!confirm('Delete this dashboard widget?')) return;
+    await request(`/dashboards/${encodeURIComponent(button.dataset.dashboardId)}/widgets/${encodeURIComponent(button.dataset.deleteWidget)}`, { method: 'DELETE' });
+    await loadDashboards();
+    showToast('Widget deleted');
+  }));
+  $$('[data-delete-dashboard]').forEach((button) => button.addEventListener('click', async () => {
+    if (!confirm('Delete this dashboard and all of its widgets?')) return;
+    await request(`/dashboards/${encodeURIComponent(button.dataset.deleteDashboard)}`, { method: 'DELETE' });
+    state.dashboardId = '';
+    await loadDashboards();
+    showToast('Dashboard deleted');
   }));
   $$('[data-project-id]').forEach((button) => button.addEventListener('click', async () => {
     state.projectId = button.dataset.projectId;
@@ -787,21 +908,26 @@ async function loadManagementData() {
     state.projectMemberships = [];
     state.auditLogs = [];
     state.mcpTokens = [];
+    state.dashboards = [];
+    state.dashboardResults = {};
     return;
   }
   const requests = [
     request(`/organizations/${encodeURIComponent(state.organizationId)}/members`),
     request('/api-tokens'),
     request(`/storage?organization_id=${encodeURIComponent(state.organizationId)}`),
+    request(`/dashboards?organization_id=${encodeURIComponent(state.organizationId)}`),
   ];
   if (state.projectId) {
     requests.push(request(`/alerts?project_id=${encodeURIComponent(state.projectId)}`));
     requests.push(request(`/alert-deliveries?project_id=${encodeURIComponent(state.projectId)}`));
   }
-  const [members, tokens, storage, alerts = [], deliveries = []] = await Promise.all(requests);
+  const [members, tokens, storage, dashboardResponse, alerts = [], deliveries = []] = await Promise.all(requests);
   state.members = members;
   state.tokens = tokens;
   state.storage = storage;
+  state.dashboards = dashboardResponse.dashboards || [];
+  if (!state.dashboards.some((item) => item.id === state.dashboardId)) state.dashboardId = state.dashboards[0]?.id || '';
   state.alerts = alerts;
   state.alertDeliveries = deliveries;
   if (canAdminister()) {
@@ -821,6 +947,41 @@ async function loadManagementData() {
   } else {
     state.projectMemberships = [];
   }
+  await loadDashboardResults();
+  render();
+}
+
+async function runDiscover(model, projectId = '') {
+  const params = new URLSearchParams({ organization_id: state.organizationId, dataset: model.dataset, stats_period: model.statsPeriod || '24h', limit: String(model.limit || 100) });
+  String(model.fields || '').split(',').map((field) => field.trim()).filter(Boolean).forEach((field) => params.append('field', field));
+  if (model.query) params.set('query', model.query);
+  if (model.orderBy) params.set('order_by', model.orderBy);
+  if (model.environment) params.set('environment', model.environment);
+  if (model.release) params.set('release', model.release);
+  if (projectId) params.set('project', projectId);
+  return request(`/discover?${params}`);
+}
+
+async function loadDashboardResults() {
+  const dashboard = state.dashboards.find((item) => item.id === state.dashboardId) || state.dashboards[0];
+  state.dashboardResults = {};
+  if (!dashboard) return;
+  state.dashboardId = dashboard.id;
+  const results = await Promise.all(dashboard.widgets.map(async (widget) => {
+    try {
+      return [widget.id, await runDiscover({ dataset: widget.dataset, fields: widget.fields.join(','), query: widget.query, environment: widget.environment, release: widget.release, statsPeriod: widget.stats_period, orderBy: widget.order_by, limit: widget.limit }, dashboard.project_id)];
+    } catch (error) {
+      return [widget.id, { data: [], meta: { fields: {} }, error: error.message }];
+    }
+  }));
+  state.dashboardResults = Object.fromEntries(results);
+}
+
+async function loadDashboards() {
+  const response = await request(`/dashboards?organization_id=${encodeURIComponent(state.organizationId)}`);
+  state.dashboards = response.dashboards || [];
+  if (!state.dashboards.some((item) => item.id === state.dashboardId)) state.dashboardId = state.dashboards[0]?.id || '';
+  await loadDashboardResults();
   render();
 }
 

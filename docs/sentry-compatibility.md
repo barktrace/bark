@@ -65,6 +65,7 @@ The DSN shown in the project setup page should always be copied verbatim.
 | Pre-production APK/AAB/IPA build upload and installable APK/IPA download | Supported |
 | Snapshot image upload, latest-base lookup, and ZIP download | Supported |
 | Durable queue, retry, and dead-letter handling | Supported |
+| Organization events/Discover endpoint | Errors, transactions, spans, logs, metrics, bounded filters and aggregates |
 
 The compatibility checks currently exercise real `sentry-sdk` 2.21.0 and
 `sentry-go` 0.43.0 clients against the production Docker image. An opt-in test
@@ -76,7 +77,11 @@ workflows.
 
 Barktrace implements the current `sentry-cli` network surface and common SDK
 workflows, not the complete Sentry SaaS product or every private HTTP endpoint.
-Relay registration, Discover's query language, custom dashboards, deep
-replay/profile visualization, and the full integration marketplace are outside
-the current compatibility boundary. Unknown envelope categories receive a
-successful response and an ingestion outcome so clients do not retry forever.
+The bounded Discover subset supports selected fields, equality/negation/wildcard
+filters, free-text search, project/environment/release/level/status filters,
+ordering, and `count`, `count_unique`, `sum`, `avg`, `min`, `max`, and percentile
+aggregates. It does not implement every SnQL function or Sentry query operator.
+Relay registration, deep replay/profile visualization, and the full integration
+marketplace remain outside the current compatibility boundary. Unknown envelope
+categories receive a successful response and an ingestion outcome so clients do
+not retry forever.

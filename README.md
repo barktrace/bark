@@ -21,6 +21,8 @@ The current foundation includes:
 - transaction and span ingestion with latency summaries and waterfall detail;
 - sessions and release-health percentages;
 - structured log ingestion, filtering, and trace/release correlation;
+- bounded Discover queries across errors, transactions, spans, logs, and metrics;
+- persisted organization/project dashboards with table, number, and chart widgets;
 - scheduled HTTP uptime monitors with check and incident history;
 - webhook and Slack alert rules for new issues, regressions, and downtime;
 - SMTP email delivery, cron/metric/feedback triggers, conditions, and cooldowns;
@@ -31,7 +33,7 @@ The current foundation includes:
 - a durable leased ingestion queue with retries, dead letters, and category quotas;
 - organization and project roles plus a queryable mutation audit log;
 - configurable retention, manual cleanup previews, and storage reporting;
-- an organization-scoped Streamable HTTP MCP server with 30 investigation tools;
+- an organization-scoped Streamable HTTP MCP server with 35 investigation and dashboard tools;
 - optional S3-compatible shared blob storage and leased background workers;
 - one final Docker image containing the API and compiled Astro dashboard.
 
@@ -57,6 +59,7 @@ Detailed guides:
 - [MCP server and client setup](docs/mcp.md)
 - [Sentry SDK compatibility](docs/sentry-compatibility.md)
 - [Performance, logs, and uptime](docs/observability.md)
+- [Discover queries and dashboards](docs/discover.md)
 - [Members, tokens, alerts, and retention](docs/administration.md)
 - [Brand identity and assets](docs/brand.md)
 - [Architecture and compatibility boundary](docs/architecture.md)
@@ -109,6 +112,7 @@ one node or replicated libSQL and S3 across multiple nodes. It is not complete
 Sentry parity.
 
 The common SDK and `sentry-cli` self-hosted workflows are implemented, but this
-is not a drop-in implementation of every Sentry SaaS endpoint. Discover-style
-ad-hoc querying, custom dashboards, deep replay/profile analysis, and Relay
-remain outside the current boundary.
+is not a drop-in implementation of every Sentry SaaS endpoint. Barktrace now
+has a bounded Discover language and custom dashboards; Sentry's complete query
+grammar, deep replay/profile analysis, and Relay remain outside the current
+boundary.

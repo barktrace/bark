@@ -61,6 +61,23 @@ try {
   await page.getByRole('heading', { name: 'E2EError', exact: true }).waitFor();
   await page.getByText('checkout@1.0.0', { exact: true }).waitFor();
 
+  await page.getByRole('link', { name: 'Discover' }).click();
+  await page.locator('#discover-form input[name="query"]').fill('environment:e2e');
+  await page.locator('#discover-form').getByRole('button', { name: 'Run query' }).click();
+  await page.getByText('E2EError: Browser workflow failed', { exact: true }).waitFor();
+
+  await page.getByRole('link', { name: 'Dashboards' }).click();
+  await page.locator('#create-dashboard input[name="title"]').fill('E2E health');
+  await page.locator('#create-dashboard').getByRole('button', { name: 'Create dashboard' }).click();
+  await page.getByRole('heading', { name: 'E2E health', exact: true }).waitFor();
+  await page.locator('#add-widget input[name="title"]').fill('Error volume');
+  await page.locator('#add-widget select[name="display_type"]').selectOption('number');
+  await page.locator('#add-widget').getByRole('button', { name: 'Add widget' }).click();
+  await page.getByRole('heading', { name: 'Error volume', exact: true }).waitFor();
+  await page.locator('.widget-number').waitFor();
+  const widgetValue = await page.locator('.widget-number').textContent();
+  if (!widgetValue?.trim().startsWith('1')) throw new Error(`unexpected dashboard widget value: ${widgetValue}`);
+
   await page.getByRole('link', { name: 'Telemetry' }).click();
   await page.getByRole('heading', { name: 'Cron monitors' }).waitFor();
   await page.getByRole('button', { name: 'Artifacts' }).click();
@@ -73,7 +90,7 @@ try {
   if (me.status() !== 401) throw new Error(`logout left session active: /auth/me returned ${me.status()}`);
 
   if (browserErrors.length) throw new Error(browserErrors.join('\n'));
-  console.log('browser E2E passed: OIDC auto-provisioning, project creation, ingestion, issue detail, telemetry, and logout');
+  console.log('browser E2E passed: OIDC, ingestion, issue detail, Discover, dashboards, telemetry, and logout');
 } finally {
   await browser.close();
 }

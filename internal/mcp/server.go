@@ -115,7 +115,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.writeResult(w, id, map[string]any{
 			"protocolVersion": version,
 			"capabilities":    map[string]any{"tools": map[string]bool{"listChanged": false}},
-			"serverInfo":      map[string]string{"name": "barktrace", "version": "0.1.0"},
+			"serverInfo":      map[string]string{"name": "barktrace", "version": "0.3.0"},
 		})
 	case "ping":
 		s.writeResult(w, id, map[string]any{})
@@ -291,6 +291,8 @@ func (s *Service) callTool(r *http.Request, credential *credential, raw json.Raw
 			return nil, err
 		}
 		return s.listReleases(ctx, args.ProjectID, boundedLimit(args.Limit))
+	case "query_discover", "list_dashboards", "create_dashboard", "add_dashboard_widget", "delete_dashboard":
+		return s.callDiscoverTool(ctx, credential, call.Name, call.Arguments)
 	case "list_transactions", "list_logs", "list_uptime_monitors", "list_uptime_checks",
 		"list_cron_monitors", "list_cron_checkins", "list_feedback", "list_replays",
 		"list_profiles", "list_metrics", "list_alert_rules", "list_alert_deliveries",
@@ -418,6 +420,27 @@ func tools() []tool {
 		{Name: "list_releases", Description: "List releases linked to a project with event counts.", InputSchema: objectSchema(map[string]any{
 			"project_id": stringProperty("Project UUID"), "limit": limitProperty,
 		}, "project_id"), Annotations: readOnly},
+		{Name: "query_discover", Description: "Run a bounded Discover query over errors, transactions, spans, logs, or metrics.", InputSchema: objectSchema(map[string]any{
+			"organization_id": stringProperty("Organization UUID; only needed by the legacy instance token"),
+			"project_id":      stringProperty("Optional project UUID"),
+			"dataset":         map[string]any{"type": "string", "enum": []string{"errors", "transactions", "spans", "logs", "metrics"}},
+			"fields":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "minItems": 1, "maxItems": 20},
+			"query":           stringProperty("Optional field filters and free-text search"),
+			"environment":     stringProperty("Optional environment filter"), "release": stringProperty("Optional release filter"),
+			"level": stringProperty("Optional level filter"), "status": stringProperty("Optional status filter"),
+			"stats_period": stringProperty("Time range such as 1h, 24h, 7d, or 30d"), "order_by": stringProperty("Selected field, prefixed by - for descending"), "limit": limitProperty,
+		}, "dataset", "fields"), Annotations: readOnly},
+		{Name: "list_dashboards", Description: "List saved dashboards and widget definitions for an organization.", InputSchema: objectSchema(map[string]any{"organization_id": stringProperty("Organization UUID; only needed by the legacy instance token")}), Annotations: readOnly},
+		{Name: "create_dashboard", Description: "Create a saved dashboard, optionally scoped to one project.", InputSchema: objectSchema(map[string]any{
+			"organization_id": stringProperty("Organization UUID; only needed by the legacy instance token"), "project_id": stringProperty("Optional project UUID"), "title": stringProperty("Dashboard title"), "description": stringProperty("Optional description"),
+		}, "title"), Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false}},
+		{Name: "add_dashboard_widget", Description: "Add a Discover-backed widget to a saved dashboard.", InputSchema: objectSchema(map[string]any{
+			"dashboard_id": stringProperty("Dashboard UUID"), "title": stringProperty("Widget title"),
+			"dataset":      map[string]any{"type": "string", "enum": []string{"errors", "transactions", "spans", "logs", "metrics"}},
+			"display_type": map[string]any{"type": "string", "enum": []string{"table", "number", "line", "bar", "area"}, "default": "table"},
+			"fields":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "minItems": 1, "maxItems": 20}, "query": stringProperty("Optional query"), "stats_period": stringProperty("Time range such as 24h or 7d"), "order_by": stringProperty("Optional ordering"), "limit": limitProperty,
+		}, "dashboard_id", "title", "dataset", "fields"), Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false}},
+		{Name: "delete_dashboard", Description: "Permanently delete a saved dashboard and its widgets.", InputSchema: objectSchema(map[string]any{"dashboard_id": stringProperty("Dashboard UUID")}, "dashboard_id"), Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": true, "idempotentHint": true}},
 		{Name: "list_transactions", Description: "List performance transactions and latency data for a project.", InputSchema: projectLimitSchema(stringProperty, limitProperty), Annotations: readOnly},
 		{Name: "list_logs", Description: "Search structured logs by level or message text.", InputSchema: objectSchema(map[string]any{
 			"project_id": stringProperty("Project UUID"), "level": stringProperty("Optional log level"), "query": stringProperty("Optional message search"), "limit": limitProperty,

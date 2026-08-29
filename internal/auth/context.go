@@ -72,6 +72,7 @@ func (s *Service) auditScope(r *http.Request) (organizationID, projectID, target
 	for _, candidate := range []struct{ key, kind string }{
 		{"job_id", "ingestion_job"}, {"artifact_id", "artifact"}, {"file_id", "artifact"},
 		{"issue_id", "issue"}, {"monitor_id", "monitor"}, {"rule_id", "alert_rule"},
+		{"widget_id", "dashboard_widget"}, {"dashboard_id", "dashboard"},
 		{"invitation_id", "invitation"}, {"token_id", "token"}, {"user_id", "user"},
 		{"release_id", "release"}, {"project_id", "project"}, {"organization_id", "organization"},
 	} {
@@ -82,6 +83,12 @@ func (s *Service) auditScope(r *http.Request) (organizationID, projectID, target
 	}
 	if projectID == "" && targetType == "issue" {
 		_ = s.store.DB.QueryRowContext(r.Context(), `SELECT project_id FROM issues WHERE id = ?`, targetID).Scan(&projectID)
+	}
+	if targetType == "dashboard" {
+		_ = s.store.DB.QueryRowContext(r.Context(), `SELECT organization_id, COALESCE(project_id, '') FROM dashboards WHERE id = ?`, targetID).Scan(&organizationID, &projectID)
+	}
+	if targetType == "dashboard_widget" {
+		_ = s.store.DB.QueryRowContext(r.Context(), `SELECT d.organization_id, COALESCE(d.project_id, '') FROM dashboard_widgets w JOIN dashboards d ON d.id = w.dashboard_id WHERE w.id = ?`, targetID).Scan(&organizationID, &projectID)
 	}
 	if organizationID == "" && projectID != "" {
 		_ = s.store.DB.QueryRowContext(r.Context(), `SELECT organization_id FROM projects WHERE id = ?`, projectID).Scan(&organizationID)

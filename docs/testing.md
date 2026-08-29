@@ -35,7 +35,7 @@ metadata:
 The browser test builds the production image and launches a disposable OIDC
 provider. A real Chromium browser signs in, proves automatic account creation,
 creates a project, sends a Sentry event, opens the resulting issue and telemetry
-views, and signs out.
+views, runs a Discover query, creates a saved dashboard widget, and signs out.
 
 ```sh
 npm ci --prefix tests/e2e

@@ -72,6 +72,9 @@ curl --fail-with-body https://errors.example.com/mcp \
 | `list_events` | Lists event occurrences, optionally for one issue. |
 | `get_event` | Returns an event including its original Sentry JSON. |
 | `list_releases` | Lists project releases and event counts. |
+| `query_discover` | Runs a bounded query across errors, transactions, spans, logs, or metrics. |
+| `list_dashboards` | Lists saved dashboards and widget definitions. |
+| `create_dashboard`, `add_dashboard_widget`, `delete_dashboard` | Manages saved dashboards with a write-scoped credential. |
 | `list_transactions`, `list_logs` | Queries performance data and structured logs. |
 | `list_uptime_monitors`, `list_uptime_checks` | Inspects uptime status and history. |
 | `list_cron_monitors`, `list_cron_checkins` | Inspects scheduled-job health. |
@@ -86,7 +89,7 @@ curl --fail-with-body https://errors.example.com/mcp \
 ## Security boundary
 
 Database-backed MCP tokens can access only their organization. `read` tokens
-cannot invoke mutation tools; `write` tokens can also update issue status, and
-successful mutations are recorded with actor type `mcp`. Treat every token as a
+cannot invoke mutation tools; `write` tokens can update issue status and manage
+dashboards, and successful mutations are recorded with actor type `mcp`. Treat every token as a
 secret and use HTTPS. `BARKTRACE_MCP_TOKEN`, when configured, deliberately keeps
 legacy instance-wide administrative access and should be reserved for recovery.

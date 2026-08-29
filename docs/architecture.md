@@ -15,7 +15,7 @@ The public route layout is:
 - `/api/{project_id}/store/` — legacy SDK events
 - `/api/{project_id}/logs/` — lightweight structured log ingestion
 - `/mcp` — authenticated, organization-scoped Streamable HTTP MCP endpoint
-- `/organizations`, `/projects`, `/issues`, `/releases`, `/performance`, `/logs`, `/uptime/*`, `/cron/*`, `/replays`, `/profiles`, `/metrics`, and `/artifacts` — native JSON API
+- `/organizations`, `/projects`, `/issues`, `/releases`, `/discover`, `/dashboards`, `/performance`, `/logs`, `/uptime/*`, `/cron/*`, `/replays`, `/profiles`, `/metrics`, and `/artifacts` — native JSON API
 - `/healthz` and `/readyz` — probes
 
 ## Memory policy
@@ -60,6 +60,12 @@ retention work uses database leases or atomic job leases so multiple processes
 do not duplicate scheduled work. Public HTTP/HTTPS targets are allowed by default;
 loopback, link-local, and private IPs are rejected before creation and again at
 connection time to reduce SSRF and DNS-rebinding risk.
+
+Discover compiles a deliberately bounded field/filter grammar into parameterized
+SQLite queries. Dataset names, fields, aggregates, and ordering are selected
+from static allowlists. Queries are limited to 20 fields, 20 search terms, 100
+rows, and 90 days. Saved dashboard widgets retain only the query definition and
+execute through the same organization- and project-scoped engine.
 
 ## Compatibility boundary
 

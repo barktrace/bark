@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/barktrace/bark/internal/auth"
+	"github.com/barktrace/bark/internal/discover"
 	"github.com/google/uuid"
 )
 
@@ -316,36 +317,22 @@ func (s *Server) sentryOrganizationEvents(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusNotFound, "organization not found")
 		return
 	}
-	if dataset := r.URL.Query().Get("dataset"); dataset != "" && dataset != "logs" {
-		writeError(w, http.StatusBadRequest, "only the logs dataset is supported")
-		return
-	}
-	projectFilter := strings.TrimSpace(r.URL.Query().Get("project"))
-	query := strings.TrimSpace(r.URL.Query().Get("query"))
-	limit, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
-	if limit < 1 || limit > 100 {
-		limit = 50
-	}
-	rows, err := s.store.DB.QueryContext(r.Context(), `
-		SELECT l.id, l.trace_id, l.level, l.timestamp, l.message
-		FROM logs l JOIN projects p ON p.id = l.project_id
-		WHERE p.organization_id = ? AND (? = '' OR p.sentry_id = ? OR p.id = ?)
-		  AND (? = '' OR l.message LIKE '%' || ? || '%')
-		ORDER BY l.timestamp DESC LIMIT ?
-	`, organizationID, projectFilter, projectFilter, projectFilter, query, query, limit)
+	projectIDs, err := s.discoverProjectIDs(r, principal, organizationID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not list logs")
+		writeError(w, http.StatusInternalServerError, "could not authorize projects")
 		return
 	}
-	defer rows.Close()
-	items := make([]map[string]any, 0)
-	for rows.Next() {
-		var id, traceID, severity, timestamp, message string
-		if rows.Scan(&id, &traceID, &severity, &timestamp, &message) == nil {
-			items = append(items, map[string]any{"sentry.item_id": id, "trace": nullableText(traceID), "severity": nullableText(severity), "timestamp": normalizeAPITime(timestamp), "message": nullableText(message)})
-		}
+	request, err := discoverRequestFromQuery(r, projectIDs)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": items})
+	result, err := discover.Query(r.Context(), s.store.DB, request)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) sentryProjectEvents(w http.ResponseWriter, r *http.Request) {

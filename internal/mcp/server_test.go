@@ -56,8 +56,54 @@ func TestInitializeAndListTools(t *testing.T) {
 	listed := call(t, service, `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
 	toolsResult := listed["result"].(map[string]any)
 	available := toolsResult["tools"].([]any)
-	if len(available) != 30 {
-		t.Fatalf("tool count = %d, want 30", len(available))
+	if len(available) != 35 {
+		t.Fatalf("tool count = %d, want 35", len(available))
+	}
+}
+
+func TestDiscoverAndDashboardToolsAreOrganizationScoped(t *testing.T) {
+	st := testStore(t)
+	seedMCPData(t, st)
+	plain := "bark_mcp_discover-write-token"
+	hash := sha256.Sum256([]byte(plain))
+	_, err := st.DB.Exec(`
+		INSERT INTO users(id, email, name) VALUES ('creator', 'creator@example.com', 'Creator');
+		INSERT INTO organization_memberships(organization_id, user_id, role) VALUES ('org', 'creator', 'owner');
+		INSERT INTO mcp_tokens(id, organization_id, created_by, name, token_hash, token_prefix, scopes) VALUES ('mcp-discover', 'org', 'creator', 'Discover', ?, 'bark_mcp_scope', '["write"]');
+		INSERT INTO logs(id, project_id, timestamp, level, message) VALUES ('log', 'project', CURRENT_TIMESTAMP, 'error', 'database unavailable');
+	`, hash[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := New(st, "", "https://errors.example")
+
+	queried := callWithToken(t, service, plain, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"query_discover","arguments":{"dataset":"logs","fields":["message","severity"],"stats_period":"24h"}}}`)
+	queryResult := queried["result"].(map[string]any)
+	if queryResult["isError"] != false {
+		t.Fatalf("query_discover failed: %#v", queried)
+	}
+	data := queryResult["structuredContent"].(map[string]any)["data"].([]any)
+	if len(data) != 1 || data[0].(map[string]any)["message"] != "database unavailable" {
+		t.Fatalf("unexpected discover data: %#v", data)
+	}
+
+	created := callWithToken(t, service, plain, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"create_dashboard","arguments":{"project_id":"project","title":"Operations"}}}`)
+	createdResult := created["result"].(map[string]any)
+	if createdResult["isError"] != false {
+		t.Fatalf("create_dashboard failed: %#v", created)
+	}
+	dashboardID := createdResult["structuredContent"].(map[string]any)["id"].(string)
+	added := callWithToken(t, service, plain, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"add_dashboard_widget","arguments":{"dashboard_id":"`+dashboardID+`","title":"Errors","dataset":"errors","display_type":"number","fields":["count()"],"stats_period":"90d","limit":1}}}`)
+	if added["result"].(map[string]any)["isError"] != false {
+		t.Fatalf("add_dashboard_widget failed: %#v", added)
+	}
+	listed := callWithToken(t, service, plain, `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"list_dashboards","arguments":{}}}`)
+	if dashboards := listed["result"].(map[string]any)["structuredContent"].([]any); len(dashboards) != 1 {
+		t.Fatalf("unexpected dashboards: %#v", dashboards)
+	}
+	var audits int
+	if err := st.DB.QueryRow(`SELECT COUNT(*) FROM audit_logs WHERE organization_id = 'org' AND actor_type = 'mcp'`).Scan(&audits); err != nil || audits != 2 {
+		t.Fatalf("audit count=%d err=%v", audits, err)
 	}
 }
 
