@@ -71,6 +71,8 @@ The DSN shown in the project setup page should always be copied verbatim.
 | Organization and project detail endpoints | Supported, including project DSN-key discovery |
 | Organization members and teams | Listing, team CRUD, team membership, project links, and project responses |
 | Issue and event detail endpoints | Supported, including latest/group events, status, priority, user/team assignment, bookmark, snooze, public sharing, and permanent discard updates |
+| User feedback endpoints | Project listing, detail, and deletion |
+| Event attachment endpoints | Event-scoped listing, metadata, download, and deletion |
 | Replay endpoints | Organization search/count/detail/selectors, project-scoped decoded recording segments, dead/rage-click issue creation, viewer history, issue correlation, and durable administrator deletion jobs |
 | Managed Sentry Relay | Registration, Ed25519 request authentication, v3 project configs, public-key lookup, and liveness |
 

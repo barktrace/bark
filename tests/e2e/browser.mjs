@@ -84,8 +84,8 @@ try {
   });
   if (!sourceMapUpload.ok()) throw new Error(`source-map upload failed: ${sourceMapUpload.status()} ${await sourceMapUpload.text()}`);
 
-  const ingestEnvelope = async (header, type, payload) => {
-    const body = `${JSON.stringify(header)}\n${JSON.stringify({ type, length: Buffer.byteLength(payload) })}\n${payload}\n`;
+  const ingestEnvelope = async (header, type, payload, item = {}) => {
+    const body = `${JSON.stringify(header)}\n${JSON.stringify({ type, length: Buffer.byteLength(payload), ...item })}\n${payload}\n`;
     const envelopeResponse = await fetch(`${baseURL}/api/${projectID}/envelope/?sentry_key=${encodeURIComponent(parsed.username)}&sentry_version=7`, {
       method: 'POST',
       headers: { 'content-type': 'application/x-sentry-envelope' },
@@ -110,6 +110,18 @@ try {
     }),
   });
   if (!response.ok) throw new Error(`Sentry ingestion returned ${response.status}: ${await response.text()}`);
+  await ingestEnvelope({ event_id: eventID }, 'attachment', 'E2E diagnostic attachment', {
+    filename: 'diagnostic.txt',
+    content_type: 'text/plain',
+    attachment_type: 'event.attachment',
+  });
+  await ingestEnvelope({}, 'user_report', JSON.stringify({
+    event_id: eventID,
+    name: 'E2E customer',
+    email: 'customer@example.test',
+    comments: 'The checkout button failed',
+    url: 'https://shop.example/checkout',
+  }));
 
   const replayID = '12121212121212121212121212121212';
   await ingestEnvelope({ replay_id: replayID }, 'replay_event', JSON.stringify({
@@ -212,6 +224,14 @@ try {
   if (!latestEvent.ok() || (await latestEvent.json()).eventID !== eventID) throw new Error('Sentry latest issue event endpoint failed');
   const eventDetail = await page.request.get(`/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/events/${eventID}/`);
   if (!eventDetail.ok() || (await eventDetail.json()).groupID !== sentryIssues[0].id) throw new Error('Sentry event detail endpoint failed');
+  const attachmentList = await page.request.get(`/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/events/${eventID}/attachments/?query=diagnostic`);
+  const attachments = await attachmentList.json();
+  if (!attachmentList.ok() || attachments[0]?.name !== 'diagnostic.txt' || attachments[0]?.event_id !== eventID) throw new Error(`Sentry attachment list failed: ${JSON.stringify(attachments)}`);
+  const attachmentDownload = await page.request.get(`/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/events/${eventID}/attachments/${encodeURIComponent(attachments[0].id)}/?download`);
+  if (!attachmentDownload.ok() || (await attachmentDownload.text()) !== 'E2E diagnostic attachment') throw new Error('Sentry attachment download failed');
+  const feedbackList = await page.request.get(`/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/user-feedback/`);
+  const feedback = await feedbackList.json();
+  if (!feedbackList.ok() || feedback[0]?.eventID !== eventID || feedback[0]?.comments !== 'The checkout button failed') throw new Error(`Sentry user feedback list failed: ${JSON.stringify(feedback)}`);
   const replaySearch = await page.request.get(`/api/0/organizations/e2e/replays/?project=${encodeURIComponent(sentryProject.id)}&query=${encodeURIComponent(`environment:e2e issue:${sentryIssues[0].id}`)}`);
   const replaySearchBody = await replaySearch.json();
   if (!replaySearch.ok() || replaySearchBody.data?.[0]?.replayId !== replayID || replaySearchBody.data[0].issues?.[0]?.id !== sentryIssues[0].id) throw new Error(`Sentry replay search/correlation failed: ${JSON.stringify(replaySearchBody)}`);

@@ -71,6 +71,7 @@ func (s *Service) auditScope(r *http.Request) (organizationID, projectID, target
 	}
 	for _, candidate := range []struct{ key, kind string }{
 		{"job_id", "ingestion_job"}, {"artifact_id", "artifact"}, {"file_id", "artifact"},
+		{"attachment_id", "attachment"}, {"feedback_id", "feedback"},
 		{"issue_id", "issue"}, {"monitor_id", "monitor"}, {"rule_id", "alert_rule"},
 		{"widget_id", "dashboard_widget"}, {"dashboard_id", "dashboard"},
 		{"invitation_id", "invitation"}, {"token_id", "token"}, {"user_id", "user"},
