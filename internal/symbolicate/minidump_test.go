@@ -68,6 +68,42 @@ func TestMinidumpFramePointerFallback(t *testing.T) {
 	}
 }
 
+func TestMinidumpEventUnwindsAllCapturedThreads(t *testing.T) {
+	st := symbolicationStore(t)
+	event, err := MinidumpEvent(context.Background(), st, "project", multiThreadMinidumpFixture(t), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(event, &payload); err != nil {
+		t.Fatal(err)
+	}
+	values := payload["threads"].(map[string]any)["values"].([]any)
+	if len(values) != 2 {
+		t.Fatalf("minidump threads = %#v, want 2", values)
+	}
+	byID := make(map[string]map[string]any, len(values))
+	for _, value := range values {
+		thread := value.(map[string]any)
+		byID[thread["id"].(string)] = thread
+	}
+	crashed := byID["7"]
+	background := byID["9"]
+	if crashed == nil || crashed["crashed"] != true || crashed["current"] != true {
+		t.Fatalf("crashing thread = %#v", crashed)
+	}
+	if background == nil || background["crashed"] != false || background["current"] != false {
+		t.Fatalf("background thread = %#v", background)
+	}
+	backgroundFrames := background["stacktrace"].(map[string]any)["frames"].([]any)
+	if len(backgroundFrames) != 1 || backgroundFrames[0].(map[string]any)["instruction_addr"] != "0x140001110" {
+		t.Fatalf("background frames = %#v", backgroundFrames)
+	}
+	if frames := minidumpEventFrames(t, payload); len(frames) == 0 || frames[len(frames)-1]["instruction_addr"] != "0x140001010" {
+		t.Fatalf("exception frames = %#v", frames)
+	}
+}
+
 func TestParseMinidumpRejectsTruncatedStreams(t *testing.T) {
 	fixture := minidumpFixture(t)
 	if _, err := parseMinidump(fixture[:100]); err == nil {
@@ -239,6 +275,34 @@ func minidumpFixture(t *testing.T) []byte {
 	binary.LittleEndian.PutUint32(fixture[codeViewRVA+20:codeViewRVA+24], 1)
 	copy(fixture[codeViewRVA+24:codeViewRVA+32], "app.pdb\x00")
 	return fixture
+}
+
+func multiThreadMinidumpFixture(t *testing.T) []byte {
+	t.Helper()
+	const (
+		threadListRVA      = 864
+		secondContextRVA   = 964
+		secondStackRVA     = 1220
+		secondStackAddress = 0x71000000
+		secondInstruction  = 0x140001110
+	)
+	dump := append(minidumpFixture(t), make([]byte, 420)...)
+	// Replace the thread-list directory with a two-entry list appended after the
+	// original fixture so none of its context, stack, or module data moves.
+	binary.LittleEndian.PutUint32(dump[60:64], 100)
+	binary.LittleEndian.PutUint32(dump[64:68], threadListRVA)
+	binary.LittleEndian.PutUint32(dump[threadListRVA:threadListRVA+4], 2)
+	copy(dump[threadListRVA+4:threadListRVA+52], dump[260:308])
+	second := threadListRVA + 52
+	binary.LittleEndian.PutUint32(dump[second:second+4], 9)
+	binary.LittleEndian.PutUint64(dump[second+24:second+32], secondStackAddress)
+	binary.LittleEndian.PutUint32(dump[second+32:second+36], 64)
+	binary.LittleEndian.PutUint32(dump[second+36:second+40], secondStackRVA)
+	binary.LittleEndian.PutUint32(dump[second+40:second+44], 256)
+	binary.LittleEndian.PutUint32(dump[second+44:second+48], secondContextRVA)
+	binary.LittleEndian.PutUint64(dump[secondContextRVA+152:secondContextRVA+160], secondStackAddress)
+	binary.LittleEndian.PutUint64(dump[secondContextRVA+248:secondContextRVA+256], secondInstruction)
+	return dump
 }
 
 func TestReadMinidumpFixtureSignature(t *testing.T) {

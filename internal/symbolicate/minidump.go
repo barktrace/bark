@@ -15,10 +15,12 @@ import (
 )
 
 const (
-	maxMinidumpBytes   = 32 << 20
-	maxMinidumpStreams = 1024
-	maxMinidumpModules = 4096
-	maxMinidumpFrames  = 256
+	maxMinidumpBytes       = 32 << 20
+	maxMinidumpStreams     = 1024
+	maxMinidumpModules     = 4096
+	maxMinidumpThreads     = 256
+	maxMinidumpFrames      = 256
+	maxMinidumpEventFrames = 2048
 
 	minidumpThreadListStream = 3
 	minidumpModuleListStream = 4
@@ -35,7 +37,15 @@ type minidump struct {
 	registers       map[string]uint64
 	stackAddress    uint64
 	stack           []byte
+	threads         []minidumpThread
 	modules         []minidumpModule
+}
+
+type minidumpThread struct {
+	id           uint32
+	registers    map[string]uint64
+	stackAddress uint64
+	stack        []byte
 }
 
 type minidumpModule struct {
@@ -45,7 +55,7 @@ type minidumpModule struct {
 }
 
 // MinidumpEvent converts a bounded Breakpad/Crashpad minidump into a Sentry event and
-// unwinds its crashing thread with uploaded Breakpad CFI where available.
+// unwinds its bounded thread list with uploaded Breakpad CFI where available.
 func MinidumpEvent(ctx context.Context, st *store.Store, projectID string, raw, metadata []byte) ([]byte, error) {
 	parsed, err := parseMinidump(raw)
 	if err != nil {
@@ -58,7 +68,10 @@ func MinidumpEvent(ctx context.Context, st *store.Store, projectID string, raw, 
 	if payload == nil {
 		payload = make(map[string]any)
 	}
-	frames := unwindMinidump(ctx, st, projectID, parsed)
+	unwinders := loadBreakpadUnwinders(ctx, st, projectID, parsed.modules)
+	frames := unwindMinidumpThread(parsed, minidumpThread{
+		id: parsed.threadID, registers: parsed.registers, stackAddress: parsed.stackAddress, stack: parsed.stack,
+	}, unwinders)
 	if len(frames) == 0 {
 		return nil, errors.New("minidump contains no unwindable instruction address")
 	}
@@ -77,10 +90,36 @@ func MinidumpEvent(ctx context.Context, st *store.Store, projectID string, raw, 
 		"mechanism":  map[string]any{"type": "minidump", "handled": false},
 		"stacktrace": map[string]any{"frames": frames},
 	}}}
-	payload["threads"] = map[string]any{"values": []any{map[string]any{
-		"id": fmt.Sprintf("%d", parsed.threadID), "crashed": true, "current": true,
-		"stacktrace": map[string]any{"frames": frames},
-	}}}
+	orderedThreads := make([]minidumpThread, 0, len(parsed.threads))
+	orderedThreads = append(orderedThreads, minidumpThread{
+		id: parsed.threadID, registers: parsed.registers, stackAddress: parsed.stackAddress, stack: parsed.stack,
+	})
+	for _, thread := range parsed.threads {
+		if thread.id != parsed.threadID {
+			orderedThreads = append(orderedThreads, thread)
+		}
+	}
+	threadValues := make([]any, 0, len(orderedThreads))
+	totalFrames := 0
+	for _, thread := range orderedThreads {
+		threadFrames := frames
+		if thread.id != parsed.threadID {
+			threadFrames = unwindMinidumpThread(parsed, thread, unwinders)
+		}
+		if len(threadFrames) == 0 || totalFrames >= maxMinidumpEventFrames {
+			continue
+		}
+		if remaining := maxMinidumpEventFrames - totalFrames; len(threadFrames) > remaining {
+			threadFrames = threadFrames[len(threadFrames)-remaining:]
+		}
+		totalFrames += len(threadFrames)
+		crashed := thread.id == parsed.threadID
+		threadValues = append(threadValues, map[string]any{
+			"id": fmt.Sprintf("%d", thread.id), "crashed": crashed, "current": crashed,
+			"stacktrace": map[string]any{"frames": threadFrames},
+		})
+	}
+	payload["threads"] = map[string]any{"values": threadValues}
 	contexts, _ := payload["contexts"].(map[string]any)
 	if contexts == nil {
 		contexts = make(map[string]any)
@@ -143,28 +182,27 @@ func parseMinidump(data []byte) (*minidump, error) {
 	if err != nil {
 		return nil, err
 	}
-	stackAddress, stack, fallbackContextRVA, fallbackContextSize, err := parseMinidumpThread(data, streams[minidumpThreadListStream], threadID)
+	threads, err := parseMinidumpThreads(data, streams[minidumpThreadListStream], architecture, threadID, contextRVA, contextSize)
 	if err != nil {
 		return nil, err
 	}
-	if contextRVA == 0 || contextSize == 0 {
-		contextRVA, contextSize = fallbackContextRVA, fallbackContextSize
+	var crashed minidumpThread
+	for _, thread := range threads {
+		if thread.id == threadID {
+			crashed = thread
+			break
+		}
 	}
-	contextData, ok := minidumpSlice(data, contextRVA, uint64(contextSize))
-	if !ok {
-		return nil, errors.New("truncated minidump thread context")
-	}
-	registers, err := parseMinidumpContext(contextData, architecture)
-	if err != nil {
-		return nil, err
+	if crashed.registers == nil {
+		return nil, errors.New("minidump exception thread was not found")
 	}
 	if exceptionAddress == 0 {
-		exceptionAddress = registers[instructionRegister(architecture)]
+		exceptionAddress = crashed.registers[instructionRegister(architecture)]
 	}
 	return &minidump{
 		architecture: architecture, operatingSystem: minidumpOperatingSystem(streams[minidumpSystemInfoStream]), threadID: threadID, exception: exceptionCode,
-		address: exceptionAddress, registers: registers, stackAddress: stackAddress,
-		stack: stack, modules: parseMinidumpModules(data, streams[minidumpModuleListStream]),
+		address: exceptionAddress, registers: crashed.registers, stackAddress: crashed.stackAddress,
+		stack: crashed.stack, threads: threads, modules: parseMinidumpModules(data, streams[minidumpModuleListStream]),
 	}, nil
 }
 
@@ -234,28 +272,59 @@ func parseMinidumpException(data []byte) (threadID, code uint32, address uint64,
 	return
 }
 
-func parseMinidumpThread(file, data []byte, wantedID uint32) (stackAddress uint64, stack []byte, contextRVA, contextSize uint32, err error) {
+func parseMinidumpThreads(file, data []byte, architecture string, crashedID, exceptionContextRVA, exceptionContextSize uint32) ([]minidumpThread, error) {
 	if len(data) < 4 {
-		return 0, nil, 0, 0, errors.New("minidump thread list is missing or truncated")
+		return nil, errors.New("minidump thread list is missing or truncated")
 	}
 	count := binary.LittleEndian.Uint32(data[:4])
 	if count == 0 || count > 4096 || uint64(4)+uint64(count)*48 > uint64(len(data)) {
-		return 0, nil, 0, 0, errors.New("invalid minidump thread list")
+		return nil, errors.New("invalid minidump thread list")
 	}
+	threads := make([]minidumpThread, 0, min(int(count), maxMinidumpThreads))
+	crashedFound := false
 	for index := uint32(0); index < count; index++ {
 		offset := 4 + int(index)*48
-		if binary.LittleEndian.Uint32(data[offset:offset+4]) != wantedID {
+		threadID := binary.LittleEndian.Uint32(data[offset : offset+4])
+		if len(threads) >= maxMinidumpThreads && threadID != crashedID {
 			continue
 		}
-		stackAddress = binary.LittleEndian.Uint64(data[offset+24 : offset+32])
+		stackAddress := binary.LittleEndian.Uint64(data[offset+24 : offset+32])
 		stackSize := binary.LittleEndian.Uint32(data[offset+32 : offset+36])
 		stackRVA := binary.LittleEndian.Uint32(data[offset+36 : offset+40])
-		stack, _ = minidumpSlice(file, stackRVA, uint64(stackSize))
-		contextSize = binary.LittleEndian.Uint32(data[offset+40 : offset+44])
-		contextRVA = binary.LittleEndian.Uint32(data[offset+44 : offset+48])
-		return stackAddress, stack, contextRVA, contextSize, nil
+		stack, _ := minidumpSlice(file, stackRVA, uint64(stackSize))
+		contextSize := binary.LittleEndian.Uint32(data[offset+40 : offset+44])
+		contextRVA := binary.LittleEndian.Uint32(data[offset+44 : offset+48])
+		if threadID == crashedID && exceptionContextRVA != 0 && exceptionContextSize != 0 {
+			contextRVA, contextSize = exceptionContextRVA, exceptionContextSize
+		}
+		contextData, ok := minidumpSlice(file, contextRVA, uint64(contextSize))
+		if !ok {
+			if threadID == crashedID {
+				return nil, errors.New("truncated minidump thread context")
+			}
+			continue
+		}
+		registers, err := parseMinidumpContext(contextData, architecture)
+		if err != nil {
+			if threadID == crashedID {
+				return nil, err
+			}
+			continue
+		}
+		thread := minidumpThread{id: threadID, registers: registers, stackAddress: stackAddress, stack: stack}
+		if threadID == crashedID {
+			crashedFound = true
+			if len(threads) >= maxMinidumpThreads {
+				threads[len(threads)-1] = thread
+				continue
+			}
+		}
+		threads = append(threads, thread)
 	}
-	return 0, nil, 0, 0, errors.New("minidump exception thread was not found")
+	if !crashedFound {
+		return nil, errors.New("minidump exception thread was not found")
+	}
+	return threads, nil
 }
 
 func parseMinidumpContext(data []byte, architecture string) (map[string]uint64, error) {

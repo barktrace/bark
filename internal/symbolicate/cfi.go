@@ -43,14 +43,23 @@ func unwindMinidump(ctx context.Context, st *store.Store, projectID string, dump
 		return nil
 	}
 	unwinders := loadBreakpadUnwinders(ctx, st, projectID, dump.modules)
-	registers := cloneRegisters(dump.registers)
+	return unwindMinidumpThread(dump, minidumpThread{
+		id: dump.threadID, registers: dump.registers, stackAddress: dump.stackAddress, stack: dump.stack,
+	}, unwinders)
+}
+
+func unwindMinidumpThread(dump *minidump, thread minidumpThread, unwinders map[string]*breakpadCFI) []any {
+	if dump == nil || len(thread.registers) == 0 {
+		return nil
+	}
+	registers := cloneRegisters(thread.registers)
 	ipName, spName, fpName := instructionRegister(dump.architecture), stackRegister(dump.architecture), frameRegister(dump.architecture)
 	ip := registers[ipName]
-	if ip == 0 {
+	if ip == 0 && thread.id == dump.threadID {
 		ip = dump.address
 		registers[ipName] = ip
 	}
-	memory := minidumpMemory{address: dump.stackAddress, data: dump.stack, pointerSize: 8}
+	memory := minidumpMemory{address: thread.stackAddress, data: thread.stack, pointerSize: 8}
 	if dump.architecture == "x86" {
 		memory.pointerSize = 4
 	}
