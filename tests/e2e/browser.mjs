@@ -35,6 +35,15 @@ try {
 
   const parsed = new URL(dsn);
   const projectID = parsed.pathname.slice(1);
+  const ingestEnvelope = async (header, type, payload) => {
+    const body = `${JSON.stringify(header)}\n${JSON.stringify({ type, length: Buffer.byteLength(payload) })}\n${payload}\n`;
+    const envelopeResponse = await fetch(`${baseURL}/api/${projectID}/envelope/?sentry_key=${encodeURIComponent(parsed.username)}&sentry_version=7`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-sentry-envelope' },
+      body,
+    });
+    if (!envelopeResponse.ok) throw new Error(`${type} ingestion returned ${envelopeResponse.status}: ${await envelopeResponse.text()}`);
+  };
   const eventID = '0123456789abcdef0123456789abcdef';
   const response = await fetch(`${baseURL}/api/${projectID}/store/?sentry_key=${encodeURIComponent(parsed.username)}&sentry_version=7`, {
     method: 'POST',
@@ -50,6 +59,32 @@ try {
     }),
   });
   if (!response.ok) throw new Error(`Sentry ingestion returned ${response.status}: ${await response.text()}`);
+
+  const replayID = '12121212121212121212121212121212';
+  await ingestEnvelope({ replay_id: replayID }, 'replay_event', JSON.stringify({
+    replay_id: replayID,
+    segment_id: 0,
+    timestamp: '2026-08-29T10:00:01Z',
+    replay_start_timestamp: '2026-08-29T10:00:00Z',
+    environment: 'e2e',
+    release: 'checkout@1.0.0',
+    urls: ['https://shop.example/checkout'],
+  }));
+  await ingestEnvelope({ replay_id: replayID }, 'replay_recording', JSON.stringify([
+    { type: 4, timestamp: 1787997600000, data: { href: 'https://shop.example/checkout' } },
+    { type: 3, timestamp: 1787997600200, data: { source: 2, type: 2 } },
+  ]));
+  await ingestEnvelope({}, 'profile', JSON.stringify({
+    profile_id: 'profile-e2e',
+    platform: 'javascript',
+    duration_ns: 200000000,
+    profile: {
+      frames: [{ function: 'checkout' }, { function: 'submitOrder', filename: 'checkout.js', lineno: 42 }],
+      stacks: [[0, 1]],
+      samples: [{ stack_id: 0, thread_id: 'main' }, { stack_id: 0, thread_id: 'main' }],
+      thread_metadata: { main: { name: 'Main thread' } },
+    },
+  }));
 
   for (let attempt = 0; attempt < 20; attempt += 1) {
     await page.goto('/ui/issues/');
@@ -80,6 +115,16 @@ try {
 
   await page.getByRole('link', { name: 'Telemetry' }).click();
   await page.getByRole('heading', { name: 'Cron monitors' }).waitFor();
+  await page.getByRole('button', { name: 'Replays' }).click();
+  const replayRow = page.locator('.management-row', { hasText: replayID });
+  await replayRow.getByRole('button', { name: 'Analyze' }).click();
+  await page.getByRole('heading', { name: 'https://shop.example/checkout' }).waitFor();
+  await page.locator('.timeline-list strong').getByText('click', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Profiles' }).click();
+  const profileRow = page.locator('.management-row', { hasText: 'profile-e2e' });
+  await profileRow.getByRole('button', { name: 'Analyze' }).click();
+  await page.locator('.profile-analysis').getByText('submitOrder', { exact: true }).first().waitFor();
+  await page.locator('.profile-analysis').getByText('Main thread', { exact: true }).waitFor();
   await page.getByRole('button', { name: 'Artifacts' }).click();
   await page.getByRole('heading', { name: 'Source maps and debug files' }).waitFor();
 
@@ -90,7 +135,7 @@ try {
   if (me.status() !== 401) throw new Error(`logout left session active: /auth/me returned ${me.status()}`);
 
   if (browserErrors.length) throw new Error(browserErrors.join('\n'));
-  console.log('browser E2E passed: OIDC, ingestion, issue detail, Discover, dashboards, telemetry, and logout');
+  console.log('browser E2E passed: OIDC, ingestion, issue detail, Discover, dashboards, replay/profile analysis, telemetry, and logout');
 } finally {
   await browser.close();
 }

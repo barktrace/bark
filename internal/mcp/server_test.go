@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/barktrace/bark/internal/ingest"
 	"github.com/barktrace/bark/internal/store"
 )
 
@@ -56,8 +57,8 @@ func TestInitializeAndListTools(t *testing.T) {
 	listed := call(t, service, `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
 	toolsResult := listed["result"].(map[string]any)
 	available := toolsResult["tools"].([]any)
-	if len(available) != 35 {
-		t.Fatalf("tool count = %d, want 35", len(available))
+	if len(available) != 37 {
+		t.Fatalf("tool count = %d, want 37", len(available))
 	}
 }
 
@@ -206,6 +207,51 @@ func TestObservabilityToolsExecuteAgainstCurrentSchema(t *testing.T) {
 		if response["result"].(map[string]any)["isError"] != false {
 			t.Fatalf("tool call %d failed: %#v", index, response)
 		}
+	}
+}
+
+func TestTelemetryAnalysisToolsUseStoredReplayAndProfilePayloads(t *testing.T) {
+	st := testStore(t)
+	seedMCPData(t, st)
+	ingestion := ingest.New(st, 20<<20, 1000)
+	project := ingest.Project{ID: "project", OrganizationID: "org", PublicKey: "public-key"}
+	replayEvent := []byte(`{"replay_id":"12121212121212121212121212121212","segment_id":3,"timestamp":"2026-08-29T10:00:01Z","urls":["https://example.com/checkout"]}`)
+	if err := ingestion.StoreReplayEvent(context.Background(), project, replayEvent); err != nil {
+		t.Fatal(err)
+	}
+	recording := []byte("{\"replay_id\":\"12121212121212121212121212121212\",\"segment_id\":3}\n[{\"type\":4,\"timestamp\":1787997600000,\"data\":{\"href\":\"https://example.com/checkout\"}},{\"type\":3,\"timestamp\":1787997600100,\"data\":{\"source\":2,\"type\":2}}]")
+	if err := ingestion.StoreReplayRecording(context.Background(), project, "12121212121212121212121212121212", recording); err != nil {
+		t.Fatal(err)
+	}
+	profile := []byte(`{"profile_id":"profile-one","platform":"go","duration_ns":200000000,"profile":{"frames":[{"function":"main"},{"function":"query"}],"stacks":[[0,1]],"samples":[{"stack_id":0,"thread_id":"1"},{"stack_id":0,"thread_id":"1"}]}}`)
+	if err := ingestion.StoreProfile(context.Background(), project, profile); err != nil {
+		t.Fatal(err)
+	}
+	var replayID, profileID string
+	if err := st.DB.QueryRow(`SELECT id FROM replays WHERE replay_id = '12121212121212121212121212121212' AND segment_id = 3`).Scan(&replayID); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DB.QueryRow(`SELECT id FROM profiles WHERE profile_id = 'profile-one'`).Scan(&profileID); err != nil {
+		t.Fatal(err)
+	}
+	service := New(st, testToken, "https://errors.example")
+	replay := call(t, service, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"analyze_replay","arguments":{"project_id":"project","replay_id":"`+replayID+`"}}}`)
+	replayResult := replay["result"].(map[string]any)
+	if replayResult["isError"] != false {
+		t.Fatalf("analyze_replay failed: %#v", replay)
+	}
+	replayContent := replayResult["structuredContent"].(map[string]any)
+	replayAnalysis := replayContent["analysis"].(map[string]any)
+	if replayAnalysis["duration_ms"] != float64(100) || len(replayAnalysis["timeline"].([]any)) != 2 {
+		t.Fatalf("unexpected replay analysis: %#v", replayAnalysis)
+	}
+	profileResult := call(t, service, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"analyze_profile","arguments":{"project_id":"project","profile_id":"`+profileID+`"}}}`)["result"].(map[string]any)
+	if profileResult["isError"] != false {
+		t.Fatalf("analyze_profile failed: %#v", profileResult)
+	}
+	profileAnalysis := profileResult["structuredContent"].(map[string]any)["analysis"].(map[string]any)
+	if profileAnalysis["sample_count"] != float64(2) || len(profileAnalysis["hotspots"].([]any)) != 2 {
+		t.Fatalf("unexpected profile analysis: %#v", profileAnalysis)
 	}
 }
 

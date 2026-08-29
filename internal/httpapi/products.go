@@ -4,12 +4,14 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/barktrace/bark/internal/auth"
 	"github.com/barktrace/bark/internal/cronmon"
+	telemetryanalysis "github.com/barktrace/bark/internal/telemetry"
 	"github.com/google/uuid"
 )
 
@@ -242,6 +244,49 @@ func (s *Server) replayContent(w http.ResponseWriter, r *http.Request) {
 	s.serveBlob(w, r, key, contentType, filename)
 }
 
+func (s *Server) replayAnalysis(w http.ResponseWriter, r *http.Request) {
+	principal, _ := auth.PrincipalFromContext(r.Context())
+	var projectID, replayID, environment, release, userID, startedAt, finishedAt, targetURL, eventKey, recordingKey string
+	var segmentID, errorCount int
+	err := s.store.DB.QueryRowContext(r.Context(), `
+		SELECT rp.project_id, rp.replay_id, rp.segment_id, rp.environment, rp.release, rp.user_id,
+		       rp.started_at, rp.finished_at, rp.error_count, rp.url,
+		       COALESCE(event_blob.storage_key, ''), COALESCE(recording_blob.storage_key, '')
+		FROM replays rp
+		LEFT JOIN blobs event_blob ON event_blob.id = rp.event_blob_id
+		LEFT JOIN blobs recording_blob ON recording_blob.id = rp.recording_blob_id
+		WHERE rp.id = ?
+	`, r.PathValue("replay_id")).Scan(&projectID, &replayID, &segmentID, &environment, &release, &userID, &startedAt, &finishedAt, &errorCount, &targetURL, &eventKey, &recordingKey)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "replay not found")
+		return
+	}
+	if err != nil || !s.canAccessProject(r, principal, projectID) {
+		writeError(w, http.StatusForbidden, "replay access required")
+		return
+	}
+	eventPayload, err := s.readAnalysisBlob(eventKey)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	recordingPayload, err := s.readAnalysisBlob(recordingKey)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	analysis, err := telemetryanalysis.AnalyzeReplay(eventPayload, recordingPayload)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id": r.PathValue("replay_id"), "replay_id": replayID, "project_id": projectID, "segment_id": segmentID,
+		"environment": environment, "release": release, "user_id": userID, "started_at": startedAt,
+		"finished_at": finishedAt, "error_count": errorCount, "url": targetURL, "analysis": analysis,
+	})
+}
+
 func (s *Server) profiles(w http.ResponseWriter, r *http.Request) {
 	principal, _ := auth.PrincipalFromContext(r.Context())
 	projectID := r.URL.Query().Get("project_id")
@@ -249,7 +294,7 @@ func (s *Server) profiles(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "project access required")
 		return
 	}
-	rows, err := s.store.DB.QueryContext(r.Context(), `SELECT p.id, p.profile_id, p.transaction_id, p.platform, p.environment, p.release, p.started_at, p.duration_ms, b.size FROM profiles p JOIN blobs b ON b.id = p.blob_id WHERE p.project_id = ? ORDER BY p.started_at DESC LIMIT 200`, projectID)
+	rows, err := s.store.DB.QueryContext(r.Context(), `SELECT p.id, p.profile_id, p.transaction_id, p.platform, p.environment, p.release, p.started_at, p.duration_ms, b.size, p.profiler_id, p.chunk_id FROM profiles p JOIN blobs b ON b.id = p.blob_id WHERE p.project_id = ? ORDER BY p.started_at DESC LIMIT 200`, projectID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not list profiles")
 		return
@@ -257,11 +302,11 @@ func (s *Server) profiles(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	items := make([]map[string]any, 0)
 	for rows.Next() {
-		var id, profileID, transactionID, platform, environment, release, started string
+		var id, profileID, transactionID, platform, environment, release, started, profilerID, chunkID string
 		var duration float64
 		var size int64
-		if rows.Scan(&id, &profileID, &transactionID, &platform, &environment, &release, &started, &duration, &size) == nil {
-			items = append(items, map[string]any{"id": id, "profile_id": profileID, "transaction_id": transactionID, "platform": platform, "environment": environment, "release": release, "started_at": started, "duration_ms": duration, "size": size})
+		if rows.Scan(&id, &profileID, &transactionID, &platform, &environment, &release, &started, &duration, &size, &profilerID, &chunkID) == nil {
+			items = append(items, map[string]any{"id": id, "profile_id": profileID, "profiler_id": profilerID, "chunk_id": chunkID, "transaction_id": transactionID, "platform": platform, "environment": environment, "release": release, "started_at": started, "duration_ms": duration, "size": size})
 		}
 	}
 	writeJSON(w, http.StatusOK, items)
@@ -279,6 +324,62 @@ func (s *Server) profileContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.serveBlob(w, r, key, contentType, "profile.json")
+}
+
+func (s *Server) profileAnalysis(w http.ResponseWriter, r *http.Request) {
+	principal, _ := auth.PrincipalFromContext(r.Context())
+	var projectID, profileID, transactionID, platform, environment, release, startedAt, key string
+	var duration float64
+	err := s.store.DB.QueryRowContext(r.Context(), `
+		SELECT p.project_id, p.profile_id, p.transaction_id, p.platform, p.environment, p.release,
+		       p.started_at, p.duration_ms, b.storage_key
+		FROM profiles p JOIN blobs b ON b.id = p.blob_id WHERE p.id = ?
+	`, r.PathValue("profile_id")).Scan(&projectID, &profileID, &transactionID, &platform, &environment, &release, &startedAt, &duration, &key)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "profile not found")
+		return
+	}
+	if err != nil || !s.canAccessProject(r, principal, projectID) {
+		writeError(w, http.StatusForbidden, "profile access required")
+		return
+	}
+	payload, err := s.readAnalysisBlob(key)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	analysis, err := telemetryanalysis.AnalyzeProfile(payload)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id": r.PathValue("profile_id"), "profile_id": profileID, "project_id": projectID,
+		"transaction_id": transactionID, "platform": platform, "environment": environment, "release": release,
+		"started_at": startedAt, "duration_ms": duration, "analysis": analysis,
+	})
+}
+
+func (s *Server) readAnalysisBlob(key string) ([]byte, error) {
+	if strings.TrimSpace(key) == "" {
+		return nil, nil
+	}
+	file, err := s.store.Blobs.Open(key)
+	if err != nil {
+		return nil, errors.New("telemetry payload is unavailable")
+	}
+	defer file.Close()
+	if info, statErr := file.Stat(); statErr == nil && info.Size() > telemetryanalysis.MaxCompressedBytes {
+		return nil, errors.New("telemetry payload exceeds analysis size limit")
+	}
+	payload, err := io.ReadAll(io.LimitReader(file, telemetryanalysis.MaxCompressedBytes+1))
+	if err != nil {
+		return nil, errors.New("could not read telemetry payload")
+	}
+	if len(payload) > telemetryanalysis.MaxCompressedBytes {
+		return nil, errors.New("telemetry payload exceeds analysis size limit")
+	}
+	return payload, nil
 }
 
 func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {

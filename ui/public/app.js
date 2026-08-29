@@ -36,7 +36,15 @@ const state = {
   cronCheckins: [],
   feedback: [],
   replays: [],
+  replayId: '',
+  replayAnalysis: null,
+  replayAnalysisStatus: 'idle',
+  replayAnalysisError: '',
   profiles: [],
+  profileId: '',
+  profileAnalysis: null,
+  profileAnalysisStatus: 'idle',
+  profileAnalysisError: '',
   metrics: { period: '24h', metrics: [] },
   artifacts: [],
   quotas: { default_per_minute: 0, quotas: [] },
@@ -95,6 +103,13 @@ function formatMS(value) {
   const milliseconds = Number(value || 0);
   if (milliseconds >= 1000) return `${(milliseconds / 1000).toFixed(milliseconds >= 10000 ? 1 : 2)} s`;
   return `${milliseconds.toFixed(milliseconds >= 100 ? 0 : 1)} ms`;
+}
+
+function formatRelativeMS(value) {
+  const milliseconds = Number(value || 0);
+  if (milliseconds >= 60000) return `+${(milliseconds / 60000).toFixed(1)} min`;
+  if (milliseconds >= 1000) return `+${(milliseconds / 1000).toFixed(milliseconds >= 10000 ? 1 : 2)} s`;
+  return `+${milliseconds.toFixed(0)} ms`;
 }
 
 async function request(path, options = {}) {
@@ -402,6 +417,50 @@ function renderUptime() {
   return `<div class="toolbar"><p class="muted">Checks run inside this Barktrace instance. Private network targets are blocked by default.</p><button class="button small" data-open-monitor>${icon('plus')} New monitor</button></div><div class="uptime-grid"><section class="card monitor-list">${monitorRows}</section>${detail}</div>`;
 }
 
+function replayAnalysisPanel() {
+  if (!state.replayId) return `<section class="card telemetry-analysis-empty"><div class="empty-state"><h3>Select a replay segment</h3><p>Inspect navigation, interactions, console activity, DOM mutations, and correlated errors without exposing captured form values.</p></div></section>`;
+  if (state.replayAnalysisStatus === 'loading') return `<section class="card telemetry-analysis-empty"><div class="empty-state"><span class="spinner"></span><p>Decoding replay segment…</p></div></section>`;
+  if (state.replayAnalysisStatus === 'error') return `<section class="card telemetry-analysis-empty"><div class="empty-state"><h3>Replay analysis unavailable</h3><p>${escapeHTML(state.replayAnalysisError)}</p></div></section>`;
+  const item = state.replayAnalysis;
+  const analysis = item?.analysis;
+  if (!analysis) return '';
+  const stats = Object.entries(analysis.stats || {}).sort((left, right) => right[1] - left[1]);
+  const timeline = (analysis.timeline || []).slice(0, 500);
+  const metadata = [
+    ['Environment', item.environment || 'default'], ['Release', item.release || '—'],
+    ['User', item.user_id || 'anonymous'], ['Errors', item.error_count || 0],
+  ];
+  return `<section class="card telemetry-analysis"><div class="card-heading"><div><p class="eyebrow">Replay analysis · segment ${Number(item.segment_id)}</p><h2>${escapeHTML(item.url || item.replay_id)}</h2></div><span class="status ${analysis.truncated ? 'unresolved' : 'resolved'}">${analysis.truncated ? 'bounded result' : 'complete'}</span></div><div class="analysis-summary"><div><span>Duration</span><strong>${formatMS(analysis.duration_ms)}</strong></div><div><span>Timeline</span><strong>${Number(analysis.timeline?.length || 0).toLocaleString()}</strong></div><div><span>URLs</span><strong>${Number(analysis.urls?.length || 0).toLocaleString()}</strong></div><div><span>Traces</span><strong>${Number(analysis.trace_ids?.length || 0).toLocaleString()}</strong></div></div><div class="analysis-meta">${metadata.map(([label, value]) => `<div><span>${label}</span><b>${escapeHTML(value)}</b></div>`).join('')}</div><div class="analysis-stat-list">${stats.map(([name, count]) => `<span><b>${Number(count).toLocaleString()}</b> ${escapeHTML(name.replaceAll('_', ' '))}</span>`).join('')}</div>${analysis.urls?.length ? `<div class="analysis-links"><span>Visited</span>${analysis.urls.slice(0, 10).map((url) => `<code>${escapeHTML(url)}</code>`).join('')}</div>` : ''}<div class="timeline-list">${timeline.map((entry) => `<div><time>${escapeHTML(formatRelativeMS(entry.relative_ms))}</time><span class="timeline-category">${escapeHTML(entry.category)}</span><p><strong>${escapeHTML(entry.type.replaceAll('_', ' '))}</strong><small>${escapeHTML(entry.summary)}</small></p></div>`).join('') || '<p class="muted padded">No timeline events were decoded.</p>'}</div>${analysis.timeline?.length > timeline.length ? `<p class="analysis-note">Showing the first ${timeline.length.toLocaleString()} of ${analysis.timeline.length.toLocaleString()} timeline entries.</p>` : ''}</section>`;
+}
+
+function flamegraphFrames(nodes, sampleCount, depth = 0, left = 0, width = 100, output = []) {
+  if (depth >= 12 || output.length >= 350 || !Array.isArray(nodes)) return output;
+  let offset = left;
+  for (const node of nodes) {
+    if (output.length >= 350) break;
+    const total = Math.max(0, Number(node.total_samples || 0));
+    const frameWidth = width * total / Math.max(1, sampleCount);
+    if (frameWidth <= 0) continue;
+    output.push({ node, depth, left: offset, width: frameWidth });
+    flamegraphFrames(node.children, total, depth + 1, offset, frameWidth, output);
+    offset += frameWidth;
+  }
+  return output;
+}
+
+function profileAnalysisPanel() {
+  if (!state.profileId) return `<section class="card telemetry-analysis-empty"><div class="empty-state"><h3>Select a profile</h3><p>Inspect sampled threads, CPU hotspots, and the bounded call-stack flamegraph.</p></div></section>`;
+  if (state.profileAnalysisStatus === 'loading') return `<section class="card telemetry-analysis-empty"><div class="empty-state"><span class="spinner"></span><p>Analyzing profile…</p></div></section>`;
+  if (state.profileAnalysisStatus === 'error') return `<section class="card telemetry-analysis-empty"><div class="empty-state"><h3>Profile analysis unavailable</h3><p>${escapeHTML(state.profileAnalysisError)}</p></div></section>`;
+  const item = state.profileAnalysis;
+  const analysis = item?.analysis;
+  if (!analysis) return '';
+  const hotspots = (analysis.hotspots || []).slice(0, 50);
+  const flameFrames = flamegraphFrames(analysis.flamegraph || [], analysis.sample_count || 1);
+  const flameDepth = Math.max(1, ...flameFrames.map((frame) => frame.depth + 1));
+  return `<section class="card telemetry-analysis profile-analysis"><div class="card-heading"><div><p class="eyebrow">Profile analysis · ${escapeHTML(analysis.platform)}</p><h2 class="mono">${escapeHTML(item.profile_id)}</h2></div><span class="status ${analysis.truncated ? 'unresolved' : 'resolved'}">${analysis.truncated ? 'bounded result' : 'complete'}</span></div><div class="analysis-summary"><div><span>Duration</span><strong>${formatMS(analysis.duration_ms)}</strong></div><div><span>Samples</span><strong>${Number(analysis.sample_count).toLocaleString()}</strong></div><div><span>Frames</span><strong>${Number(analysis.frame_count).toLocaleString()}</strong></div><div><span>Threads</span><strong>${Number(analysis.threads?.length || 0).toLocaleString()}</strong></div></div><div class="profile-section"><h3>Threads</h3><div class="thread-list">${(analysis.threads || []).slice(0, 20).map((thread) => `<div><span><strong>${escapeHTML(thread.name)}</strong><small class="mono">${escapeHTML(thread.id)}</small></span><b>${Number(thread.samples).toLocaleString()} samples</b></div>`).join('') || '<p class="muted">No thread metadata.</p>'}</div></div><div class="profile-section"><h3>Flamegraph</h3><div class="flamegraph-scroll"><div class="flamegraph" style="height:${flameDepth * 31}px">${flameFrames.map(({ node, depth, left, width }) => `<div class="flame-frame depth-${depth % 5}" style="left:${left.toFixed(4)}%;width:${width.toFixed(4)}%;top:${depth * 31}px" title="${escapeHTML(`${node.name} · ${node.total_samples} samples · ${Number(node.percentage).toFixed(2)}%`)}"><strong>${escapeHTML(node.name)}</strong><span>${Number(node.percentage).toFixed(1)}%</span></div>`).join('')}</div></div>${flameFrames.length >= 350 ? '<p class="analysis-note">The visualization is limited to the first 350 frames.</p>' : ''}</div><div class="profile-section"><h3>Hotspots</h3><div class="hotspot-list">${hotspots.map((frame) => `<div><span><strong>${escapeHTML(frame.name)}</strong><small>${escapeHTML([frame.module, frame.filename && `${frame.filename}${frame.line ? `:${frame.line}` : ''}`].filter(Boolean).join(' · ') || 'unknown source')}</small></span><div class="hotspot-meter"><i style="width:${Math.min(100, Number(frame.percentage || 0)).toFixed(2)}%"></i></div><b>${Number(frame.self_samples).toLocaleString()} self · ${Number(frame.percentage).toFixed(1)}%</b></div>`).join('') || '<p class="muted">No hotspots were decoded.</p>'}</div></div></section>`;
+}
+
 function renderTelemetry() {
   if (!currentProject()) return projectRows();
   const tabs = [
@@ -417,11 +476,11 @@ function renderTelemetry() {
     const rows = state.feedback.map((item) => `<div class="management-row"><span class="avatar small-avatar">${escapeHTML((item.name || item.email || '?')[0].toUpperCase())}</span><span><strong>${escapeHTML(item.comments)}</strong><small>${escapeHTML(item.name || 'Anonymous')} · ${escapeHTML(item.email || 'no email')} · event ${escapeHTML(item.event_id || 'unlinked')}</small></span><small>${escapeHTML(relative(item.created_at))}</small></div>`).join('');
     content = `<section class="card settings-card"><p class="eyebrow">User reports</p><h2>Feedback</h2><div class="management-list compact-management">${rows || '<p class="muted padded">No user feedback received.</p>'}</div></section>`;
   } else if (state.telemetryTab === 'replays') {
-    const rows = state.replays.map((item) => `<div class="management-row"><span class="platform-icon">R${item.segment_id}</span><span><strong>${escapeHTML(item.url || item.replay_id)}</strong><small class="mono">${escapeHTML(item.replay_id)} · ${escapeHTML(item.environment || 'default')} · ${item.error_count} errors</small></span>${item.has_event ? `<a class="button secondary small" href="/replays/${encodeURIComponent(item.id)}/event">Event</a>` : ''}${item.has_recording ? `<a class="button secondary small" href="/replays/${encodeURIComponent(item.id)}/recording">Recording</a>` : ''}</div>`).join('');
-    content = `<section class="card settings-card"><p class="eyebrow">Session replay</p><h2>Replay segments</h2><div class="management-list compact-management">${rows || '<p class="muted padded">No replay segments received.</p>'}</div></section>`;
+    const rows = state.replays.map((item) => `<div class="management-row ${state.replayId === item.id ? 'selected' : ''}"><span class="platform-icon">R${item.segment_id}</span><span><strong>${escapeHTML(item.url || item.replay_id)}</strong><small class="mono">${escapeHTML(item.replay_id)} · ${escapeHTML(item.environment || 'default')} · ${item.error_count} errors</small></span><button class="button small" data-analyze-replay="${escapeHTML(item.id)}">Analyze</button>${item.has_event ? `<a class="button secondary small" href="/replays/${encodeURIComponent(item.id)}/event">Event</a>` : ''}${item.has_recording ? `<a class="button secondary small" href="/replays/${encodeURIComponent(item.id)}/recording">Recording</a>` : ''}</div>`).join('');
+    content = `<div class="telemetry-analysis-grid"><section class="card settings-card"><p class="eyebrow">Session replay</p><h2>Replay segments</h2><div class="management-list compact-management">${rows || '<p class="muted padded">No replay segments received.</p>'}</div></section>${replayAnalysisPanel()}</div>`;
   } else if (state.telemetryTab === 'profiles') {
-    const rows = state.profiles.map((item) => `<div class="management-row"><span class="platform-icon">CPU</span><span><strong class="mono">${escapeHTML(item.profile_id)}</strong><small>${escapeHTML(item.platform || 'generic')} · ${formatMS(item.duration_ms)} · ${Number(item.size).toLocaleString()} bytes</small></span><a class="button secondary small" href="/profiles/${encodeURIComponent(item.id)}">Download</a></div>`).join('');
-    content = `<section class="card settings-card"><p class="eyebrow">Profiling</p><h2>Profiles</h2><div class="management-list compact-management">${rows || '<p class="muted padded">No profiles received.</p>'}</div></section>`;
+    const rows = state.profiles.map((item) => `<div class="management-row ${state.profileId === item.id ? 'selected' : ''}"><span class="platform-icon">CPU</span><span><strong class="mono">${escapeHTML(item.profile_id)}</strong><small>${escapeHTML(item.platform || 'generic')} · ${formatMS(item.duration_ms)} · ${Number(item.size).toLocaleString()} bytes${item.profiler_id ? ` · continuous ${escapeHTML(item.profiler_id)}` : ''}</small></span><button class="button small" data-analyze-profile="${escapeHTML(item.id)}">Analyze</button><a class="button secondary small" href="/profiles/${encodeURIComponent(item.id)}">Download</a></div>`).join('');
+    content = `<div class="telemetry-analysis-grid"><section class="card settings-card"><p class="eyebrow">Profiling</p><h2>Profiles</h2><div class="management-list compact-management">${rows || '<p class="muted padded">No profiles received.</p>'}</div></section>${profileAnalysisPanel()}</div>`;
   } else if (state.telemetryTab === 'metrics') {
     const rows = state.metrics.metrics.map((item) => `<div class="management-row"><span class="platform-icon">Σ</span><span><strong class="mono">${escapeHTML(item.name)}</strong><small>${escapeHTML(item.type)} · ${Number(item.count).toLocaleString()} samples · last ${escapeHTML(relative(item.last_seen_at))}</small></span><span><b>${Number(item.average).toLocaleString()}</b> ${escapeHTML(item.unit || '')}<small>${Number(item.min).toLocaleString()}–${Number(item.max).toLocaleString()}</small></span></div>`).join('');
     content = `<section class="card settings-card"><p class="eyebrow">Measurements</p><h2>Metrics · ${escapeHTML(state.metrics.period)}</h2><div class="management-list compact-management">${rows || '<p class="muted padded">No metrics received in this period.</p>'}</div></section>`;
@@ -478,6 +537,44 @@ function bindView() {
   }));
   $$('[data-telemetry-tab]').forEach((button) => button.addEventListener('click', () => {
     state.telemetryTab = button.dataset.telemetryTab;
+    render();
+  }));
+  $$('[data-analyze-replay]').forEach((button) => button.addEventListener('click', async () => {
+    const id = button.dataset.analyzeReplay;
+    state.replayId = id;
+    state.replayAnalysis = null;
+    state.replayAnalysisError = '';
+    state.replayAnalysisStatus = 'loading';
+    render();
+    try {
+      const analysis = await request(`/replays/${encodeURIComponent(id)}/analysis`);
+      if (state.replayId !== id) return;
+      state.replayAnalysis = analysis;
+      state.replayAnalysisStatus = 'ready';
+    } catch (error) {
+      if (state.replayId !== id) return;
+      state.replayAnalysisError = error.message;
+      state.replayAnalysisStatus = 'error';
+    }
+    render();
+  }));
+  $$('[data-analyze-profile]').forEach((button) => button.addEventListener('click', async () => {
+    const id = button.dataset.analyzeProfile;
+    state.profileId = id;
+    state.profileAnalysis = null;
+    state.profileAnalysisError = '';
+    state.profileAnalysisStatus = 'loading';
+    render();
+    try {
+      const analysis = await request(`/profiles/${encodeURIComponent(id)}/analysis`);
+      if (state.profileId !== id) return;
+      state.profileAnalysis = analysis;
+      state.profileAnalysisStatus = 'ready';
+    } catch (error) {
+      if (state.profileId !== id) return;
+      state.profileAnalysisError = error.message;
+      state.profileAnalysisStatus = 'error';
+    }
     render();
   }));
   $('#discover-form')?.addEventListener('submit', async (event) => {
@@ -864,6 +961,14 @@ function populateSelectors() {
 async function loadProjectData() {
   populateSelectors();
   state.transactionDetail = null;
+  state.replayId = '';
+  state.replayAnalysis = null;
+  state.replayAnalysisStatus = 'idle';
+  state.replayAnalysisError = '';
+  state.profileId = '';
+  state.profileAnalysis = null;
+  state.profileAnalysisStatus = 'idle';
+  state.profileAnalysisError = '';
   if (!state.projectId) {
     state.issues = [];
     state.issueId = '';

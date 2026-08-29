@@ -30,8 +30,9 @@ The public route layout is:
 - Static assets are embedded and served directly without a Node process.
 
 The target is an idle RSS below 40 MiB and a default container memory limit of
-128 MiB. Profiling and replay processing will use disk-backed work queues rather
-than retaining payloads in memory.
+128 MiB. Replay and profile payloads remain in blob storage; on-demand analysis
+uses strict compressed/decompressed input and output-cardinality bounds rather
+than retaining an unbounded session or profile in memory.
 
 The current stripped Linux binary is about 8.7 MiB. A live probe with OIDC
 discovery, SQLite WAL, health checks, and the embedded dashboard loaded measured

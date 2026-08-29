@@ -56,8 +56,8 @@ The DSN shown in the project setup page should always be copied verbatim.
 | Unknown envelope item acknowledgement/outcome recording | Supported |
 | Cron/check-in envelope items | Supported |
 | Attachments and user reports | Supported |
-| Replay event/recording payloads | Supported for storage and retrieval |
-| Profile and metric payloads | Supported for storage and summaries |
+| Replay event/recording payloads | Storage, retrieval, metadata, bounded statistics, and event timeline |
+| Profile and metric payloads | Storage, summaries, sampled-profile hotspots, threads, and flamegraph |
 | Source maps and release files | Supported |
 | ELF and Breakpad debug files | Supported |
 | Release commits and deploys | Supported |
@@ -81,7 +81,7 @@ The bounded Discover subset supports selected fields, equality/negation/wildcard
 filters, free-text search, project/environment/release/level/status filters,
 ordering, and `count`, `count_unique`, `sum`, `avg`, `min`, `max`, and percentile
 aggregates. It does not implement every SnQL function or Sentry query operator.
-Relay registration, deep replay/profile visualization, and the full integration
-marketplace remain outside the current compatibility boundary. Unknown envelope
-categories receive a successful response and an ingestion outcome so clients do
-not retry forever.
+Relay registration, interactive rrweb playback, every Sentry profile format and
+comparison workflow, and the full integration marketplace remain outside the
+current compatibility boundary. Unknown envelope categories receive a successful
+response and an ingestion outcome so clients do not retry forever.

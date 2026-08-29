@@ -43,6 +43,41 @@ Each item requires `body` or `message`; batches are capped at 1,000 entries and
 5 MiB. Attributes are stored as JSON and can carry `sentry.release`,
 `sentry.environment`, `sentry.trace_id`, and `sentry.span_id`.
 
+## Session replay
+
+Sentry `replay_event` and `replay_recording` envelope items are linked by replay
+and segment ID. Select a segment under **Telemetry → Replays** to inspect its
+visited URLs, error and trace correlation, event-category counts, and ordered
+navigation, interaction, console, lifecycle, and DOM-mutation timeline. Form
+input changes are counted, but their captured text is deliberately excluded
+from analysis results.
+
+Analysis accepts uncompressed, gzip, zlib, Zstandard, and Brotli payloads. It reads
+at most 16 MiB of stored compressed data, expands at most 24 MiB, scans at most
+100,000 recording events, and returns at most 2,000 timeline entries. The UI
+renders at most 500 entries at once; the native endpoint is
+`GET /replays/{internal_segment_id}/analysis`.
+
+## Profiling
+
+Transaction and continuous-profile envelope payloads are retained with their
+profile, profiler, chunk, and transaction identifiers. Select a profile under
+**Telemetry → Profiles** to inspect sampled threads, hottest frames, and a
+bounded flamegraph. The native endpoint is
+`GET /profiles/{internal_profile_id}/analysis`.
+
+Profile analysis accepts at most 50,000 frames, 100,000 stacks, 200,000 samples,
+5,000 flamegraph nodes, and 128 frames per sampled stack. The UI shows the top
+50 hotspots and bounds its flamegraph rendering to 350 frames and 12 levels so
+large profiles do not monopolize browser or server memory.
+
+## Metrics
+
+Sentry metric envelope items are normalized into project-scoped points with
+name, type, unit, timestamp, value, and tags. **Telemetry → Metrics** shows
+bounded count, minimum, average, and maximum summaries; the same dataset is
+available through Discover and MCP.
+
 ## Uptime
 
 Organization owners and administrators can create GET or HEAD monitors from the

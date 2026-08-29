@@ -205,13 +205,13 @@ func (s *Service) StoreReplayEvent(ctx context.Context, project Project, raw []b
 
 func (s *Service) StoreReplayRecording(ctx context.Context, project Project, envelopeReplayID string, raw []byte) error {
 	replayID := normalizeReplayID(envelopeReplayID)
+	var header struct {
+		ReplayID  string `json:"replay_id"`
+		SegmentID int    `json:"segment_id"`
+	}
+	line, _, _ := bytes.Cut(raw, []byte("\n"))
+	_ = json.Unmarshal(line, &header)
 	if replayID == "" {
-		var header struct {
-			ReplayID  string `json:"replay_id"`
-			SegmentID int    `json:"segment_id"`
-		}
-		line, _, _ := bytes.Cut(raw, []byte("\n"))
-		_ = json.Unmarshal(line, &header)
 		replayID = normalizeReplayID(header.ReplayID)
 	}
 	if replayID == "" {
@@ -222,12 +222,12 @@ func (s *Service) StoreReplayRecording(ctx context.Context, project Project, env
 		return err
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	result, err := s.store.DB.ExecContext(ctx, `UPDATE replays SET recording_blob_id = ? WHERE project_id = ? AND replay_id = ?`, blobID, project.ID, replayID)
+	result, err := s.store.DB.ExecContext(ctx, `UPDATE replays SET recording_blob_id = ? WHERE id = (SELECT id FROM replays WHERE project_id = ? AND replay_id = ? AND segment_id = ? ORDER BY created_at DESC LIMIT 1)`, blobID, project.ID, replayID, header.SegmentID)
 	if err != nil {
 		return err
 	}
 	if count, _ := result.RowsAffected(); count == 0 {
-		_, err = s.store.DB.ExecContext(ctx, `INSERT INTO replays(id, replay_id, project_id, recording_blob_id, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?)`, uuid.NewString(), replayID, project.ID, blobID, now, now)
+		_, err = s.store.DB.ExecContext(ctx, `INSERT INTO replays(id, replay_id, project_id, recording_blob_id, segment_id, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, uuid.NewString(), replayID, project.ID, blobID, header.SegmentID, now, now)
 	}
 	return err
 }
@@ -235,6 +235,8 @@ func (s *Service) StoreReplayRecording(ctx context.Context, project Project, env
 func (s *Service) StoreProfile(ctx context.Context, project Project, raw []byte) error {
 	var profile struct {
 		ProfileID   string          `json:"profile_id"`
+		ProfilerID  string          `json:"profiler_id"`
+		ChunkID     string          `json:"chunk_id"`
 		EventID     string          `json:"event_id"`
 		Platform    string          `json:"platform"`
 		Environment string          `json:"environment"`
@@ -246,6 +248,14 @@ func (s *Service) StoreProfile(ctx context.Context, project Project, raw []byte)
 		return err
 	}
 	profile.ProfileID = strings.TrimSpace(firstNonEmpty(profile.ProfileID, profile.EventID))
+	profile.ProfilerID = strings.TrimSpace(profile.ProfilerID)
+	profile.ChunkID = strings.TrimSpace(profile.ChunkID)
+	if profile.ProfileID == "" && profile.ProfilerID != "" {
+		profile.ProfileID = profile.ProfilerID
+		if profile.ChunkID != "" {
+			profile.ProfileID += ":" + profile.ChunkID
+		}
+	}
 	if profile.ProfileID == "" {
 		return errors.New("profile id is required")
 	}
@@ -254,7 +264,7 @@ func (s *Service) StoreProfile(ctx context.Context, project Project, raw []byte)
 		return err
 	}
 	started := parseEventTime(profile.Timestamp, time.Now().UTC()).Format(time.RFC3339Nano)
-	_, err = s.store.DB.ExecContext(ctx, `INSERT INTO profiles(id, profile_id, project_id, transaction_id, blob_id, platform, environment, release, started_at, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(project_id, profile_id) DO UPDATE SET blob_id = excluded.blob_id, platform = excluded.platform, environment = excluded.environment, release = excluded.release, started_at = excluded.started_at, duration_ms = excluded.duration_ms`, uuid.NewString(), profile.ProfileID, project.ID, normalizeEventID(profile.EventID), blobID, profile.Platform, profile.Environment, profile.Release, started, profile.DurationNS/1e6)
+	_, err = s.store.DB.ExecContext(ctx, `INSERT INTO profiles(id, profile_id, project_id, transaction_id, blob_id, platform, environment, release, started_at, duration_ms, profiler_id, chunk_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(project_id, profile_id) DO UPDATE SET blob_id = excluded.blob_id, platform = excluded.platform, environment = excluded.environment, release = excluded.release, started_at = excluded.started_at, duration_ms = excluded.duration_ms, profiler_id = excluded.profiler_id, chunk_id = excluded.chunk_id`, uuid.NewString(), profile.ProfileID, project.ID, normalizeEventID(profile.EventID), blobID, profile.Platform, profile.Environment, profile.Release, started, profile.DurationNS/1e6, profile.ProfilerID, profile.ChunkID)
 	return err
 }
 

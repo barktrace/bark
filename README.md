@@ -26,14 +26,14 @@ The current foundation includes:
 - scheduled HTTP uptime monitors with check and incident history;
 - webhook and Slack alert rules for new issues, regressions, and downtime;
 - SMTP email delivery, cron/metric/feedback triggers, conditions, and cooldowns;
-- cron check-ins, attachments, user feedback, replay, profile, and metric ingestion;
+- cron check-ins, attachments, user feedback, replay timelines, sampled-profile flamegraphs, and metric ingestion;
 - source maps, JavaScript rewriting, ELF/Breakpad debug files, and reprocessing;
 - release commits, deploy metadata, code mappings, and suspect commits;
 - `sentry-cli` build and snapshot upload/download workflows;
 - a durable leased ingestion queue with retries, dead letters, and category quotas;
 - organization and project roles plus a queryable mutation audit log;
 - configurable retention, manual cleanup previews, and storage reporting;
-- an organization-scoped Streamable HTTP MCP server with 35 investigation and dashboard tools;
+- an organization-scoped Streamable HTTP MCP server with 37 investigation and dashboard tools;
 - optional S3-compatible shared blob storage and leased background workers;
 - one final Docker image containing the API and compiled Astro dashboard.
 
@@ -114,5 +114,5 @@ Sentry parity.
 The common SDK and `sentry-cli` self-hosted workflows are implemented, but this
 is not a drop-in implementation of every Sentry SaaS endpoint. Barktrace now
 has a bounded Discover language and custom dashboards; Sentry's complete query
-grammar, deep replay/profile analysis, and Relay remain outside the current
-boundary.
+grammar, interactive rrweb playback, the complete Sentry profiling surface, and
+Relay remain outside the current boundary.

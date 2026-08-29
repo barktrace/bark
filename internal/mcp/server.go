@@ -115,7 +115,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.writeResult(w, id, map[string]any{
 			"protocolVersion": version,
 			"capabilities":    map[string]any{"tools": map[string]bool{"listChanged": false}},
-			"serverInfo":      map[string]string{"name": "barktrace", "version": "0.3.0"},
+			"serverInfo":      map[string]string{"name": "barktrace", "version": "0.4.0"},
 		})
 	case "ping":
 		s.writeResult(w, id, map[string]any{})
@@ -295,7 +295,7 @@ func (s *Service) callTool(r *http.Request, credential *credential, raw json.Raw
 		return s.callDiscoverTool(ctx, credential, call.Name, call.Arguments)
 	case "list_transactions", "list_logs", "list_uptime_monitors", "list_uptime_checks",
 		"list_cron_monitors", "list_cron_checkins", "list_feedback", "list_replays",
-		"list_profiles", "list_metrics", "list_alert_rules", "list_alert_deliveries",
+		"analyze_replay", "list_profiles", "analyze_profile", "list_metrics", "list_alert_rules", "list_alert_deliveries",
 		"list_artifacts", "list_attachments", "list_deploys", "list_commits",
 		"list_suspect_commits", "list_project_quotas", "list_ingestion_jobs",
 		"list_audit_logs", "get_storage_summary":
@@ -451,7 +451,9 @@ func tools() []tool {
 		{Name: "list_cron_checkins", Description: "List recent cron check-ins, optionally for one monitor.", InputSchema: objectSchema(map[string]any{"project_id": stringProperty("Project UUID"), "monitor_id": stringProperty("Optional cron monitor UUID"), "limit": limitProperty}, "project_id"), Annotations: readOnly},
 		{Name: "list_feedback", Description: "List user feedback associated with project events.", InputSchema: projectLimitSchema(stringProperty, limitProperty), Annotations: readOnly},
 		{Name: "list_replays", Description: "List replay segments and correlated errors.", InputSchema: projectLimitSchema(stringProperty, limitProperty), Annotations: readOnly},
+		{Name: "analyze_replay", Description: "Decode a replay segment into navigation, interaction, mutation, and breadcrumb timelines without exposing form input values.", InputSchema: objectSchema(map[string]any{"project_id": stringProperty("Project UUID"), "replay_id": stringProperty("Internal replay segment UUID")}, "project_id", "replay_id"), Annotations: readOnly},
 		{Name: "list_profiles", Description: "List profiles and transaction linkage.", InputSchema: projectLimitSchema(stringProperty, limitProperty), Annotations: readOnly},
+		{Name: "analyze_profile", Description: "Analyze a sampled profile into thread totals, hotspots, and a flamegraph tree.", InputSchema: objectSchema(map[string]any{"project_id": stringProperty("Project UUID"), "profile_id": stringProperty("Internal profile UUID")}, "project_id", "profile_id"), Annotations: readOnly},
 		{Name: "list_metrics", Description: "List metric points, optionally filtered by metric name.", InputSchema: objectSchema(map[string]any{"project_id": stringProperty("Project UUID"), "name": stringProperty("Optional metric name"), "limit": limitProperty}, "project_id"), Annotations: readOnly},
 		{Name: "list_alert_rules", Description: "List alert rules and advanced conditions.", InputSchema: projectLimitSchema(stringProperty, limitProperty), Annotations: readOnly},
 		{Name: "list_alert_deliveries", Description: "List recent alert delivery attempts.", InputSchema: projectLimitSchema(stringProperty, limitProperty), Annotations: readOnly},

@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
+
+	telemetryanalysis "github.com/barktrace/bark/internal/telemetry"
 )
 
 func (s *Service) callObservabilityTool(ctx context.Context, credential *credential, name string, raw json.RawMessage) (any, error) {
@@ -39,6 +42,8 @@ func (s *Service) callObservabilityTool(ctx context.Context, credential *credent
 		Name      string `json:"name"`
 		Status    string `json:"status"`
 		IssueID   string `json:"issue_id"`
+		ReplayID  string `json:"replay_id"`
+		ProfileID string `json:"profile_id"`
 		Limit     int    `json:"limit"`
 	}
 	if err := decodeArguments(raw, &args); err != nil || strings.TrimSpace(args.ProjectID) == "" {
@@ -68,8 +73,18 @@ func (s *Service) callObservabilityTool(ctx context.Context, credential *credent
 		return s.listFeedback(ctx, args.ProjectID, limit)
 	case "list_replays":
 		return s.listReplays(ctx, args.ProjectID, limit)
+	case "analyze_replay":
+		if args.ReplayID == "" {
+			return nil, errors.New("replay_id is required")
+		}
+		return s.analyzeReplay(ctx, args.ProjectID, args.ReplayID)
 	case "list_profiles":
 		return s.listProfiles(ctx, args.ProjectID, limit)
+	case "analyze_profile":
+		if args.ProfileID == "" {
+			return nil, errors.New("profile_id is required")
+		}
+		return s.analyzeProfile(ctx, args.ProjectID, args.ProfileID)
 	case "list_metrics":
 		return s.listMetrics(ctx, args.ProjectID, args.Name, limit)
 	case "list_alert_rules":
@@ -277,21 +292,77 @@ func (s *Service) listReplays(ctx context.Context, projectID string, limit int) 
 }
 
 func (s *Service) listProfiles(ctx context.Context, projectID string, limit int) (any, error) {
-	rows, err := s.store.DB.QueryContext(ctx, `SELECT profile_id, COALESCE(transaction_id, ''), platform, environment, release, started_at, duration_ms, created_at FROM profiles WHERE project_id = ? ORDER BY started_at DESC LIMIT ?`, projectID, limit)
+	rows, err := s.store.DB.QueryContext(ctx, `SELECT id, profile_id, COALESCE(profiler_id, ''), COALESCE(chunk_id, ''), COALESCE(transaction_id, ''), platform, environment, release, started_at, duration_ms, created_at FROM profiles WHERE project_id = ? ORDER BY started_at DESC LIMIT ?`, projectID, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	items := make([]map[string]any, 0)
 	for rows.Next() {
-		var profileID, transactionID, platform, environment, release, startedAt, createdAt string
+		var id, profileID, profilerID, chunkID, transactionID, platform, environment, release, startedAt, createdAt string
 		var duration float64
-		if err := rows.Scan(&profileID, &transactionID, &platform, &environment, &release, &startedAt, &duration, &createdAt); err != nil {
+		if err := rows.Scan(&id, &profileID, &profilerID, &chunkID, &transactionID, &platform, &environment, &release, &startedAt, &duration, &createdAt); err != nil {
 			return nil, err
 		}
-		items = append(items, map[string]any{"profile_id": profileID, "transaction_id": transactionID, "platform": platform, "environment": environment, "release": release, "started_at": startedAt, "duration_ms": duration, "created_at": createdAt})
+		items = append(items, map[string]any{"id": id, "profile_id": profileID, "profiler_id": profilerID, "chunk_id": chunkID, "transaction_id": transactionID, "platform": platform, "environment": environment, "release": release, "started_at": startedAt, "duration_ms": duration, "created_at": createdAt})
 	}
 	return items, rows.Err()
+}
+
+func (s *Service) analyzeReplay(ctx context.Context, projectID, id string) (any, error) {
+	var replayID, eventKey, recordingKey string
+	var segmentID int
+	if err := s.store.DB.QueryRowContext(ctx, `SELECT rp.replay_id, rp.segment_id, COALESCE(event_blob.storage_key, ''), COALESCE(recording_blob.storage_key, '') FROM replays rp LEFT JOIN blobs event_blob ON event_blob.id = rp.event_blob_id LEFT JOIN blobs recording_blob ON recording_blob.id = rp.recording_blob_id WHERE rp.id = ? AND rp.project_id = ?`, id, projectID).Scan(&replayID, &segmentID, &eventKey, &recordingKey); err != nil {
+		return nil, errors.New("replay not found")
+	}
+	eventPayload, err := s.readTelemetryBlob(eventKey)
+	if err != nil {
+		return nil, err
+	}
+	recordingPayload, err := s.readTelemetryBlob(recordingKey)
+	if err != nil {
+		return nil, err
+	}
+	analysis, err := telemetryanalysis.AnalyzeReplay(eventPayload, recordingPayload)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"id": id, "replay_id": replayID, "segment_id": segmentID, "analysis": analysis}, nil
+}
+
+func (s *Service) analyzeProfile(ctx context.Context, projectID, id string) (any, error) {
+	var profileID, key string
+	if err := s.store.DB.QueryRowContext(ctx, `SELECT p.profile_id, b.storage_key FROM profiles p JOIN blobs b ON b.id = p.blob_id WHERE p.id = ? AND p.project_id = ?`, id, projectID).Scan(&profileID, &key); err != nil {
+		return nil, errors.New("profile not found")
+	}
+	payload, err := s.readTelemetryBlob(key)
+	if err != nil {
+		return nil, err
+	}
+	analysis, err := telemetryanalysis.AnalyzeProfile(payload)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"id": id, "profile_id": profileID, "analysis": analysis}, nil
+}
+
+func (s *Service) readTelemetryBlob(key string) ([]byte, error) {
+	if strings.TrimSpace(key) == "" {
+		return nil, nil
+	}
+	file, err := s.store.Blobs.Open(key)
+	if err != nil {
+		return nil, errors.New("telemetry payload is unavailable")
+	}
+	defer file.Close()
+	payload, err := io.ReadAll(io.LimitReader(file, telemetryanalysis.MaxCompressedBytes+1))
+	if err != nil {
+		return nil, errors.New("could not read telemetry payload")
+	}
+	if len(payload) > telemetryanalysis.MaxCompressedBytes {
+		return nil, errors.New("telemetry payload exceeds analysis size limit")
+	}
+	return payload, nil
 }
 
 func (s *Service) listMetrics(ctx context.Context, projectID, name string, limit int) (any, error) {
