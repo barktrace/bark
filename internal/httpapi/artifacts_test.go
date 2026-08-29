@@ -46,3 +46,11 @@ func TestSourceMapUploadAndEventSymbolication(t *testing.T) {
 		t.Fatalf("processed payload = %s", processed)
 	}
 }
+
+func TestArtifactTypeRecognizesNativeDebugFiles(t *testing.T) {
+	for _, name := range []string{"service.debug", "service.dwarf", "service.elf", "service.so", "Service.dylib", "Service.dSYM", "service.exe", "service.dll", "service.pdb", "service.sym"} {
+		if got := artifactType("", name); got != "debug_file" {
+			t.Errorf("artifactType(%q) = %q, want debug_file", name, got)
+		}
+	}
+}

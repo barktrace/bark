@@ -96,15 +96,15 @@ URL-style `sourceRoot` values such as `webpack:///`, release and distribution
 selection, and modern debug IDs from artifact bundles. Original generated frame
 fields are retained with an `original_` prefix when a frame is rewritten.
 
-Native frames can use uploaded ELF, Mach-O/dSYM, or Breakpad debug files selected
-by image debug ID. ELF and thin or universal Mach-O artifacts resolve function
-symbols and DWARF source files, lines, and columns, including runtime image-base
-rebasing. DWARF loading is skipped when its uncompressed sections exceed 32 MiB
-so a debug artifact cannot consume the container's whole memory budget.
-Breakpad files resolve bounded `FUNC` records before falling back to the nearest
-`PUBLIC` symbol and add `FILE` and source-line information when present.
-Inline-frame expansion, CFI stack unwinding, PDB/PE, and ProGuard mapping are not
-currently implemented.
+Native frames can use uploaded ELF, Mach-O/dSYM, PE/COFF, or Breakpad debug files
+selected by image debug ID. ELF, thin or universal Mach-O, and PE/COFF artifacts
+resolve function symbols and DWARF source files, lines, and columns, including
+runtime image-base rebasing. DWARF loading is skipped when its uncompressed
+sections exceed 32 MiB so a debug artifact cannot consume the container's whole
+memory budget. Breakpad files resolve bounded `FUNC` records before falling back
+to the nearest `PUBLIC` symbol and add `FILE` and source-line information when
+present. Inline-frame expansion, CFI stack unwinding, standalone Microsoft PDB,
+and ProGuard mapping are not currently implemented.
 
 ## Uptime
 

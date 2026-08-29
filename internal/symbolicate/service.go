@@ -6,6 +6,7 @@ import (
 	"debug/dwarf"
 	"debug/elf"
 	"debug/macho"
+	"debug/pe"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -271,6 +272,9 @@ func symbolicateNativeFrame(st *store.Store, artifacts []artifact, payload map[s
 			matched = lookupMachOFrame(file, address, imageBase, imageArch)
 		}
 		if matched.function == "" && matched.filename == "" {
+			matched = lookupPEFrame(file, address, imageBase)
+		}
+		if matched.function == "" && matched.filename == "" {
 			_, _ = file.Seek(0, io.SeekStart)
 			matched = lookupBreakpadSymbol(file, address-imageBase)
 		}
@@ -516,6 +520,101 @@ func machoArchMatches(expected, actual string) bool {
 		expected = "arm64"
 	}
 	return expected == actual
+}
+
+func lookupPEFrame(reader io.ReaderAt, address, imageBase uint64) nativeSymbol {
+	file, err := pe.NewFile(reader)
+	if err != nil {
+		return nativeSymbol{}
+	}
+	defer file.Close()
+	preferredBase := peImageBase(file)
+	lookupRVA := address
+	returnBias := uint64(0)
+	switch {
+	case imageBase > 0 && address >= imageBase:
+		lookupRVA = address - imageBase
+	case preferredBase > 0 && address >= preferredBase:
+		lookupRVA = address - preferredBase
+		returnBias = preferredBase
+	}
+	function, symbolRVA := lookupPESymbol(file, lookupRVA)
+	filename, line, column := lookupPEDWARFLine(file, preferredBase+lookupRVA)
+	if filename == "" {
+		filename, line, column = lookupPEDWARFLine(file, lookupRVA)
+	}
+	return nativeSymbol{function: function, address: returnBias + symbolRVA, filename: filename, line: line, column: column}
+}
+
+func peImageBase(file *pe.File) uint64 {
+	switch header := file.OptionalHeader.(type) {
+	case *pe.OptionalHeader32:
+		return uint64(header.ImageBase)
+	case *pe.OptionalHeader64:
+		return header.ImageBase
+	default:
+		return 0
+	}
+}
+
+func lookupPESymbol(file *pe.File, addressRVA uint64) (string, uint64) {
+	bestIndex := -1
+	bestRVA := uint64(0)
+	for index, symbol := range file.Symbols {
+		sectionIndex := int(symbol.SectionNumber) - 1
+		if symbol.Name == "" || sectionIndex < 0 || sectionIndex >= len(file.Sections) {
+			continue
+		}
+		symbolRVA := uint64(file.Sections[sectionIndex].VirtualAddress) + uint64(symbol.Value)
+		if symbolRVA > addressRVA || (bestIndex >= 0 && symbolRVA <= bestRVA) {
+			continue
+		}
+		bestIndex, bestRVA = index, symbolRVA
+	}
+	if bestIndex < 0 {
+		return "", 0
+	}
+	best := file.Symbols[bestIndex]
+	sectionIndex := int(best.SectionNumber) - 1
+	section := file.Sections[sectionIndex]
+	sectionSize := uint64(max(section.VirtualSize, section.Size))
+	end := uint64(section.VirtualAddress) + sectionSize
+	for _, symbol := range file.Symbols {
+		if symbol.SectionNumber != best.SectionNumber || symbol.Value <= best.Value {
+			continue
+		}
+		nextRVA := uint64(section.VirtualAddress) + uint64(symbol.Value)
+		if nextRVA < end {
+			end = nextRVA
+		}
+	}
+	if addressRVA >= end {
+		return "", 0
+	}
+	return best.Name, bestRVA
+}
+
+func lookupPEDWARFLine(file *pe.File, address uint64) (string, int, int) {
+	var size uint64
+	found := false
+	for _, section := range file.Sections {
+		if !strings.HasPrefix(section.Name, ".debug_") && !strings.HasPrefix(section.Name, ".zdebug_") {
+			continue
+		}
+		found = true
+		if uint64(section.Size) > maxDWARFBytes-size {
+			return "", 0, 0
+		}
+		size += uint64(section.Size)
+	}
+	if !found {
+		return "", 0, 0
+	}
+	data, err := file.DWARF()
+	if err != nil {
+		return "", 0, 0
+	}
+	return lookupDWARFLineData(data, address)
 }
 
 func hasBoundedDWARF(file *elf.File) bool {

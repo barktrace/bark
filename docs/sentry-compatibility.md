@@ -59,7 +59,7 @@ The DSN shown in the project setup page should always be copied verbatim.
 | Replay event/recording payloads | Storage, retrieval, metadata, bounded statistics, event timeline, and interactive rrweb playback |
 | Profile and metric payloads | Storage, summaries, sampled-profile hotspots, threads, and flamegraph |
 | Source maps and release files | Source Map v3, including indexed maps, canonical URL source roots, release/distribution precedence, embedded source context, and debug-ID artifact bundles |
-| ELF, Mach-O/dSYM, and Breakpad debug files | ELF and thin/universal Mach-O function symbols with bounded DWARF source locations, plus Breakpad `FUNC`/`PUBLIC` symbols and `FILE`/line records, selected by debug ID |
+| ELF, Mach-O/dSYM, PE/COFF, and Breakpad debug files | ELF, thin/universal Mach-O, and PE/COFF function symbols with bounded DWARF source locations, plus Breakpad `FUNC`/`PUBLIC` symbols and `FILE`/line records, selected by debug ID |
 | Release commits and deploys | Supported |
 | Artifact bundle/chunk upload protocol | Supported for common `sentry-cli` workflows |
 | Pre-production APK/AAB/IPA build upload and installable APK/IPA download | Supported |
@@ -91,7 +91,8 @@ columns when the artifact contains at most 32 MiB of uncompressed DWARF data.
 Mach-O objects extracted from dSYM bundles receive the same bounded symbol and
 DWARF lookup, including runtime load-address rebasing and universal-binary
 architecture selection. Native symbolication does not yet expand inline frames
-or perform CFI-based stack unwinding; PDB/PE and ProGuard mapping are not
+or perform CFI-based stack unwinding. PE/COFF images resolve embedded symbols and
+DWARF source locations, but external Microsoft PDB and ProGuard mapping are not
 implemented. Breakpad symbolication resolves bounded function ranges and source
 lines but not inline records or CFI. Replay playback
 supports standard rrweb recordings and bounded session-wide segment assembly;

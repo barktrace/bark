@@ -354,7 +354,7 @@ func artifactType(requested, name string) string {
 		return "sourcemap"
 	case ".js", ".css":
 		return "source"
-	case ".sym", ".debug", ".elf", ".so", ".dylib", ".pdb":
+	case ".sym", ".debug", ".dwarf", ".elf", ".so", ".dylib", ".dsym", ".exe", ".dll", ".pdb":
 		return "debug_file"
 	case ".txt":
 		return "proguard"

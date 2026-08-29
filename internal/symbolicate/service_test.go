@@ -5,6 +5,7 @@ import (
 	"context"
 	"debug/elf"
 	"debug/macho"
+	"debug/pe"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -349,6 +350,79 @@ func buildMachOFixture(t *testing.T, directory, arch, target string) ([]byte, ui
 		t.Fatalf("Mach-O fixture symbol %s not found", target)
 	}
 	return payload, address, parsed.Segment("__TEXT").Addr, uint32(parsed.Cpu), uint32(parsed.SubCpu)
+}
+
+func TestLookupPEFrameAddsDWARFSourceLocation(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("cross-compiled PE fixture requires the Linux test environment")
+	}
+	directory := t.TempDir()
+	sourcePath := filepath.Join(directory, "fixture.go")
+	binaryPath := filepath.Join(directory, "fixture.exe")
+	source := `package main
+
+//go:noinline
+func pe_target() int {
+	return 126
+}
+
+func main() { _ = pe_target() }
+`
+	if err := os.WriteFile(sourcePath, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("go", "build", "-gcflags=all=-N -l", "-o", binaryPath, sourcePath)
+	command.Env = append(os.Environ(), "GOOS=windows", "GOARCH=amd64", "CGO_ENABLED=0", "GOTOOLCHAIN=local")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("build PE fixture: %v\n%s", err, output)
+	}
+	file, err := os.Open(binaryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	parsed, err := pe.NewFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var symbolRVA uint64
+	for _, symbol := range parsed.Symbols {
+		sectionIndex := int(symbol.SectionNumber) - 1
+		if strings.HasSuffix(symbol.Name, ".pe_target") && sectionIndex >= 0 && sectionIndex < len(parsed.Sections) {
+			symbolRVA = uint64(parsed.Sections[sectionIndex].VirtualAddress) + uint64(symbol.Value)
+			break
+		}
+	}
+	imageBase := peImageBase(parsed)
+	_ = parsed.Close()
+	if symbolRVA == 0 || imageBase == 0 {
+		t.Fatal("PE fixture function or image base not found")
+	}
+	instructionAddress := imageBase + symbolRVA
+
+	matched := lookupPEFrame(file, instructionAddress, imageBase)
+	if !strings.HasSuffix(matched.function, ".pe_target") || matched.address+imageBase != instructionAddress || filepath.Base(matched.filename) != "fixture.go" || matched.line < 4 {
+		t.Fatalf("PE/DWARF match = %#v", matched)
+	}
+
+	binary, err := os.ReadFile(binaryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := symbolicationStore(t)
+	putDebugArtifactBytes(t, st, "PE123", binary)
+	payload := []byte(fmt.Sprintf(`{
+		"debug_meta":{"images":[{"type":"pe","image_addr":"0x%x","image_size":"0x0","debug_id":"PE123","arch":"x86_64"}]},
+		"exception":{"values":[{"stacktrace":{"frames":[{"instruction_addr":"0x%x","filename":"fixture.exe"}]}}]}
+	}`, imageBase, instructionAddress))
+	processed, changed, err := ProcessEvent(context.Background(), st, "project", "release", payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame := processedFrame(t, processed)
+	if !changed || filepath.Base(frame["filename"].(string)) != "fixture.go" || frame["lineno"].(float64) < 4 || frame["symbol_addr"] != fmt.Sprintf("0x%x", instructionAddress) {
+		t.Fatalf("processed PE/DWARF frame = %#v, changed=%v", frame, changed)
+	}
 }
 
 func symbolicationStore(t *testing.T) *store.Store {
