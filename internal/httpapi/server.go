@@ -37,7 +37,7 @@ func New(cfg config.Config, st *store.Store, authentication *auth.Service, uptim
 		cfg:    cfg,
 		store:  st,
 		auth:   authentication,
-		ingest: ingest.New(st, cfg.MaxEnvelopeBytes),
+		ingest: ingest.New(st, cfg.MaxEnvelopeBytes, cfg.RateLimitPerMinute),
 		uptime: uptimeService,
 		mux:    http.NewServeMux(),
 	}
@@ -70,11 +70,37 @@ func (s *Server) routes() {
 
 	s.mux.Handle("GET /organizations", s.auth.Require(http.HandlerFunc(s.organizations)))
 	s.mux.Handle("POST /organizations", s.auth.Require(http.HandlerFunc(s.createOrganization)))
+	s.mux.Handle("GET /organizations/{organization_id}/members", s.auth.Require(http.HandlerFunc(s.organizationMembers)))
+	s.mux.Handle("POST /organizations/{organization_id}/invitations", s.auth.Require(http.HandlerFunc(s.createInvitation)))
+	s.mux.Handle("DELETE /organizations/{organization_id}/invitations/{invitation_id}", s.auth.Require(http.HandlerFunc(s.deleteInvitation)))
+	s.mux.Handle("PATCH /organizations/{organization_id}/members/{user_id}", s.auth.Require(http.HandlerFunc(s.updateMember)))
+	s.mux.Handle("DELETE /organizations/{organization_id}/members/{user_id}", s.auth.Require(http.HandlerFunc(s.deleteMember)))
+	s.mux.Handle("GET /api-tokens", s.auth.Require(http.HandlerFunc(s.apiTokens)))
+	s.mux.Handle("POST /api-tokens", s.auth.Require(http.HandlerFunc(s.createAPIToken)))
+	s.mux.Handle("DELETE /api-tokens/{token_id}", s.auth.Require(http.HandlerFunc(s.deleteAPIToken)))
+	s.mux.Handle("GET /storage", s.auth.Require(http.HandlerFunc(s.storageUsage)))
+	s.mux.Handle("PATCH /storage/retention", s.auth.Require(http.HandlerFunc(s.updateRetention)))
+	s.mux.Handle("POST /storage/cleanup", s.auth.Require(http.HandlerFunc(s.cleanupStorage)))
+	s.mux.Handle("GET /alerts", s.auth.Require(http.HandlerFunc(s.alertRules)))
+	s.mux.Handle("POST /alerts", s.auth.Require(http.HandlerFunc(s.createAlertRule)))
+	s.mux.Handle("PATCH /alerts/{rule_id}", s.auth.Require(http.HandlerFunc(s.updateAlertRule)))
+	s.mux.Handle("DELETE /alerts/{rule_id}", s.auth.Require(http.HandlerFunc(s.deleteAlertRule)))
+	s.mux.Handle("POST /alerts/{rule_id}/test", s.auth.Require(http.HandlerFunc(s.testAlertRule)))
+	s.mux.Handle("GET /alert-deliveries", s.auth.Require(http.HandlerFunc(s.alertDeliveries)))
 	s.mux.Handle("GET /projects", s.auth.Require(http.HandlerFunc(s.projects)))
 	s.mux.Handle("POST /projects", s.auth.Require(http.HandlerFunc(s.createProject)))
+	s.mux.Handle("PATCH /projects/{project_id}", s.auth.Require(http.HandlerFunc(s.updateProject)))
+	s.mux.Handle("DELETE /projects/{project_id}", s.auth.Require(http.HandlerFunc(s.deleteProject)))
+	s.mux.Handle("POST /projects/{project_id}/rotate-key", s.auth.Require(http.HandlerFunc(s.rotateProjectKey)))
 	s.mux.Handle("GET /issues", s.auth.Require(http.HandlerFunc(s.issues)))
+	s.mux.Handle("GET /issues/{issue_id}", s.auth.Require(http.HandlerFunc(s.issueDetail)))
+	s.mux.Handle("PATCH /issues/{issue_id}", s.auth.Require(http.HandlerFunc(s.updateIssue)))
+	s.mux.Handle("DELETE /issues/{issue_id}", s.auth.Require(http.HandlerFunc(s.deleteIssue)))
+	s.mux.Handle("POST /issues/{issue_id}/comments", s.auth.Require(http.HandlerFunc(s.createIssueComment)))
+	s.mux.Handle("GET /events/{event_id}", s.auth.Require(http.HandlerFunc(s.eventDetail)))
 	s.mux.Handle("GET /releases", s.auth.Require(http.HandlerFunc(s.releases)))
 	s.mux.Handle("GET /performance", s.auth.Require(http.HandlerFunc(s.performance)))
+	s.mux.Handle("GET /transactions/{transaction_id}", s.auth.Require(http.HandlerFunc(s.transactionDetail)))
 	s.mux.Handle("GET /logs", s.auth.Require(http.HandlerFunc(s.logs)))
 	s.mux.Handle("GET /uptime/monitors", s.auth.Require(http.HandlerFunc(s.uptimeMonitors)))
 	s.mux.Handle("POST /uptime/monitors", s.auth.Require(http.HandlerFunc(s.createUptimeMonitor)))
@@ -241,10 +267,13 @@ func (s *Server) issues(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := s.store.DB.QueryContext(r.Context(), `
 		SELECT i.id, i.title, i.status, i.level, i.event_count, i.first_seen_at, i.last_seen_at,
-		       COALESCE(fr.version, ''), COALESCE(lr.version, '')
+		       COALESCE(fr.version, ''), COALESCE(lr.version, ''), i.priority,
+		       COALESCE(i.assignee_user_id, ''), COALESCE(u.name, ''), i.bookmarked,
+		       COALESCE(i.snoozed_until, '')
 		FROM issues i
 		LEFT JOIN releases fr ON fr.id = i.first_release_id
 		LEFT JOIN releases lr ON lr.id = i.last_release_id
+		LEFT JOIN users u ON u.id = i.assignee_user_id
 		WHERE i.project_id = ? ORDER BY i.last_seen_at DESC LIMIT 100
 	`, projectID)
 	if err != nil {
@@ -254,13 +283,14 @@ func (s *Server) issues(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	items := make([]map[string]any, 0)
 	for rows.Next() {
-		var id, title, status, level, firstSeen, lastSeen, firstRelease, lastRelease string
+		var id, title, status, level, firstSeen, lastSeen, firstRelease, lastRelease, priority, assigneeID, assigneeName, snoozedUntil string
 		var count int64
-		if err := rows.Scan(&id, &title, &status, &level, &count, &firstSeen, &lastSeen, &firstRelease, &lastRelease); err != nil {
+		var bookmarked bool
+		if err := rows.Scan(&id, &title, &status, &level, &count, &firstSeen, &lastSeen, &firstRelease, &lastRelease, &priority, &assigneeID, &assigneeName, &bookmarked, &snoozedUntil); err != nil {
 			writeError(w, http.StatusInternalServerError, "could not list issues")
 			return
 		}
-		items = append(items, map[string]any{"id": id, "title": title, "status": status, "level": level, "event_count": count, "first_seen_at": firstSeen, "last_seen_at": lastSeen, "first_release": firstRelease, "last_release": lastRelease})
+		items = append(items, map[string]any{"id": id, "title": title, "status": status, "level": level, "event_count": count, "first_seen_at": firstSeen, "last_seen_at": lastSeen, "first_release": firstRelease, "last_release": lastRelease, "priority": priority, "assignee_user_id": assigneeID, "assignee_name": assigneeName, "bookmarked": bookmarked, "snoozed_until": snoozedUntil})
 	}
 	writeJSON(w, http.StatusOK, items)
 }
@@ -274,7 +304,11 @@ func (s *Server) releases(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := s.store.DB.QueryContext(r.Context(), `
 		SELECT r.id, r.version, pr.first_seen_at, pr.last_seen_at,
-		       (SELECT COUNT(*) FROM events e WHERE e.project_id = pr.project_id AND e.release_id = r.id)
+		       (SELECT COUNT(*) FROM events e WHERE e.project_id = pr.project_id AND e.release_id = r.id),
+		       (SELECT COUNT(*) FROM project_sessions s WHERE s.project_id = pr.project_id AND s.release_id = r.id),
+		       (SELECT COUNT(*) FROM project_sessions s WHERE s.project_id = pr.project_id AND s.release_id = r.id AND (s.status IN ('crashed', 'abnormal') OR s.errors > 0)),
+		       (SELECT COUNT(DISTINCT s.distinct_id) FROM project_sessions s WHERE s.project_id = pr.project_id AND s.release_id = r.id AND s.distinct_id != ''),
+		       (SELECT COUNT(DISTINCT s.distinct_id) FROM project_sessions s WHERE s.project_id = pr.project_id AND s.release_id = r.id AND s.distinct_id != '' AND (s.status IN ('crashed', 'abnormal') OR s.errors > 0))
 		FROM project_releases pr JOIN releases r ON r.id = pr.release_id
 		WHERE pr.project_id = ? ORDER BY pr.last_seen_at DESC LIMIT 100
 	`, projectID)
@@ -286,12 +320,19 @@ func (s *Server) releases(w http.ResponseWriter, r *http.Request) {
 	items := make([]map[string]any, 0)
 	for rows.Next() {
 		var id, version, firstSeen, lastSeen string
-		var events int64
-		if err := rows.Scan(&id, &version, &firstSeen, &lastSeen, &events); err != nil {
+		var events, sessions, crashedSessions, users, crashedUsers int64
+		if err := rows.Scan(&id, &version, &firstSeen, &lastSeen, &events, &sessions, &crashedSessions, &users, &crashedUsers); err != nil {
 			writeError(w, http.StatusInternalServerError, "could not list releases")
 			return
 		}
-		items = append(items, map[string]any{"id": id, "version": version, "first_seen_at": firstSeen, "last_seen_at": lastSeen, "events": events})
+		crashFreeSessions, crashFreeUsers := 100.0, 100.0
+		if sessions > 0 {
+			crashFreeSessions = 100 * (1 - float64(crashedSessions)/float64(sessions))
+		}
+		if users > 0 {
+			crashFreeUsers = 100 * (1 - float64(crashedUsers)/float64(users))
+		}
+		items = append(items, map[string]any{"id": id, "version": version, "first_seen_at": firstSeen, "last_seen_at": lastSeen, "events": events, "sessions": sessions, "crash_free_sessions": crashFreeSessions, "users": users, "crash_free_users": crashFreeUsers})
 	}
 	writeJSON(w, http.StatusOK, items)
 }

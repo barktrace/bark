@@ -47,7 +47,8 @@ func (s *Server) performance(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.store.DB.QueryContext(r.Context(), `
 		SELECT t.name, t.operation, COUNT(*), AVG(t.duration_ms), MAX(t.duration_ms),
 		       SUM(CASE WHEN t.status IN ('internal_error','unknown_error','unavailable','deadline_exceeded','aborted','data_loss') THEN 1 ELSE 0 END),
-		       MAX(t.finished_at)
+		       MAX(t.finished_at),
+		       (SELECT latest.id FROM transactions latest WHERE latest.project_id = t.project_id AND latest.name = t.name AND latest.operation = t.operation ORDER BY latest.finished_at DESC LIMIT 1)
 		FROM transactions t WHERE t.project_id = ? AND t.finished_at >= ?
 		GROUP BY t.name, t.operation ORDER BY COUNT(*) DESC, AVG(t.duration_ms) DESC LIMIT 100
 	`, projectID, since)
@@ -57,15 +58,15 @@ func (s *Server) performance(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]map[string]any, 0)
 	for rows.Next() {
-		var name, operation, lastSeen string
+		var name, operation, lastSeen, sampleID string
 		var itemCount, itemFailed int64
 		var itemAverage, itemMaximum float64
-		if err := rows.Scan(&name, &operation, &itemCount, &itemAverage, &itemMaximum, &itemFailed, &lastSeen); err != nil {
+		if err := rows.Scan(&name, &operation, &itemCount, &itemAverage, &itemMaximum, &itemFailed, &lastSeen, &sampleID); err != nil {
 			_ = rows.Close()
 			writeError(w, http.StatusInternalServerError, "could not list transactions")
 			return
 		}
-		items = append(items, map[string]any{"name": name, "operation": operation, "count": itemCount, "average_ms": itemAverage, "max_ms": itemMaximum, "failed": itemFailed, "last_seen_at": lastSeen})
+		items = append(items, map[string]any{"name": name, "operation": operation, "count": itemCount, "average_ms": itemAverage, "max_ms": itemMaximum, "failed": itemFailed, "last_seen_at": lastSeen, "sample_id": sampleID})
 	}
 	_ = rows.Close()
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -73,6 +74,45 @@ func (s *Server) performance(w http.ResponseWriter, r *http.Request) {
 		"stats":        map[string]any{"count": count, "average_ms": nullFloat(average), "p50_ms": percentile(.50), "p95_ms": percentile(.95), "max_ms": nullFloat(maximum), "failed": failed},
 		"transactions": items,
 	})
+}
+
+func (s *Server) transactionDetail(w http.ResponseWriter, r *http.Request) {
+	principal, _ := auth.PrincipalFromContext(r.Context())
+	id := r.PathValue("transaction_id")
+	var projectID, eventID, traceID, spanID, name, operation, status, environment, startedAt, finishedAt, release string
+	var duration float64
+	var spanCount int
+	var payload json.RawMessage
+	err := s.store.DB.QueryRowContext(r.Context(), `
+		SELECT t.project_id, t.event_id, t.trace_id, t.span_id, t.name, t.operation, t.status,
+		       t.environment, t.started_at, t.finished_at, t.duration_ms, t.span_count,
+		       t.payload, COALESCE(r.version, '')
+		FROM transactions t LEFT JOIN releases r ON r.id = t.release_id WHERE t.id = ?
+	`, id).Scan(&projectID, &eventID, &traceID, &spanID, &name, &operation, &status, &environment, &startedAt, &finishedAt, &duration, &spanCount, &payload, &release)
+	if err == sql.ErrNoRows {
+		writeError(w, http.StatusNotFound, "transaction not found")
+		return
+	}
+	if err != nil || !s.canAccessProject(r, principal, projectID) {
+		writeError(w, http.StatusForbidden, "transaction access required")
+		return
+	}
+	rows, err := s.store.DB.QueryContext(r.Context(), `SELECT id, trace_id, span_id, parent_span_id, operation, description, status, started_at, finished_at, duration_ms, data FROM spans WHERE project_id = ? AND trace_id = ? ORDER BY started_at`, projectID, traceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not list spans")
+		return
+	}
+	defer rows.Close()
+	spans := make([]map[string]any, 0)
+	for rows.Next() {
+		var spanInternalID, spanTraceID, childSpanID, parentSpanID, spanOp, description, spanStatus, spanStarted, spanFinished string
+		var spanDuration float64
+		var data json.RawMessage
+		if err := rows.Scan(&spanInternalID, &spanTraceID, &childSpanID, &parentSpanID, &spanOp, &description, &spanStatus, &spanStarted, &spanFinished, &spanDuration, &data); err == nil {
+			spans = append(spans, map[string]any{"id": spanInternalID, "trace_id": spanTraceID, "span_id": childSpanID, "parent_span_id": parentSpanID, "operation": spanOp, "description": description, "status": spanStatus, "started_at": spanStarted, "finished_at": spanFinished, "duration_ms": spanDuration, "data": data})
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "project_id": projectID, "event_id": eventID, "trace_id": traceID, "span_id": spanID, "name": name, "operation": operation, "status": status, "environment": environment, "started_at": startedAt, "finished_at": finishedAt, "duration_ms": duration, "span_count": spanCount, "release": release, "payload": payload, "spans": spans})
 }
 
 func (s *Server) logs(w http.ResponseWriter, r *http.Request) {

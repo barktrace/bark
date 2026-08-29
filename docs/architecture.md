@@ -60,12 +60,13 @@ connection time to reduce SSRF and DNS-rebinding risk.
 
 ## Compatibility boundary
 
-The implemented surface includes errors, deterministic grouping, transactions,
-structured logs, uptime, organizations, projects, releases, and core
-envelope/store ingestion. Other unsupported envelope categories are written to
-`ingestion_outcomes`, so clients do not retry indefinitely. Durable processing
-for full trace waterfalls, sessions, check-ins, attachments, profiles, replays,
-metrics, alert notifications, source maps, symbolication, commit metadata, quotas, and retention is
+The implemented surface includes errors, deterministic grouping and triage,
+transactions, normalized spans, sessions and release health, structured logs,
+uptime, webhook/Slack alerts, organizations, projects, members, tokens,
+retention, and core envelope/store ingestion. Other unsupported envelope
+categories are written to `ingestion_outcomes`, so clients do not retry
+indefinitely. Durable processing for check-ins, attachments, profiles, replays,
+metrics, source maps, symbolication, commit metadata, and high availability is
 planned as separate bounded modules. This boundary is explicit because claiming
 complete Sentry parity before those processors exist would make SDK delivery
 look successful while silently discarding data.

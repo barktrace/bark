@@ -14,11 +14,15 @@ The current foundation includes:
 - generic OpenID Connect login with PKCE, state, nonce, verified-email account
   linking, and automatic organization provisioning;
 - organization memberships and project-scoped access;
-- Sentry envelope and store ingestion;
-- deterministic issue grouping and release-to-event/issue linkage;
-- transaction ingestion with latency percentiles and endpoint summaries;
+- member invitations, role administration, and organization-scoped API tokens;
+- Sentry envelope and store ingestion with per-project rate limits;
+- deterministic issue grouping, event detail, triage activity, and release linkage;
+- transaction and span ingestion with latency summaries and waterfall detail;
+- sessions and release-health percentages;
 - structured log ingestion, filtering, and trace/release correlation;
 - scheduled HTTP uptime monitors with check and incident history;
+- webhook and Slack alert rules for new issues, regressions, and downtime;
+- configurable retention, manual cleanup previews, and storage reporting;
 - an authenticated Streamable HTTP MCP server for issue investigation;
 - one final Docker image containing the API and compiled Astro dashboard.
 
@@ -43,6 +47,7 @@ Detailed guides:
 - [MCP server and client setup](docs/mcp.md)
 - [Sentry SDK compatibility](docs/sentry-compatibility.md)
 - [Performance, logs, and uptime](docs/observability.md)
+- [Members, tokens, alerts, and retention](docs/administration.md)
 - [Brand identity and assets](docs/brand.md)
 - [Architecture and compatibility boundary](docs/architecture.md)
 
@@ -88,13 +93,11 @@ copying the live WAL file by itself.
 
 ## Production-readiness boundary
 
-The current version is functional and deployable as a small, single-node error
-tracker: error ingestion, grouping, organizations, projects, OIDC account
-creation, releases, the dashboard, probes, migrations, and backup procedures
-are present. It is not complete Sentry parity.
+The current version is functional and deployable as a small, single-node
+observability service. It is not complete Sentry parity.
 
-Span waterfall detail, sessions, check-ins, attachments, profiles, replays,
-metrics, alert notifications, source maps/symbolication, commit metadata,
-quotas, retention controls, member administration, high availability, and
-per-tenant MCP credentials remain to be implemented. Unsupported envelope items are
+Check-ins, attachments, profiles, replays, metrics, email delivery,
+source maps/symbolication, commit metadata, durable ingestion queues,
+high availability, and per-tenant MCP credentials remain to be implemented.
+Unsupported envelope items are
 acknowledged and recorded as ingestion outcomes so SDKs do not retry forever.

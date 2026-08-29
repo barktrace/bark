@@ -114,9 +114,9 @@ Confirm `/readyz` before accepting traffic.
 
 ## Operational limits
 
-This release is a deployable error-tracking MVP, not complete Sentry parity.
-Error events, grouping, projects, organizations, OIDC users, releases, the
-dashboard, and core Sentry envelope/store ingestion work. Performance tracing,
-logs, uptime, alerts, replays, metrics, symbolication/source maps, commit
-metadata, quotas, retention controls, invitation/member administration, and
-high-availability storage are not implemented yet.
+This release is a deployable single-node observability service, not complete
+Sentry parity. Errors, issue triage, releases and release health, normalized
+transactions and spans, logs, uptime, webhook/Slack alerts, members, API
+tokens, rate limits, and retention controls are implemented. Replays, metrics,
+profiles, attachments, symbolication/source maps, commit metadata, email alert
+delivery, and high-availability storage are not implemented yet.

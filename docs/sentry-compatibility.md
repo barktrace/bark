@@ -49,7 +49,10 @@ The DSN shown in the project setup page should always be copied verbatim.
 | Duplicate event-ID handling | Supported |
 | Browser SDK CORS preflight | Supported |
 | Transaction envelopes and trace identifiers | Supported |
+| Inline and standalone span normalization | Supported |
+| Session envelopes and release health | Supported |
 | Sentry structured log envelope items | Supported |
+| Project ingestion rate-limit headers | Supported |
 | Unknown envelope item acknowledgement/outcome recording | Supported |
 
 The compatibility checks currently exercise real `sentry-sdk` 2.21.0 and
@@ -60,13 +63,13 @@ The compatibility checks currently exercise real `sentry-sdk` 2.21.0 and
 Barktrace is compatible with Sentry SDK error delivery, not with the complete
 Sentry product or HTTP API. The following need dedicated implementations:
 
-- span waterfall detail, sessions, check-ins, profiles, replays, metrics, and attachments;
+- check-ins, profiles, replays, metrics, and attachments;
 - source-map ingestion, native debug files, and symbolication;
 - user feedback and client-report processing;
-- alert rules, notifications, quotas, rate limiting, and retention;
+- Sentry-compatible alert-management APIs and quota categories (native webhook/Slack rules, project rate limits, and retention controls are available);
 - commit/deploy metadata and suspect commits;
 - the broader `/api/0` project, team, member, and issue API;
-- token authentication and endpoint coverage expected by `sentry-cli`;
+- complete endpoint coverage expected by `sentry-cli` (native Bearer API tokens and release creation are available);
 - Relay protocol support and multi-node/high-availability ingestion.
 
 Unsupported envelope item types receive a successful response and

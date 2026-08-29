@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/GhaziBenDahmane/barktrace/internal/alerts"
 	"github.com/GhaziBenDahmane/barktrace/internal/store"
 	"github.com/google/uuid"
 )
@@ -25,6 +26,7 @@ type Service struct {
 
 type Monitor struct {
 	ID                string
+	ProjectID         string
 	URL               string
 	Method            string
 	IntervalSeconds   int
@@ -76,14 +78,14 @@ func (s *Service) ValidateURL(ctx context.Context, raw string) error {
 func (s *Service) CheckNow(ctx context.Context, monitorID string) (Result, error) {
 	var monitor Monitor
 	err := s.store.DB.QueryRowContext(ctx, `
-		SELECT id, url, method, interval_seconds, timeout_seconds, expected_status_min, expected_status_max
+		SELECT id, project_id, url, method, interval_seconds, timeout_seconds, expected_status_min, expected_status_max
 		FROM uptime_monitors WHERE id = ?
-	`, monitorID).Scan(&monitor.ID, &monitor.URL, &monitor.Method, &monitor.IntervalSeconds, &monitor.TimeoutSeconds, &monitor.ExpectedStatusMin, &monitor.ExpectedStatusMax)
+	`, monitorID).Scan(&monitor.ID, &monitor.ProjectID, &monitor.URL, &monitor.Method, &monitor.IntervalSeconds, &monitor.TimeoutSeconds, &monitor.ExpectedStatusMin, &monitor.ExpectedStatusMax)
 	if err != nil {
 		return Result{}, err
 	}
 	result := s.check(ctx, monitor)
-	if err := s.record(ctx, monitor, result); err != nil {
+	if _, err := s.record(ctx, monitor, result); err != nil {
 		return Result{}, err
 	}
 	return result, nil
@@ -91,7 +93,7 @@ func (s *Service) CheckNow(ctx context.Context, monitorID string) (Result, error
 
 func (s *Service) runDue(ctx context.Context) {
 	rows, err := s.store.DB.QueryContext(ctx, `
-		SELECT id, url, method, interval_seconds, timeout_seconds, expected_status_min, expected_status_max
+		SELECT id, project_id, url, method, interval_seconds, timeout_seconds, expected_status_min, expected_status_max
 		FROM uptime_monitors WHERE enabled = 1 AND next_check_at <= ? ORDER BY next_check_at LIMIT 20
 	`, time.Now().UTC().Format(time.RFC3339Nano))
 	if err != nil {
@@ -101,7 +103,7 @@ func (s *Service) runDue(ctx context.Context) {
 	monitors := make([]Monitor, 0)
 	for rows.Next() {
 		var monitor Monitor
-		if err := rows.Scan(&monitor.ID, &monitor.URL, &monitor.Method, &monitor.IntervalSeconds, &monitor.TimeoutSeconds, &monitor.ExpectedStatusMin, &monitor.ExpectedStatusMax); err == nil {
+		if err := rows.Scan(&monitor.ID, &monitor.ProjectID, &monitor.URL, &monitor.Method, &monitor.IntervalSeconds, &monitor.TimeoutSeconds, &monitor.ExpectedStatusMin, &monitor.ExpectedStatusMax); err == nil {
 			monitors = append(monitors, monitor)
 		}
 	}
@@ -112,7 +114,7 @@ func (s *Service) runDue(ctx context.Context) {
 			continue
 		}
 		result := s.check(ctx, monitor)
-		if err := s.record(ctx, monitor, result); err != nil {
+		if _, err := s.record(ctx, monitor, result); err != nil {
 			slog.Error("record uptime check", "monitor_id", monitor.ID, "error", err)
 		}
 	}
@@ -191,10 +193,10 @@ func (s *Service) dialContext(ctx context.Context, network, address string) (net
 	return nil, lastErr
 }
 
-func (s *Service) record(ctx context.Context, monitor Monitor, result Result) error {
+func (s *Service) record(ctx context.Context, monitor Monitor, result Result) (bool, error) {
 	tx, err := s.store.DB.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer tx.Rollback()
 	var statusCode any
@@ -202,21 +204,33 @@ func (s *Service) record(ctx context.Context, monitor Monitor, result Result) er
 		statusCode = result.StatusCode
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO uptime_checks(monitor_id, status, status_code, duration_ms, error, checked_at) VALUES (?, ?, ?, ?, ?, ?)`, monitor.ID, result.Status, statusCode, result.DurationMS, result.Error, result.CheckedAt); err != nil {
-		return err
+		return false, err
 	}
 	next := time.Now().UTC().Add(time.Duration(monitor.IntervalSeconds) * time.Second).Format(time.RFC3339Nano)
 	if _, err := tx.ExecContext(ctx, `UPDATE uptime_monitors SET last_checked_at = ?, last_status = ?, next_check_at = ? WHERE id = ?`, result.CheckedAt, result.Status, next, monitor.ID); err != nil {
-		return err
+		return false, err
 	}
+	openedIncident := false
 	if result.Status == "down" {
-		_, err = tx.ExecContext(ctx, `INSERT INTO uptime_incidents(id, monitor_id, started_at, cause) SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM uptime_incidents WHERE monitor_id = ? AND resolved_at IS NULL)`, uuid.NewString(), monitor.ID, result.CheckedAt, result.Error, monitor.ID)
+		var execution sql.Result
+		execution, err = tx.ExecContext(ctx, `INSERT INTO uptime_incidents(id, monitor_id, started_at, cause) SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM uptime_incidents WHERE monitor_id = ? AND resolved_at IS NULL)`, uuid.NewString(), monitor.ID, result.CheckedAt, result.Error, monitor.ID)
+		if err == nil {
+			count, _ := execution.RowsAffected()
+			openedIncident = count > 0
+		}
 	} else {
 		_, err = tx.ExecContext(ctx, `UPDATE uptime_incidents SET resolved_at = ? WHERE monitor_id = ? AND resolved_at IS NULL`, result.CheckedAt, monitor.ID)
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	if openedIncident {
+		_ = alerts.Queue(ctx, s.store.DB, monitor.ProjectID, "uptime_down", map[string]any{"title": "Uptime monitor is down", "monitor_id": monitor.ID, "url": monitor.URL, "error": result.Error, "status_code": result.StatusCode, "checked_at": result.CheckedAt})
+	}
+	return openedIncident, nil
 }
 
 func validatedIPs(ctx context.Context, host string, allowPrivate bool) ([]net.IP, error) {

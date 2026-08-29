@@ -32,6 +32,7 @@ type Config struct {
 	SecureCookies             bool
 	SessionLifetime           time.Duration
 	MaxEnvelopeBytes          int64
+	RateLimitPerMinute        int
 	MCPToken                  string
 	UptimeAllowPrivateTargets bool
 	OIDC                      OIDC
@@ -47,6 +48,7 @@ func Load() (Config, error) {
 		AutoProvision:             envBool("BARKTRACE_AUTO_PROVISION", true),
 		SessionLifetime:           30 * 24 * time.Hour,
 		MaxEnvelopeBytes:          20 << 20,
+		RateLimitPerMinute:        1000,
 		MCPToken:                  strings.TrimSpace(os.Getenv("BARKTRACE_MCP_TOKEN")),
 		UptimeAllowPrivateTargets: envBool("BARKTRACE_UPTIME_ALLOW_PRIVATE_TARGETS", false),
 		OIDC: OIDC{
@@ -66,6 +68,13 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("BARKTRACE_SESSION_LIFETIME_HOURS must be a positive integer")
 		}
 		cfg.SessionLifetime = time.Duration(hours) * time.Hour
+	}
+	if value := strings.TrimSpace(os.Getenv("BARKTRACE_RATE_LIMIT_PER_MINUTE")); value != "" {
+		limit, err := strconv.Atoi(value)
+		if err != nil || limit < 1 {
+			return Config{}, fmt.Errorf("BARKTRACE_RATE_LIMIT_PER_MINUTE must be a positive integer")
+		}
+		cfg.RateLimitPerMinute = limit
 	}
 	if err := cfg.validate(); err != nil {
 		return Config{}, err

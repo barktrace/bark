@@ -26,6 +26,12 @@ func PrincipalFromContext(ctx context.Context) (*Principal, bool) {
 	return principal, ok
 }
 
+// WithPrincipal attaches an already authenticated principal to a context.
+// It is useful for composing Barktrace handlers without duplicating auth state.
+func WithPrincipal(ctx context.Context, principal *Principal) context.Context {
+	return context.WithValue(ctx, principalKey{}, principal)
+}
+
 func (p Principal) Membership(organizationID string) (Membership, bool) {
 	for _, membership := range p.Memberships {
 		if membership.OrganizationID == organizationID {

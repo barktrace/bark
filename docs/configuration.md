@@ -16,6 +16,7 @@ required value is absent or unsafe.
 | `BARKTRACE_DEFAULT_ORG_SLUG` | no | `default` | URL-safe slug of the default organization. Keep it stable after first deployment. |
 | `BARKTRACE_AUTO_PROVISION` | no | `true` | Creates a user from a new verified OIDC identity. When false, only identities linked to existing users can sign in. |
 | `BARKTRACE_SESSION_LIFETIME_HOURS` | no | `720` | Browser-session lifetime in hours. |
+| `BARKTRACE_RATE_LIMIT_PER_MINUTE` | no | `1000` | Maximum ingestion requests per project in a fixed one-minute window. A rejected request returns HTTP 429 and Sentry retry headers. |
 | `GOMEMLIMIT` | no | `96MiB` in the image | Go soft memory limit. Keep it below the container memory limit. |
 | `BARKTRACE_MCP_TOKEN` | no | empty | Enables `/mcp` when set. It must contain at least 32 characters. |
 | `BARKTRACE_UPTIME_ALLOW_PRIVATE_TARGETS` | no | `false` | Allows uptime monitors to contact loopback and private-network IPs. Keep disabled unless Barktrace is intentionally monitoring trusted internal services. |

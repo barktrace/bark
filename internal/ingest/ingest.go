@@ -12,11 +12,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/GhaziBenDahmane/barktrace/internal/alerts"
 	"github.com/GhaziBenDahmane/barktrace/internal/store"
 	"github.com/andybalholm/brotli"
 	"github.com/google/uuid"
@@ -28,6 +31,14 @@ const maxEventBytes = 5 << 20
 type Service struct {
 	store            *store.Store
 	maxEnvelopeBytes int64
+	rateLimit        int
+	rateMu           sync.Mutex
+	rateWindows      map[string]rateWindow
+}
+
+type rateWindow struct {
+	minute int64
+	count  int
 }
 
 type envelopeHeader struct {
@@ -88,6 +99,32 @@ type logPayload struct {
 	Attributes  map[string]any  `json:"attributes"`
 }
 
+type sessionPayload struct {
+	SessionID  string          `json:"sid"`
+	DistinctID string          `json:"did"`
+	Status     string          `json:"status"`
+	Started    json.RawMessage `json:"started"`
+	Timestamp  json.RawMessage `json:"timestamp"`
+	Duration   *float64        `json:"duration"`
+	Errors     int             `json:"errors"`
+	Attributes struct {
+		Release     string `json:"release"`
+		Environment string `json:"environment"`
+	} `json:"attrs"`
+}
+
+type spanPayload struct {
+	TraceID        string          `json:"trace_id"`
+	SpanID         string          `json:"span_id"`
+	ParentSpanID   string          `json:"parent_span_id"`
+	Operation      string          `json:"op"`
+	Description    string          `json:"description"`
+	Status         string          `json:"status"`
+	StartTimestamp json.RawMessage `json:"start_timestamp"`
+	Timestamp      json.RawMessage `json:"timestamp"`
+	Data           map[string]any  `json:"data"`
+}
+
 type exceptionValue struct {
 	Type  string `json:"type"`
 	Value string `json:"value"`
@@ -97,14 +134,22 @@ type Result struct {
 	ID string `json:"id"`
 }
 
-func New(st *store.Store, maxEnvelopeBytes int64) *Service {
-	return &Service{store: st, maxEnvelopeBytes: maxEnvelopeBytes}
+func New(st *store.Store, maxEnvelopeBytes int64, rateLimits ...int) *Service {
+	limit := 1000
+	if len(rateLimits) > 0 && rateLimits[0] > 0 {
+		limit = rateLimits[0]
+	}
+	return &Service{store: st, maxEnvelopeBytes: maxEnvelopeBytes, rateLimit: limit, rateWindows: make(map[string]rateWindow)}
 }
 
 func (s *Service) Envelope(w http.ResponseWriter, r *http.Request, projectID string) {
 	project, err := s.authenticateProject(r.Context(), r, projectID)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "invalid DSN key")
+		return
+	}
+	if !s.allow(project.ID) {
+		writeRateLimited(w)
 		return
 	}
 	reader, closeReader, err := decodedBody(r)
@@ -170,6 +215,16 @@ func (s *Service) Envelope(w http.ResponseWriter, r *http.Request, projectID str
 				writeError(w, http.StatusBadRequest, "logs were rejected")
 				return
 			}
+		case "session":
+			if err := s.StoreSession(r.Context(), project, payload); err != nil {
+				writeError(w, http.StatusBadRequest, "session was rejected")
+				return
+			}
+		case "span", "spans":
+			if _, err := s.StoreSpans(r.Context(), project, payload); err != nil {
+				writeError(w, http.StatusBadRequest, "spans were rejected")
+				return
+			}
 		default:
 			_, _ = s.store.DB.ExecContext(r.Context(), `INSERT INTO ingestion_outcomes(project_id, category, outcome, reason) VALUES (?, ?, 'accepted', 'processor pending')`, project.ID, item.Type)
 		}
@@ -183,6 +238,10 @@ func (s *Service) Logs(w http.ResponseWriter, r *http.Request, projectID string)
 	project, err := s.authenticateProject(r.Context(), r, projectID)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "invalid DSN key")
+		return
+	}
+	if !s.allow(project.ID) {
+		writeRateLimited(w)
 		return
 	}
 	body := http.MaxBytesReader(w, r.Body, maxEventBytes)
@@ -205,6 +264,10 @@ func (s *Service) Store(w http.ResponseWriter, r *http.Request, projectID string
 		writeError(w, http.StatusUnauthorized, "invalid DSN key")
 		return
 	}
+	if !s.allow(project.ID) {
+		writeRateLimited(w)
+		return
+	}
 	body := http.MaxBytesReader(w, r.Body, maxEventBytes)
 	payload, err := io.ReadAll(body)
 	if err != nil {
@@ -217,6 +280,32 @@ func (s *Service) Store(w http.ResponseWriter, r *http.Request, projectID string
 		return
 	}
 	writeJSON(w, http.StatusOK, Result{ID: id})
+}
+
+func (s *Service) allow(projectID string) bool {
+	minute := time.Now().Unix() / 60
+	s.rateMu.Lock()
+	defer s.rateMu.Unlock()
+	window := s.rateWindows[projectID]
+	if window.minute != minute {
+		window = rateWindow{minute: minute}
+	}
+	window.count++
+	s.rateWindows[projectID] = window
+	if len(s.rateWindows) > 10000 {
+		for key, value := range s.rateWindows {
+			if value.minute < minute-1 {
+				delete(s.rateWindows, key)
+			}
+		}
+	}
+	return window.count <= s.rateLimit
+}
+
+func writeRateLimited(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "60")
+	w.Header().Set("X-Sentry-Rate-Limits", "60:error:project_rate_limit")
+	writeError(w, http.StatusTooManyRequests, "project ingestion rate limit exceeded")
 }
 
 type Project struct {
@@ -271,6 +360,14 @@ func (s *Service) StoreEvent(ctx context.Context, project Project, raw []byte, e
 		return "", err
 	}
 	issueID := uuid.NewString()
+	previousStatus := ""
+	issueExists := true
+	if err := tx.QueryRowContext(ctx, `SELECT id, status FROM issues WHERE project_id = ? AND fingerprint = ?`, project.ID, fingerprint).Scan(&issueID, &previousStatus); errors.Is(err, sql.ErrNoRows) {
+		issueExists = false
+		issueID = uuid.NewString()
+	} else if err != nil {
+		return "", err
+	}
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO issues(id, project_id, fingerprint, title, level, first_seen_at, last_seen_at, first_release_id, last_release_id)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -295,6 +392,17 @@ func (s *Service) StoreEvent(ctx context.Context, project Project, raw []byte, e
 	}
 	if err := tx.Commit(); err != nil {
 		return "", err
+	}
+	trigger := ""
+	if !issueExists {
+		trigger = "new_issue"
+	} else if previousStatus == "resolved" {
+		trigger = "regression"
+	}
+	if trigger != "" {
+		if err := alerts.Queue(ctx, s.store.DB, project.ID, trigger, map[string]any{"title": title, "issue_id": issueID, "event_id": eventID, "level": level, "trigger": trigger, "timestamp": timestamp}); err != nil {
+			slog.Error("queue issue alert", "error", err, "issue_id", issueID)
+		}
 	}
 	return eventID, nil
 }
@@ -328,18 +436,125 @@ func (s *Service) StoreTransaction(ctx context.Context, project Project, raw []b
 	if err != nil {
 		return "", err
 	}
+	transactionID := uuid.NewString()
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO transactions(id, event_id, project_id, release_id, trace_id, span_id, name, operation, status, environment, started_at, finished_at, duration_ms, span_count, payload)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(project_id, event_id) DO NOTHING
-	`, uuid.NewString(), eventID, project.ID, nullable(releaseID), strings.TrimSpace(event.Contexts.Trace.TraceID), strings.TrimSpace(event.Contexts.Trace.SpanID), name, operation, strings.TrimSpace(event.Contexts.Trace.Status), strings.TrimSpace(event.Environment), started.Format(time.RFC3339Nano), finished.Format(time.RFC3339Nano), float64(finished.Sub(started))/float64(time.Millisecond), len(event.Spans), raw)
+	`, transactionID, eventID, project.ID, nullable(releaseID), strings.TrimSpace(event.Contexts.Trace.TraceID), strings.TrimSpace(event.Contexts.Trace.SpanID), name, operation, strings.TrimSpace(event.Contexts.Trace.Status), strings.TrimSpace(event.Environment), started.Format(time.RFC3339Nano), finished.Format(time.RFC3339Nano), float64(finished.Sub(started))/float64(time.Millisecond), len(event.Spans), raw)
 	if err != nil {
 		return "", err
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM transactions WHERE project_id = ? AND event_id = ?`, project.ID, eventID).Scan(&transactionID); err != nil {
+		return "", err
+	}
+	for _, rawSpan := range event.Spans {
+		var span spanPayload
+		if json.Unmarshal(rawSpan, &span) == nil {
+			if err := storeSpan(ctx, tx, project.ID, transactionID, span); err != nil {
+				return "", err
+			}
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return "", err
 	}
 	return eventID, nil
+}
+
+func (s *Service) StoreSession(ctx context.Context, project Project, raw []byte) error {
+	var session sessionPayload
+	if err := json.Unmarshal(raw, &session); err != nil {
+		return err
+	}
+	session.SessionID = strings.TrimSpace(session.SessionID)
+	if session.SessionID == "" {
+		return errors.New("session id is required")
+	}
+	started := parseEventTime(session.Started, time.Now().UTC())
+	tx, err := s.store.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	releaseID, err := linkRelease(ctx, tx, project, strings.TrimSpace(session.Attributes.Release), started.Format(time.RFC3339Nano))
+	if err != nil {
+		return err
+	}
+	status := strings.ToLower(strings.TrimSpace(session.Status))
+	if status == "" {
+		status = "ok"
+	}
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO project_sessions(id, session_id, project_id, release_id, environment, distinct_id, status, started_at, duration, errors)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(project_id, session_id) DO UPDATE SET release_id = COALESCE(excluded.release_id, project_sessions.release_id), environment = excluded.environment, distinct_id = excluded.distinct_id, status = excluded.status, duration = excluded.duration, errors = excluded.errors, received_at = CURRENT_TIMESTAMP
+	`, uuid.NewString(), session.SessionID, project.ID, nullable(releaseID), session.Attributes.Environment, session.DistinctID, status, started.Format(time.RFC3339Nano), session.Duration, session.Errors)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Service) StoreSpans(ctx context.Context, project Project, raw []byte) (int, error) {
+	spans, err := decodeSpans(raw)
+	if err != nil || len(spans) == 0 {
+		return 0, errors.New("span payload has no items")
+	}
+	if len(spans) > 1000 {
+		return 0, errors.New("too many spans")
+	}
+	tx, err := s.store.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	for _, span := range spans {
+		if err := storeSpan(ctx, tx, project.ID, "", span); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return len(spans), nil
+}
+
+func decodeSpans(raw []byte) ([]spanPayload, error) {
+	var batch struct {
+		Items []spanPayload `json:"items"`
+	}
+	if err := json.Unmarshal(raw, &batch); err == nil && len(batch.Items) > 0 {
+		return batch.Items, nil
+	}
+	var spans []spanPayload
+	if err := json.Unmarshal(raw, &spans); err == nil && len(spans) > 0 {
+		return spans, nil
+	}
+	var span spanPayload
+	if err := json.Unmarshal(raw, &span); err != nil {
+		return nil, err
+	}
+	return []spanPayload{span}, nil
+}
+
+func storeSpan(ctx context.Context, tx *sql.Tx, projectID, transactionID string, span spanPayload) error {
+	span.TraceID, span.SpanID = strings.TrimSpace(span.TraceID), strings.TrimSpace(span.SpanID)
+	if span.TraceID == "" || span.SpanID == "" {
+		return nil
+	}
+	finished := parseEventTime(span.Timestamp, time.Now().UTC())
+	started := parseEventTime(span.StartTimestamp, finished)
+	if started.After(finished) || finished.Sub(started) > 24*time.Hour {
+		return errors.New("invalid span duration")
+	}
+	data, _ := json.Marshal(span.Data)
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO spans(id, project_id, transaction_id, trace_id, span_id, parent_span_id, operation, description, status, started_at, finished_at, duration_ms, data)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(project_id, trace_id, span_id) DO UPDATE SET transaction_id = COALESCE(excluded.transaction_id, spans.transaction_id), operation = excluded.operation, description = excluded.description, status = excluded.status, started_at = excluded.started_at, finished_at = excluded.finished_at, duration_ms = excluded.duration_ms, data = excluded.data
+	`, uuid.NewString(), projectID, nullable(transactionID), span.TraceID, span.SpanID, span.ParentSpanID, span.Operation, span.Description, span.Status, started.Format(time.RFC3339Nano), finished.Format(time.RFC3339Nano), float64(finished.Sub(started))/float64(time.Millisecond), data)
+	return err
 }
 
 func (s *Service) StoreLogs(ctx context.Context, project Project, raw []byte) (int, error) {

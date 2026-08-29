@@ -12,9 +12,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/GhaziBenDahmane/barktrace/internal/alerts"
 	"github.com/GhaziBenDahmane/barktrace/internal/auth"
 	"github.com/GhaziBenDahmane/barktrace/internal/config"
 	"github.com/GhaziBenDahmane/barktrace/internal/httpapi"
+	"github.com/GhaziBenDahmane/barktrace/internal/maintenance"
 	"github.com/GhaziBenDahmane/barktrace/internal/store"
 	"github.com/GhaziBenDahmane/barktrace/internal/uptime"
 )
@@ -72,6 +74,8 @@ func run() error {
 	}
 	uptimeService := uptime.New(st, cfg.UptimeAllowPrivateTargets)
 	go uptimeService.Run(ctx)
+	go maintenance.New(st).Run(ctx)
+	go alerts.New(st).Run(ctx)
 	api := httpapi.New(cfg, st, authentication, uptimeService)
 	server := &http.Server{
 		Addr:              cfg.Addr,

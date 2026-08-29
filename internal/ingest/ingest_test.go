@@ -153,6 +153,42 @@ func TestEnvelopeAcceptsSDKContentEncodings(t *testing.T) {
 	}
 }
 
+func TestIngestionRateLimitUsesSentryHeaders(t *testing.T) {
+	st, _ := testProject(t)
+	service := New(st, 20<<20, 1)
+	payload := `{"event_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","message":"first"}`
+	for index, want := range []int{http.StatusOK, http.StatusTooManyRequests} {
+		request := httptest.NewRequest(http.MethodPost, "/api/1/store/?sentry_key=public-key", bytes.NewBufferString(payload))
+		response := httptest.NewRecorder()
+		service.Store(response, request, "1")
+		if response.Code != want {
+			t.Fatalf("request %d status = %d, want %d", index+1, response.Code, want)
+		}
+		if want == http.StatusTooManyRequests && (response.Header().Get("Retry-After") == "" || response.Header().Get("X-Sentry-Rate-Limits") == "") {
+			t.Fatal("rate-limit response is missing Sentry retry headers")
+		}
+	}
+}
+
+func TestEnvelopeStoresSessionsAndNormalizedSpans(t *testing.T) {
+	st, project := testProject(t)
+	service := New(st, 20<<20)
+	session := []byte(`{"sid":"session-one","did":"user-one","status":"crashed","started":"2026-08-28T10:00:00Z","errors":1,"attrs":{"release":"api@3.0.0","environment":"production"}}`)
+	if err := service.StoreSession(context.Background(), project, session); err != nil {
+		t.Fatalf("store session: %v", err)
+	}
+	transaction := []byte(`{"event_id":"12121212121212121212121212121212","transaction":"GET /orders","start_timestamp":1787911200,"timestamp":1787911200.2,"contexts":{"trace":{"trace_id":"trace-one","span_id":"root","op":"http.server","status":"ok"}},"spans":[{"trace_id":"trace-one","span_id":"db-one","parent_span_id":"root","op":"db.sql","description":"SELECT orders","start_timestamp":1787911200.01,"timestamp":1787911200.11}]}`)
+	if _, err := service.StoreTransaction(context.Background(), project, transaction, ""); err != nil {
+		t.Fatalf("store transaction: %v", err)
+	}
+	var sessions, spans int
+	_ = st.DB.QueryRow(`SELECT COUNT(*) FROM project_sessions WHERE status = 'crashed'`).Scan(&sessions)
+	_ = st.DB.QueryRow(`SELECT COUNT(*) FROM spans WHERE trace_id = 'trace-one' AND transaction_id IS NOT NULL`).Scan(&spans)
+	if sessions != 1 || spans != 1 {
+		t.Fatalf("sessions=%d spans=%d, want 1/1", sessions, spans)
+	}
+}
+
 func testProject(t *testing.T) (*store.Store, Project) {
 	t.Helper()
 	st, err := store.Open(context.Background(), t.TempDir())

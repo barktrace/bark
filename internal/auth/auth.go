@@ -239,7 +239,7 @@ func (s *Service) Logout(w http.ResponseWriter, r *http.Request) {
 func (s *Service) Authenticate(r *http.Request) (*Principal, error) {
 	cookie, err := r.Cookie(sessionCookie)
 	if err != nil {
-		return nil, err
+		return s.authenticateToken(r)
 	}
 	var principal Principal
 	var expiresRaw string
@@ -275,6 +275,48 @@ func (s *Service) Authenticate(r *http.Request) (*Principal, error) {
 	return &principal, rows.Err()
 }
 
+func (s *Service) authenticateToken(r *http.Request) (*Principal, error) {
+	header := strings.TrimSpace(r.Header.Get("Authorization"))
+	if !strings.HasPrefix(header, "Bearer ") {
+		return nil, errors.New("bearer token required")
+	}
+	plain := strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
+	if !strings.HasPrefix(plain, "bark_") {
+		return nil, errors.New("invalid bearer token")
+	}
+	var principal Principal
+	var organizationID string
+	err := s.store.DB.QueryRowContext(r.Context(), `
+		SELECT u.id, u.email, u.name, COALESCE(u.avatar_url, ''), t.organization_id
+		FROM api_tokens t JOIN users u ON u.id = t.user_id
+		WHERE t.token_hash = ? AND (t.expires_at IS NULL OR t.expires_at > ?)
+	`, tokenHash(plain), time.Now().UTC().Format(time.RFC3339Nano)).Scan(&principal.UserID, &principal.Email, &principal.Name, &principal.AvatarURL, &organizationID)
+	if err != nil {
+		return nil, err
+	}
+	_, _ = s.store.DB.ExecContext(r.Context(), `UPDATE api_tokens SET last_used_at = CURRENT_TIMESTAMP WHERE token_hash = ?`, tokenHash(plain))
+	rows, err := s.store.DB.QueryContext(r.Context(), `
+		SELECT o.id, o.slug, o.name, m.role
+		FROM organization_memberships m JOIN organizations o ON o.id = m.organization_id
+		WHERE m.user_id = ? AND o.id = ?
+	`, principal.UserID, organizationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var membership Membership
+		if err := rows.Scan(&membership.OrganizationID, &membership.OrganizationSlug, &membership.OrganizationName, &membership.Role); err != nil {
+			return nil, err
+		}
+		principal.Memberships = append(principal.Memberships, membership)
+	}
+	if len(principal.Memberships) == 0 {
+		return nil, errors.New("token organization access was revoked")
+	}
+	return &principal, rows.Err()
+}
+
 func (s *Service) findOrProvision(ctx context.Context, issuer string, identity claims) (string, error) {
 	tx, err := s.store.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -286,6 +328,9 @@ func (s *Service) findOrProvision(ctx context.Context, issuer string, identity c
 	if err == nil {
 		_, err = tx.ExecContext(ctx, `UPDATE users SET last_login_at = CURRENT_TIMESTAMP, name = CASE WHEN ? <> '' THEN ? ELSE name END, avatar_url = CASE WHEN ? <> '' THEN ? ELSE avatar_url END WHERE id = ?`, identity.Name, identity.Name, identity.Picture, identity.Picture, userID)
 		if err != nil {
+			return "", err
+		}
+		if _, err := acceptInvitations(ctx, tx, userID, identity.Email); err != nil {
 			return "", err
 		}
 		return userID, tx.Commit()
@@ -308,6 +353,13 @@ func (s *Service) findOrProvision(ctx context.Context, issuer string, identity c
 	if _, err := tx.ExecContext(ctx, `INSERT INTO oidc_identities(issuer, subject, user_id, email_at_link) VALUES (?, ?, ?, ?)`, issuer, identity.Subject, userID, identity.Email); err != nil {
 		return "", err
 	}
+	accepted, err := acceptInvitations(ctx, tx, userID, identity.Email)
+	if err != nil {
+		return "", err
+	}
+	if accepted > 0 {
+		return userID, tx.Commit()
+	}
 	orgID := uuid.NewString()
 	if _, err := tx.ExecContext(ctx, `INSERT INTO organizations(id, slug, name) VALUES (?, ?, ?) ON CONFLICT(slug) DO NOTHING`, orgID, s.cfg.DefaultOrgSlug, s.cfg.DefaultOrgName); err != nil {
 		return "", err
@@ -327,6 +379,33 @@ func (s *Service) findOrProvision(ctx context.Context, issuer string, identity c
 		return "", err
 	}
 	return userID, tx.Commit()
+}
+
+func acceptInvitations(ctx context.Context, tx *sql.Tx, userID, email string) (int64, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT id, organization_id, role FROM organization_invitations WHERE email = ? COLLATE NOCASE AND accepted_at IS NULL AND expires_at > ?`, email, time.Now().UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return 0, err
+	}
+	type invitation struct{ id, organizationID, role string }
+	items := make([]invitation, 0)
+	for rows.Next() {
+		var item invitation
+		if err := rows.Scan(&item.id, &item.organizationID, &item.role); err != nil {
+			_ = rows.Close()
+			return 0, err
+		}
+		items = append(items, item)
+	}
+	_ = rows.Close()
+	for _, item := range items {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO organization_memberships(organization_id, user_id, role) VALUES (?, ?, ?) ON CONFLICT(organization_id, user_id) DO UPDATE SET role = excluded.role`, item.organizationID, userID, item.role); err != nil {
+			return 0, err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE organization_invitations SET accepted_at = CURRENT_TIMESTAMP WHERE id = ?`, item.id); err != nil {
+			return 0, err
+		}
+	}
+	return int64(len(items)), nil
 }
 
 func randomToken(size int) (string, error) {

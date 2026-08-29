@@ -1,4 +1,4 @@
-# Performance, logs, and uptime
+# Performance, release health, logs, and uptime
 
 All three processors use the same project and organization access boundary as
 errors. Their dashboard views are available at `/ui/performance/`, `/ui/logs/`,
@@ -14,6 +14,16 @@ groups for 1 hour, 24 hour, 7 day, or 30 day windows.
 Transaction releases are linked to the same organization and project release
 records used by error events. Trace ID, root span ID, operation, status,
 environment, duration, span count, and the original payload are retained.
+Inline transaction spans and standalone `span`/`spans` envelope items are
+normalized. Select a transaction group in the dashboard to inspect its latest
+sample and span waterfall.
+
+## Sessions and release health
+
+Sentry `session` envelope items are upserted by project and session ID. Release
+rows show session count, distinct users, and crash-free session and user
+percentages. Configure `release` in the SDK and enable its session tracking to
+populate these values.
 
 ## Structured logs
 
@@ -49,3 +59,7 @@ organization administrator access.
 
 The single-process scheduler checks due monitors in small sequential batches,
 which keeps memory and outbound concurrency bounded for SQLite deployments.
+
+New-issue, regression, and uptime-down alert rules can deliver JSON to HTTPS
+webhooks or Slack incoming webhooks. Deliveries are retried up to three times
+and their status is visible under Organization settings.
