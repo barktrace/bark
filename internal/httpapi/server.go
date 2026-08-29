@@ -163,6 +163,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/0/relays/register/response/", s.relayRegisterResponse)
 	s.mux.HandleFunc("POST /api/0/relays/projectconfigs/", s.relayProjectConfigs)
 	s.mux.HandleFunc("POST /api/0/relays/publickeys/", s.relayPublicKeys)
+	s.mux.HandleFunc("GET /share/issue/{share_id}/", s.sentrySharedIssue)
 	s.mux.Handle("GET /api/0/organizations/", s.auth.Require(http.HandlerFunc(s.sentryOrganizations)))
 	s.mux.Handle("GET /api/0/organizations/{org_slug}/", s.auth.Require(http.HandlerFunc(s.sentryOrganizationDetail)))
 	s.mux.Handle("GET /api/0/organizations/{org_slug}/projects/", s.auth.Require(http.HandlerFunc(s.sentryOrganizationProjects)))

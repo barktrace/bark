@@ -16,6 +16,7 @@ The public route layout is:
 - `/api/{project_id}/store/` — legacy SDK events
 - `/api/{project_id}/minidump/` — native crash minidumps and multipart attachments
 - `/api/{project_id}/logs/` — lightweight structured log ingestion
+- `/share/issue/{share_id}/` — unauthenticated, sanitized shared issue detail
 - `/mcp` — authenticated, organization-scoped Streamable HTTP MCP endpoint
 - `/organizations`, `/projects`, `/issues`, `/releases`, `/discover`, `/dashboards`, `/performance`, `/logs`, `/uptime/*`, `/cron/*`, `/replays`, `/profiles`, `/metrics`, and `/artifacts` — native JSON API
 - `/healthz` and `/readyz` — probes
@@ -53,6 +54,12 @@ An event carrying `release` upserts an organization release and links it to the
 receiving project. Events store the resolved release ID. Issues retain their
 first and latest release IDs, allowing regression and suspect-commit modules to
 be added without changing ingestion identity.
+
+Discarding an issue writes its project/fingerprint pair to a tombstone table in
+the same transaction that deletes the issue. Ingestion checks that table before
+creating releases, issues, or events, acknowledges a matching event, and records
+a filtered outcome. This keeps discard durable without retaining the original
+event payload.
 
 ## Observability processors
 

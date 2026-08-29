@@ -23,6 +23,7 @@ type sentryIssueRecord struct {
 	ProjectPlatform  string
 	OrganizationID   string
 	OrganizationSlug string
+	Fingerprint      string
 	Title            string
 	Status           string
 	Level            string
@@ -35,6 +36,7 @@ type sentryIssueRecord struct {
 	AssigneeEmail    sql.NullString
 	Bookmarked       bool
 	SnoozedUntil     sql.NullString
+	ShareID          sql.NullString
 }
 
 type sentryEventRecord struct {
@@ -129,7 +131,12 @@ func (s *Server) sentryIssueDetail(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusForbidden, "project write access required")
 			return
 		}
-		if !s.updateSentryIssue(w, r, principal, &issue) {
+		updated, discarded := s.updateSentryIssue(w, r, principal, &issue)
+		if !updated {
+			return
+		}
+		if discarded {
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 		issue, err = s.loadSentryIssue(r, r.PathValue("issue_id"))
@@ -150,6 +157,40 @@ func (s *Server) sentryIssueDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.sentryIssueResponse(issue))
+}
+
+func (s *Server) sentrySharedIssue(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Robots-Tag", "noindex, nofollow")
+	shareID := strings.ToLower(strings.TrimSpace(r.PathValue("share_id")))
+	if len(shareID) != 32 {
+		writeError(w, http.StatusNotFound, "shared issue not found")
+		return
+	}
+	for _, character := range shareID {
+		if !strings.ContainsRune("0123456789abcdef", character) {
+			writeError(w, http.StatusNotFound, "shared issue not found")
+			return
+		}
+	}
+	issue, err := s.loadSentryIssueByShare(r, shareID)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "shared issue not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load shared issue")
+		return
+	}
+	response := map[string]any{"issue": s.sentryIssueResponse(issue), "latestEvent": nil}
+	event, err := s.querySentryEvent(r, sentryEventSelect+` WHERE e.issue_id = ? ORDER BY e.timestamp DESC LIMIT 1`, issue.ID)
+	if err == nil {
+		response["latestEvent"] = s.sentryPublicEventResponse(event)
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusInternalServerError, "could not load shared event")
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) sentryIssueEvents(w http.ResponseWriter, r *http.Request) {
@@ -252,24 +293,38 @@ func (s *Server) loadSentryIssue(r *http.Request, identifier string) (sentryIssu
 		return sentryIssueRecord{}, sql.ErrNoRows
 	}
 	var issue sentryIssueRecord
-	err = s.store.DB.QueryRowContext(r.Context(), `
+	err = s.store.DB.QueryRowContext(r.Context(), sentryIssueSelect+`
+		WHERE i.rowid = ?
+	`, legacyID).Scan(sentryIssueScanTargets(&issue)...)
+	return issue, err
+}
+
+func (s *Server) loadSentryIssueByShare(r *http.Request, shareID string) (sentryIssueRecord, error) {
+	var issue sentryIssueRecord
+	err := s.store.DB.QueryRowContext(r.Context(), sentryIssueSelect+`
+		WHERE i.share_id = ?
+	`, shareID).Scan(sentryIssueScanTargets(&issue)...)
+	return issue, err
+}
+
+const sentryIssueSelect = `
 		SELECT i.rowid, i.id, i.project_id, p.sentry_id, p.slug, p.name, COALESCE(p.platform, ''),
-		       o.id, o.slug, i.title, i.status, i.level, i.priority, i.event_count,
+		       o.id, o.slug, i.fingerprint, i.title, i.status, i.level, i.priority, i.event_count,
 		       i.first_seen_at, i.last_seen_at, i.assignee_user_id, u.name, u.email,
-		       i.bookmarked, i.snoozed_until
+		       i.bookmarked, i.snoozed_until, i.share_id
 		FROM issues i
 		JOIN projects p ON p.id = i.project_id
 		JOIN organizations o ON o.id = p.organization_id
-		LEFT JOIN users u ON u.id = i.assignee_user_id
-		WHERE i.rowid = ?
-	`, legacyID).Scan(
+		LEFT JOIN users u ON u.id = i.assignee_user_id`
+
+func sentryIssueScanTargets(issue *sentryIssueRecord) []any {
+	return []any{
 		&issue.LegacyID, &issue.ID, &issue.ProjectID, &issue.SentryProject, &issue.ProjectSlug,
 		&issue.ProjectName, &issue.ProjectPlatform, &issue.OrganizationID, &issue.OrganizationSlug,
-		&issue.Title, &issue.Status, &issue.Level, &issue.Priority, &issue.EventCount,
+		&issue.Fingerprint, &issue.Title, &issue.Status, &issue.Level, &issue.Priority, &issue.EventCount,
 		&issue.FirstSeen, &issue.LastSeen, &issue.AssigneeID, &issue.AssigneeName,
-		&issue.AssigneeEmail, &issue.Bookmarked, &issue.SnoozedUntil,
-	)
-	return issue, err
+		&issue.AssigneeEmail, &issue.Bookmarked, &issue.SnoozedUntil, &issue.ShareID,
+	}
 }
 
 func (s *Server) sentryIssueResponse(issue sentryIssueRecord) map[string]any {
@@ -282,11 +337,15 @@ func (s *Server) sentryIssueResponse(issue sentryIssueRecord) map[string]any {
 		statusDetails["ignoreUntil"] = normalizeAPITime(issue.SnoozedUntil.String)
 	}
 	identifier := strconv.FormatInt(issue.LegacyID, 10)
+	var shareID any
+	if issue.ShareID.Valid {
+		shareID = issue.ShareID.String
+	}
 	return map[string]any{
-		"id": identifier, "shareId": nil, "shortId": strings.ToUpper(issue.ProjectSlug) + "-" + identifier,
+		"id": identifier, "shareId": shareID, "shortId": strings.ToUpper(issue.ProjectSlug) + "-" + identifier,
 		"title": issue.Title, "culprit": "", "permalink": strings.TrimRight(s.cfg.PublicURL, "/") + "/ui/issues/",
 		"logger": nil, "level": issue.Level, "status": issue.Status, "statusDetails": statusDetails,
-		"isPublic": false, "platform": issue.ProjectPlatform, "project": map[string]any{
+		"isPublic": issue.ShareID.Valid, "platform": issue.ProjectPlatform, "project": map[string]any{
 			"id": issue.SentryProject, "name": issue.ProjectName, "slug": issue.ProjectSlug, "platform": issue.ProjectPlatform,
 		},
 		"type": "error", "metadata": map[string]string{"title": issue.Title}, "numComments": 0,
@@ -298,7 +357,7 @@ func (s *Server) sentryIssueResponse(issue sentryIssueRecord) map[string]any {
 	}
 }
 
-func (s *Server) updateSentryIssue(w http.ResponseWriter, r *http.Request, principal *auth.Principal, issue *sentryIssueRecord) bool {
+func (s *Server) updateSentryIssue(w http.ResponseWriter, r *http.Request, principal *auth.Principal, issue *sentryIssueRecord) (bool, bool) {
 	var input struct {
 		Status        *string         `json:"status"`
 		StatusDetails map[string]any  `json:"statusDetails"`
@@ -311,14 +370,43 @@ func (s *Server) updateSentryIssue(w http.ResponseWriter, r *http.Request, princ
 		Discard       *bool           `json:"discard"`
 	}
 	if err := decodeJSON(w, r, &input); err != nil {
-		return false
+		return false, false
+	}
+	if input.Discard != nil && *input.Discard {
+		if !s.canManageProject(r, principal, issue.ProjectID) {
+			writeError(w, http.StatusForbidden, "project administrator access required to discard an issue")
+			return false, false
+		}
+		tx, err := s.store.DB.BeginTx(r.Context(), nil)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "could not discard issue")
+			return false, false
+		}
+		defer tx.Rollback()
+		_, err = tx.ExecContext(r.Context(), `INSERT INTO discarded_issue_fingerprints(project_id, fingerprint, discarded_by) VALUES (?, ?, ?) ON CONFLICT(project_id, fingerprint) DO UPDATE SET discarded_by = excluded.discarded_by, discarded_at = CURRENT_TIMESTAMP`, issue.ProjectID, issue.Fingerprint, principal.UserID)
+		if err == nil {
+			_, err = tx.ExecContext(r.Context(), `INSERT INTO audit_logs(organization_id, project_id, actor_user_id, action, target_type, target_id, metadata) VALUES (?, ?, ?, 'discard_issue', 'issue', ?, ?)`, issue.OrganizationID, issue.ProjectID, principal.UserID, issue.ID, json.RawMessage(`{"fingerprint":`+strconv.Quote(issue.Fingerprint)+`}`))
+		}
+		if err == nil {
+			_, err = tx.ExecContext(r.Context(), `DELETE FROM issues WHERE id = ?`, issue.ID)
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "could not discard issue")
+			return false, false
+		}
+		if err := tx.Commit(); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not commit issue discard")
+			return false, false
+		}
+		return true, true
 	}
 	changes := make([][2]string, 0, 3)
+	sharingChanged := false
 	if input.Status != nil {
 		status := strings.ToLower(strings.TrimSpace(*input.Status))
 		if status != "unresolved" && status != "resolved" && status != "ignored" {
 			writeError(w, http.StatusBadRequest, "invalid issue status")
-			return false
+			return false, false
 		}
 		if status != issue.Status {
 			issue.Status = status
@@ -329,7 +417,7 @@ func (s *Server) updateSentryIssue(w http.ResponseWriter, r *http.Request, princ
 		priority := strings.ToLower(strings.TrimSpace(*input.Priority))
 		if priority != "low" && priority != "medium" && priority != "high" && priority != "critical" {
 			writeError(w, http.StatusBadRequest, "invalid issue priority")
-			return false
+			return false, false
 		}
 		if priority != issue.Priority {
 			issue.Priority = priority
@@ -340,23 +428,27 @@ func (s *Server) updateSentryIssue(w http.ResponseWriter, r *http.Request, princ
 		issue.Bookmarked = *input.IsBookmarked
 		changes = append(changes, [2]string{"bookmark", map[bool]string{true: "on", false: "off"}[issue.Bookmarked]})
 	}
-	if input.IsPublic != nil && *input.IsPublic {
-		writeError(w, http.StatusBadRequest, "public issue sharing is not supported")
-		return false
-	}
-	if input.Discard != nil && *input.Discard {
-		writeError(w, http.StatusBadRequest, "discarding future events is not supported")
-		return false
+	if input.IsPublic != nil && *input.IsPublic != issue.ShareID.Valid {
+		if !s.canManageProject(r, principal, issue.ProjectID) {
+			writeError(w, http.StatusForbidden, "project administrator access required to change public sharing")
+			return false, false
+		}
+		if *input.IsPublic {
+			issue.ShareID = sql.NullString{String: strings.ReplaceAll(uuid.NewString(), "-", ""), Valid: true}
+		} else {
+			issue.ShareID = sql.NullString{}
+		}
+		sharingChanged = true
 	}
 	if len(input.AssignedTo) > 0 {
 		assigneeID, err := sentryAssigneeID(input.AssignedTo)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
-			return false
+			return false, false
 		}
 		if assigneeID != "" && !s.userCanAccessProject(r, assigneeID, issue.ProjectID) {
 			writeError(w, http.StatusBadRequest, "assignee is not a project member")
-			return false
+			return false, false
 		}
 		if assigneeID != issue.AssigneeID.String {
 			issue.AssigneeID = sql.NullString{String: assigneeID, Valid: assigneeID != ""}
@@ -367,7 +459,7 @@ func (s *Server) updateSentryIssue(w http.ResponseWriter, r *http.Request, princ
 		snoozedUntil, err := sentrySnoozedUntil(issue.Status, input.StatusDetails)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
-			return false
+			return false, false
 		}
 		if snoozedUntil.String != issue.SnoozedUntil.String || snoozedUntil.Valid != issue.SnoozedUntil.Valid {
 			issue.SnoozedUntil = snoozedUntil
@@ -377,24 +469,34 @@ func (s *Server) updateSentryIssue(w http.ResponseWriter, r *http.Request, princ
 	tx, err := s.store.DB.BeginTx(r.Context(), nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not update issue")
-		return false
+		return false, false
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(r.Context(), `UPDATE issues SET status = ?, priority = ?, assignee_user_id = ?, bookmarked = ?, snoozed_until = ? WHERE id = ?`, issue.Status, issue.Priority, nullStringValue(issue.AssigneeID), boolInteger(issue.Bookmarked), nullStringValue(issue.SnoozedUntil), issue.ID); err != nil {
+	if _, err := tx.ExecContext(r.Context(), `UPDATE issues SET status = ?, priority = ?, assignee_user_id = ?, bookmarked = ?, snoozed_until = ?, share_id = ? WHERE id = ?`, issue.Status, issue.Priority, nullStringValue(issue.AssigneeID), boolInteger(issue.Bookmarked), nullStringValue(issue.SnoozedUntil), nullStringValue(issue.ShareID), issue.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not update issue")
-		return false
+		return false, false
 	}
 	for _, change := range changes {
 		if _, err := tx.ExecContext(r.Context(), `INSERT INTO issue_activities(id, issue_id, user_id, kind, value) VALUES (?, ?, ?, ?, ?)`, uuid.NewString(), issue.ID, principal.UserID, change[0], change[1]); err != nil {
 			writeError(w, http.StatusInternalServerError, "could not record issue activity")
-			return false
+			return false, false
+		}
+	}
+	if sharingChanged {
+		action := "disable_issue_sharing"
+		if issue.ShareID.Valid {
+			action = "enable_issue_sharing"
+		}
+		if _, err := tx.ExecContext(r.Context(), `INSERT INTO audit_logs(organization_id, project_id, actor_user_id, action, target_type, target_id) VALUES (?, ?, ?, ?, 'issue', ?)`, issue.OrganizationID, issue.ProjectID, principal.UserID, action, issue.ID); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not record sharing audit")
+			return false, false
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not commit issue update")
-		return false
+		return false, false
 	}
-	return true
+	return true, false
 }
 
 func sentryAssigneeID(raw json.RawMessage) (string, error) {
@@ -494,6 +596,23 @@ func (s *Server) sentryEventResponse(event sentryEventRecord) map[string]any {
 		"fingerprints": valueOr(payload["fingerprint"], []any{}), "metadata": map[string]string{"title": event.IssueTitle},
 		"size": len(event.Payload),
 	}
+}
+
+func (s *Server) sentryPublicEventResponse(event sentryEventRecord) map[string]any {
+	response := s.sentryEventResponse(event)
+	delete(response, "user")
+	delete(response, "contexts")
+	delete(response, "sdk")
+	delete(response, "packages")
+	entries, _ := response["entries"].([]map[string]any)
+	publicEntries := make([]map[string]any, 0, len(entries))
+	for _, entry := range entries {
+		if entry["type"] != "request" {
+			publicEntries = append(publicEntries, entry)
+		}
+	}
+	response["entries"] = publicEntries
+	return response
 }
 
 func sentryEventMessage(payload map[string]any, fallback string) string {

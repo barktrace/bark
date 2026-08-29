@@ -429,6 +429,16 @@ func (s *Service) StoreEvent(ctx context.Context, project Project, raw []byte, e
 	if existing != 0 {
 		return eventID, tx.Commit()
 	}
+	var discarded int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM discarded_issue_fingerprints WHERE project_id = ? AND fingerprint = ?`, project.ID, fingerprint).Scan(&discarded); err != nil {
+		return "", err
+	}
+	if discarded != 0 {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO ingestion_outcomes(project_id, category, outcome, reason) VALUES (?, 'error', 'filtered', 'discarded_issue')`, project.ID); err != nil {
+			return "", err
+		}
+		return eventID, tx.Commit()
+	}
 	releaseID, err := linkRelease(ctx, tx, project, strings.TrimSpace(event.Release), timestamp)
 	if err != nil {
 		return "", err

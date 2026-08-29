@@ -5,9 +5,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/barktrace/bark/internal/auth"
+	"github.com/barktrace/bark/internal/ingest"
 )
 
 func TestSentryOrganizationProjectAndKeyDetails(t *testing.T) {
@@ -136,6 +138,121 @@ func TestSentryIssueSupportsAssignmentAndSnooze(t *testing.T) {
 	}
 }
 
+func TestSentryIssuePublicSharing(t *testing.T) {
+	server, owner := managementFixture(t)
+	if _, err := server.store.DB.Exec(`
+		INSERT INTO events(id, event_id, project_id, issue_id, environment, platform, level, timestamp, payload)
+		VALUES ('shared-event', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'project', 'issue', 'production', 'javascript', 'error',
+		        '2026-08-29T18:00:00Z', '{"message":"safe public detail","user":{"email":"private@example.com"},"request":{"url":"https://secret.example"}}')
+	`); err != nil {
+		t.Fatal(err)
+	}
+	var issueID int64
+	if err := server.store.DB.QueryRow(`SELECT rowid FROM issues WHERE id = 'issue'`).Scan(&issueID); err != nil {
+		t.Fatal(err)
+	}
+	target := "/api/0/issues/" + strconv.FormatInt(issueID, 10) + "/"
+	enabled := serveSentryDetail(t, server, owner, http.MethodPut, target, `{"isPublic":true}`)
+	var body map[string]any
+	if enabled.Code != http.StatusOK || json.Unmarshal(enabled.Body.Bytes(), &body) != nil || body["isPublic"] != true {
+		t.Fatalf("enable public sharing status=%d body=%s", enabled.Code, enabled.Body.String())
+	}
+	shareID, _ := body["shareId"].(string)
+	if len(shareID) != 32 {
+		t.Fatalf("share ID = %q", shareID)
+	}
+	repeated := serveSentryDetail(t, server, owner, http.MethodPut, target, `{"isPublic":true}`)
+	var repeatedBody map[string]any
+	_ = json.Unmarshal(repeated.Body.Bytes(), &repeatedBody)
+	if repeatedBody["shareId"] != shareID {
+		t.Fatalf("share ID changed from %q to %v", shareID, repeatedBody["shareId"])
+	}
+
+	shared := serveSharedIssue(t, server, shareID)
+	if shared.Code != http.StatusOK || !containsAll(shared.Body.String(), `"title":"Boom"`, `"message":"safe public detail"`, `"isPublic":true`) || strings.Contains(shared.Body.String(), "private@example.com") || strings.Contains(shared.Body.String(), "secret.example") {
+		t.Fatalf("shared issue status=%d body=%s", shared.Code, shared.Body.String())
+	}
+	if shared.Header().Get("Cache-Control") != "no-store" || shared.Header().Get("X-Robots-Tag") != "noindex, nofollow" {
+		t.Fatalf("shared issue headers = %#v", shared.Header())
+	}
+
+	if _, err := server.store.DB.Exec(`
+		INSERT INTO users(id, email, name) VALUES ('member', 'member@example.com', 'Member');
+		INSERT INTO organization_memberships(organization_id, user_id, role) VALUES ('org', 'member', 'member');
+	`); err != nil {
+		t.Fatal(err)
+	}
+	member := &auth.Principal{UserID: "member", Email: "member@example.com", Memberships: []auth.Membership{{OrganizationID: "org", OrganizationSlug: "org", Role: "member"}}}
+	denied := serveSentryDetail(t, server, member, http.MethodPut, target, `{"isPublic":false}`)
+	if denied.Code != http.StatusForbidden {
+		t.Fatalf("member public-sharing update status=%d body=%s", denied.Code, denied.Body.String())
+	}
+
+	disabled := serveSentryDetail(t, server, owner, http.MethodPut, target, `{"isPublic":false}`)
+	if disabled.Code != http.StatusOK || !containsAll(disabled.Body.String(), `"isPublic":false`, `"shareId":null`) {
+		t.Fatalf("disable public sharing status=%d body=%s", disabled.Code, disabled.Body.String())
+	}
+	if revoked := serveSharedIssue(t, server, shareID); revoked.Code != http.StatusNotFound {
+		t.Fatalf("revoked share status=%d body=%s", revoked.Code, revoked.Body.String())
+	} else if revoked.Header().Get("Cache-Control") != "no-store" || revoked.Header().Get("X-Robots-Tag") != "noindex, nofollow" {
+		t.Fatalf("revoked share headers = %#v", revoked.Header())
+	}
+}
+
+func TestSentryIssueDiscardSuppressesFutureEvents(t *testing.T) {
+	server, owner := managementFixture(t)
+	if _, err := server.store.DB.Exec(`DELETE FROM issues`); err != nil {
+		t.Fatal(err)
+	}
+	service := ingest.New(server.store, 20<<20)
+	project := ingest.Project{ID: "project", OrganizationID: "org", PublicKey: "key"}
+	first := []byte(`{"event_id":"cccccccccccccccccccccccccccccccc","message":"discard this crash"}`)
+	if _, err := service.StoreEvent(t.Context(), project, first, ""); err != nil {
+		t.Fatal(err)
+	}
+	var issueID int64
+	if err := server.store.DB.QueryRow(`SELECT rowid FROM issues`).Scan(&issueID); err != nil {
+		t.Fatal(err)
+	}
+	target := "/api/0/issues/" + strconv.FormatInt(issueID, 10) + "/"
+
+	if _, err := server.store.DB.Exec(`
+		INSERT INTO users(id, email, name) VALUES ('member', 'member@example.com', 'Member');
+		INSERT INTO organization_memberships(organization_id, user_id, role) VALUES ('org', 'member', 'member');
+	`); err != nil {
+		t.Fatal(err)
+	}
+	member := &auth.Principal{UserID: "member", Email: "member@example.com", Memberships: []auth.Membership{{OrganizationID: "org", OrganizationSlug: "org", Role: "member"}}}
+	if denied := serveSentryDetail(t, server, member, http.MethodPut, target, `{"discard":true}`); denied.Code != http.StatusForbidden {
+		t.Fatalf("member discard status=%d body=%s", denied.Code, denied.Body.String())
+	}
+
+	discarded := serveSentryDetail(t, server, owner, http.MethodPut, target, `{"discard":true}`)
+	if discarded.Code != http.StatusNoContent {
+		t.Fatalf("discard status=%d body=%s", discarded.Code, discarded.Body.String())
+	}
+	var issues, events, tombstones, audits int
+	_ = server.store.DB.QueryRow(`SELECT COUNT(*) FROM issues`).Scan(&issues)
+	_ = server.store.DB.QueryRow(`SELECT COUNT(*) FROM events`).Scan(&events)
+	_ = server.store.DB.QueryRow(`SELECT COUNT(*) FROM discarded_issue_fingerprints`).Scan(&tombstones)
+	_ = server.store.DB.QueryRow(`SELECT COUNT(*) FROM audit_logs WHERE action = 'discard_issue'`).Scan(&audits)
+	if issues != 0 || events != 0 || tombstones != 1 || audits != 1 {
+		t.Fatalf("discarded state issues=%d events=%d tombstones=%d audits=%d", issues, events, tombstones, audits)
+	}
+
+	second := []byte(`{"event_id":"dddddddddddddddddddddddddddddddd","message":"discard this crash"}`)
+	if id, err := service.StoreEvent(t.Context(), project, second, ""); err != nil || id != "dddddddddddddddddddddddddddddddd" {
+		t.Fatalf("suppressed event id=%q err=%v", id, err)
+	}
+	var filtered int
+	_ = server.store.DB.QueryRow(`SELECT COUNT(*) FROM ingestion_outcomes WHERE outcome = 'filtered' AND reason = 'discarded_issue'`).Scan(&filtered)
+	_ = server.store.DB.QueryRow(`SELECT COUNT(*) FROM issues`).Scan(&issues)
+	_ = server.store.DB.QueryRow(`SELECT COUNT(*) FROM events`).Scan(&events)
+	if issues != 0 || events != 0 || filtered != 1 {
+		t.Fatalf("future event state issues=%d events=%d filtered=%d", issues, events, filtered)
+	}
+}
+
 func TestSentryLatestEventReturnsNotFoundForEmptyIssue(t *testing.T) {
 	server, principal := managementFixture(t)
 	var issueID int64
@@ -193,6 +310,18 @@ func serveSentryDetail(t *testing.T, server *Server, principal *auth.Principal, 
 	mux.ServeHTTP(response, request)
 	if response.Code != http.StatusNoContent && response.Body.Len() > 0 && !json.Valid(response.Body.Bytes()) {
 		t.Fatalf("invalid JSON response status=%d body=%s", response.Code, response.Body.String())
+	}
+	return response
+}
+
+func serveSharedIssue(t *testing.T, server *Server, shareID string) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodGet, "/share/issue/"+shareID+"/", nil)
+	request.SetPathValue("share_id", shareID)
+	response := httptest.NewRecorder()
+	server.sentrySharedIssue(response, request)
+	if response.Body.Len() > 0 && !json.Valid(response.Body.Bytes()) {
+		t.Fatalf("invalid shared issue JSON status=%d body=%s", response.Code, response.Body.String())
 	}
 	return response
 }

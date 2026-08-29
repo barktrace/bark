@@ -17,7 +17,8 @@ The current foundation includes:
 - organization memberships and project-scoped access;
 - member invitations, role administration, and organization-scoped API tokens;
 - Sentry envelope and store ingestion with per-project rate limits;
-- deterministic issue grouping, event detail, triage activity, and release linkage;
+- deterministic issue grouping, event detail, triage activity, public issue links,
+  permanent discard rules, and release linkage;
 - transaction and span ingestion with latency summaries and waterfall detail;
 - sessions and release-health percentages;
 - structured log ingestion, filtering, and trace/release correlation;
