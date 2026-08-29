@@ -3,7 +3,14 @@ package symbolicate
 import (
 	"bytes"
 	"context"
+	"debug/elf"
 	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/barktrace/bark/internal/blobstore"
@@ -98,6 +105,94 @@ FUNC 1000 20 0 process_request
 	}
 }
 
+func TestLookupELFFrameAddsDWARFSourceLocation(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("ELF fixture requires Linux")
+	}
+	directory := t.TempDir()
+	sourcePath := filepath.Join(directory, "fixture.go")
+	binaryPath := filepath.Join(directory, "fixture")
+	source := `package main
+
+//go:noinline
+func dwarf_target() int {
+	return 42
+}
+
+func main() { _ = dwarf_target() }
+`
+	if err := os.WriteFile(sourcePath, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("go", "build", "-gcflags=all=-N -l", "-o", binaryPath, sourcePath)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("build ELF fixture: %v\n%s", err, output)
+	}
+	file, err := os.Open(binaryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	parsed, err := elf.NewFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbols, err := parsed.Symbols()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var address uint64
+	for _, symbol := range symbols {
+		if strings.HasSuffix(symbol.Name, ".dwarf_target") {
+			address = symbol.Value
+			break
+		}
+	}
+	_ = parsed.Close()
+	if address == 0 {
+		t.Fatal("fixture function symbol not found")
+	}
+
+	matched := lookupELFFrame(file, address, 0)
+	if !strings.HasSuffix(matched.function, ".dwarf_target") || filepath.Base(matched.filename) != "fixture.go" || matched.line < 4 {
+		t.Fatalf("ELF/DWARF match = %#v", matched)
+	}
+
+	binary, err := os.ReadFile(binaryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := symbolicationStore(t)
+	putDebugArtifactBytes(t, st, "DWARF123", binary)
+	payload := []byte(fmt.Sprintf(`{
+		"debug_meta":{"images":[{"type":"elf","image_addr":"0x0","image_size":"0x0","debug_id":"DWARF123"}]},
+		"exception":{"values":[{"stacktrace":{"frames":[{"instruction_addr":"0x%x","filename":"fixture"}]}}]}
+	}`, address))
+	processed, changed, err := ProcessEvent(context.Background(), st, "project", "release", payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame := processedFrame(t, processed)
+	if !changed || filepath.Base(frame["filename"].(string)) != "fixture.go" || frame["lineno"].(float64) < 4 || frame["symbolicated"] != true {
+		t.Fatalf("processed ELF/DWARF frame = %#v, changed=%v", frame, changed)
+	}
+}
+
+func TestDWARFSectionBudget(t *testing.T) {
+	file := &elf.File{Sections: []*elf.Section{
+		{SectionHeader: elf.SectionHeader{Name: ".text", Size: maxDWARFBytes + 1}},
+		{SectionHeader: elf.SectionHeader{Name: ".debug_info", Size: maxDWARFBytes - 1}},
+		{SectionHeader: elf.SectionHeader{Name: ".debug_line", Size: 1}},
+	}}
+	if !hasBoundedDWARF(file) {
+		t.Fatal("DWARF data at the memory limit was rejected")
+	}
+	file.Sections = append(file.Sections, &elf.Section{SectionHeader: elf.SectionHeader{Name: ".debug_str", Size: 1}})
+	if hasBoundedDWARF(file) {
+		t.Fatal("DWARF data above the memory limit was accepted")
+	}
+}
+
 func symbolicationStore(t *testing.T) *store.Store {
 	t.Helper()
 	st, err := store.Open(context.Background(), t.TempDir())
@@ -136,8 +231,12 @@ func putSourceMapArtifact(t *testing.T, st *store.Store, releaseID, name, dist, 
 }
 
 func putDebugArtifact(t *testing.T, st *store.Store, debugID, symbols string) {
+	putDebugArtifactBytes(t, st, debugID, []byte(symbols))
+}
+
+func putDebugArtifactBytes(t *testing.T, st *store.Store, debugID string, contents []byte) {
 	t.Helper()
-	stored, err := st.Blobs.Put(bytes.NewBufferString(symbols), blobstore.MaxBlobBytes)
+	stored, err := st.Blobs.Put(bytes.NewReader(contents), blobstore.MaxBlobBytes)
 	if err != nil {
 		t.Fatal(err)
 	}

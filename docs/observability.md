@@ -97,10 +97,13 @@ selection, and modern debug IDs from artifact bundles. Original generated frame
 fields are retained with an `original_` prefix when a frame is rewritten.
 
 Native frames can use uploaded ELF or Breakpad debug files selected by image
-debug ID. ELF artifacts resolve bounded function symbols. Breakpad files resolve
-bounded `FUNC` records before falling back to the nearest `PUBLIC` symbol and
-add `FILE` and source-line information when present. DWARF file/line lookup,
-inline-frame expansion, and CFI stack unwinding are not currently implemented.
+debug ID. ELF artifacts resolve bounded function symbols and DWARF source files,
+lines, and columns. DWARF loading is skipped when its uncompressed sections
+exceed 32 MiB so a debug artifact cannot consume the container's whole memory
+budget. Breakpad files resolve bounded `FUNC` records before falling back to the
+nearest `PUBLIC` symbol and add `FILE` and source-line information when present.
+Inline-frame expansion, CFI stack unwinding, Mach-O/dSYM, PDB/PE, and ProGuard
+mapping are not currently implemented.
 
 ## Uptime
 

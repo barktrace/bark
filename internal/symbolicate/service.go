@@ -3,6 +3,7 @@ package symbolicate
 import (
 	"bufio"
 	"context"
+	"debug/dwarf"
 	"debug/elf"
 	"encoding/json"
 	"fmt"
@@ -24,6 +25,8 @@ type cachedSourceMap struct {
 	value *SourceMap
 	err   error
 }
+
+const maxDWARFBytes uint64 = 32 << 20
 
 func ProcessEvent(ctx context.Context, st *store.Store, projectID, releaseID string, raw []byte) ([]byte, bool, error) {
 	var payload map[string]any
@@ -262,26 +265,28 @@ func symbolicateNativeFrame(st *store.Store, artifacts []artifact, payload map[s
 		if err != nil {
 			continue
 		}
-		function, symbolAddress := lookupELFSymbol(file, address, imageBase)
-		sourceFile, sourceLine := "", 0
-		if function == "" {
+		matched := lookupELFFrame(file, address, imageBase)
+		if matched.function == "" && matched.filename == "" {
 			_, _ = file.Seek(0, io.SeekStart)
-			matched := lookupBreakpadSymbol(file, address-imageBase)
-			function, symbolAddress = matched.function, matched.address
-			sourceFile, sourceLine = matched.filename, matched.line
+			matched = lookupBreakpadSymbol(file, address-imageBase)
 		}
 		_ = file.Close()
-		if function == "" {
+		if matched.function == "" && matched.filename == "" {
 			continue
 		}
 		preserveOriginal(frame)
-		frame["function"] = function
-		frame["symbol_addr"] = fmt.Sprintf("0x%x", symbolAddress+imageBase)
-		if sourceFile != "" {
-			frame["filename"], frame["abs_path"] = sourceFile, sourceFile
+		if matched.function != "" {
+			frame["function"] = matched.function
+			frame["symbol_addr"] = fmt.Sprintf("0x%x", matched.address+imageBase)
 		}
-		if sourceLine > 0 {
-			frame["lineno"] = sourceLine
+		if matched.filename != "" {
+			frame["filename"], frame["abs_path"] = matched.filename, matched.filename
+		}
+		if matched.line > 0 {
+			frame["lineno"] = matched.line
+		}
+		if matched.column > 0 {
+			frame["colno"] = matched.column
 		}
 		frame["symbolicated"] = true
 		return true
@@ -303,42 +308,100 @@ func frameDebugImage(payload map[string]any, address uint64) (string, uint64) {
 	return "", 0
 }
 
-func lookupELFSymbol(reader io.ReaderAt, address, imageBase uint64) (string, uint64) {
+func lookupELFFrame(reader io.ReaderAt, address, imageBase uint64) nativeSymbol {
 	file, err := elf.NewFile(reader)
 	if err != nil {
-		return "", 0
+		return nativeSymbol{}
 	}
 	defer file.Close()
-	symbols, err := file.Symbols()
-	if err != nil {
-		symbols, _ = file.DynamicSymbols()
-	}
 	relative := address
 	if imageBase > 0 && address >= imageBase {
 		relative = address - imageBase
 	}
-	for _, symbol := range symbols {
-		if symbol.Size > 0 && relative >= symbol.Value && relative < symbol.Value+symbol.Size {
-			return symbol.Name, symbol.Value
-		}
-	}
-	return "", 0
+	function, symbolAddress := lookupELFSymbol(file, relative)
+	filename, line, column := lookupDWARFLine(file, relative)
+	return nativeSymbol{function: function, address: symbolAddress, filename: filename, line: line, column: column}
 }
 
-type breakpadSymbol struct {
+func lookupELFSymbol(file *elf.File, relative uint64) (string, uint64) {
+	symbols, err := file.Symbols()
+	if err != nil {
+		symbols, _ = file.DynamicSymbols()
+	}
+	bestName, bestAddress, bestSize := "", uint64(0), ^uint64(0)
+	for _, symbol := range symbols {
+		if symbol.Size == 0 || relative < symbol.Value || relative-symbol.Value >= symbol.Size {
+			continue
+		}
+		if bestName == "" || symbol.Value > bestAddress || (symbol.Value == bestAddress && symbol.Size < bestSize) {
+			bestName, bestAddress, bestSize = symbol.Name, symbol.Value, symbol.Size
+		}
+	}
+	return bestName, bestAddress
+}
+
+func lookupDWARFLine(file *elf.File, address uint64) (string, int, int) {
+	if !hasBoundedDWARF(file) {
+		return "", 0, 0
+	}
+	data, err := file.DWARF()
+	if err != nil {
+		return "", 0, 0
+	}
+	reader := data.Reader()
+	for units := 0; units < 100000; units++ {
+		entry, err := reader.Next()
+		if err != nil || entry == nil {
+			return "", 0, 0
+		}
+		if entry.Tag != dwarf.TagCompileUnit {
+			continue
+		}
+		lines, err := data.LineReader(entry)
+		reader.SkipChildren()
+		if err != nil || lines == nil {
+			continue
+		}
+		var position dwarf.LineEntry
+		if err := lines.SeekPC(address, &position); err != nil || position.File == nil || position.EndSequence {
+			continue
+		}
+		return position.File.Name, position.Line, position.Column
+	}
+	return "", 0, 0
+}
+
+func hasBoundedDWARF(file *elf.File) bool {
+	var size uint64
+	found := false
+	for _, section := range file.Sections {
+		if !strings.HasPrefix(section.Name, ".debug_") && !strings.HasPrefix(section.Name, ".zdebug_") {
+			continue
+		}
+		found = true
+		if section.Size > maxDWARFBytes-size {
+			return false
+		}
+		size += section.Size
+	}
+	return found
+}
+
+type nativeSymbol struct {
 	function string
 	address  uint64
 	filename string
 	line     int
+	column   int
 }
 
-func lookupBreakpadSymbol(reader io.Reader, relative uint64) breakpadSymbol {
+func lookupBreakpadSymbol(reader io.Reader, relative uint64) nativeSymbol {
 	scanner := bufio.NewScanner(io.LimitReader(reader, 100<<20))
 	buffer := make([]byte, 64<<10)
 	scanner.Buffer(buffer, 1<<20)
 	files := make(map[int]string)
-	bestFunction := breakpadSymbol{}
-	bestPublic := breakpadSymbol{}
+	bestFunction := nativeSymbol{}
+	bestPublic := nativeSymbol{}
 	currentFunctionMatches := false
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -356,7 +419,7 @@ func lookupBreakpadSymbol(reader io.Reader, relative uint64) breakpadSymbol {
 			address, size, name, ok := parseBreakpadFunction(line)
 			currentFunctionMatches = ok && size > 0 && relative >= address && relative-address < size
 			if currentFunctionMatches && (bestFunction.function == "" || address >= bestFunction.address) {
-				bestFunction = breakpadSymbol{function: name, address: address}
+				bestFunction = nativeSymbol{function: name, address: address}
 			}
 			continue
 		}
@@ -364,7 +427,7 @@ func lookupBreakpadSymbol(reader io.Reader, relative uint64) breakpadSymbol {
 			currentFunctionMatches = false
 			address, name, ok := parseBreakpadPublic(line)
 			if ok && address <= relative && (bestPublic.function == "" || address >= bestPublic.address) {
-				bestPublic = breakpadSymbol{function: name, address: address}
+				bestPublic = nativeSymbol{function: name, address: address}
 			}
 			continue
 		}
