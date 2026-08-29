@@ -35,6 +35,14 @@ BARKTRACE_PDB_INLINE_FILES_FIXTURE=/path/to/inline-file-changes.pdb \
   go test -count=1 -run 'TestRealPDBInline' -v ./internal/symbolicate
 ```
 
+A compiler-produced ProGuard/R8 mapping can exercise bounded inline-chain
+discovery, including a representative repeated-range group:
+
+```sh
+BARKTRACE_PROGUARD_FIXTURE=/path/to/mapping.txt \
+  go test -count=1 -run TestRealProguardFixture -v ./internal/symbolicate
+```
+
 The minidump parser can also be checked against a real dump and an optional
 matching Breakpad symbol file containing `STACK CFI` or Windows `STACK WIN`
 records:

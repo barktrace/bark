@@ -67,8 +67,11 @@ func ProcessEvent(ctx context.Context, st *store.Store, projectID, releaseID str
 				expanded = append(expanded, value)
 				continue
 			}
-			frameChanged := symbolicateJavaScriptFrame(st, artifacts, payload, dist, frame, sourceMaps) || symbolicateProguardFrame(st, artifacts, payload, frame, proguardMaps)
 			var inlineFrames []map[string]any
+			frameChanged := symbolicateJavaScriptFrame(st, artifacts, payload, dist, frame, sourceMaps)
+			if !frameChanged {
+				frameChanged, inlineFrames = symbolicateProguardFrame(st, artifacts, payload, frame, proguardMaps)
+			}
 			if !frameChanged {
 				frameChanged, inlineFrames = symbolicateNativeFrame(st, artifacts, payload, frame, pdbFiles)
 			}

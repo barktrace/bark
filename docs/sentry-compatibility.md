@@ -60,7 +60,7 @@ The DSN shown in the project setup page should always be copied verbatim.
 | Profile and metric payloads | Storage, summaries, sampled-profile hotspots, threads, and flamegraph |
 | Source maps and release files | Source Map v3, including indexed maps, canonical URL source roots, release/distribution precedence, embedded source context, and debug-ID artifact bundles |
 | ELF, Mach-O/dSYM, PE/COFF, Microsoft PDB, and Breakpad debug files | ELF, thin/universal Mach-O, and PE/COFF function symbols with bounded DWARF source locations and inline chains; standalone PDB 7 CodeView public/procedure symbols, C13 source locations, and nested inline sites; and Breakpad `FUNC`/`PUBLIC` symbols with `FILE`/line and nested `INLINE` records, selected by debug ID |
-| ProGuard and R8 mappings | Debug-ID-selected Java class, method, filename, and line remapping, including the Sentry multipart upload route |
+| ProGuard and R8 mappings | Debug-ID-selected Java class, method, filename, and line remapping with bounded inline-call expansion, including the Sentry multipart upload route |
 | Native minidumps | Raw or multipart `/api/{project_id}/minidump/` ingestion, event metadata and attachments, bounded multi-thread x86/x86-64/ARM64 contexts, Breakpad `STACK CFI`, Windows x86 `STACK WIN`, ELF/Mach-O `.eh_frame`, x86-64/ARM64 Mach-O compact unwind, universal-binary architecture selection, frame-pointer fallback, and debug-ID symbolication |
 | Release commits and deploys | Supported |
 | Artifact bundle/chunk upload protocol | Supported for common `sentry-cli` workflows |
@@ -103,11 +103,11 @@ operations. Legacy 32-bit Mach-O compact-unwind encodings are not yet evaluated.
 images resolve embedded symbols and DWARF source locations. Standalone Microsoft
 PDB 7 files resolve bounded public and procedure symbols, C13 source locations,
 and nested `S_INLINESITE` records through IPI and inlinee-line metadata.
-ProGuard/R8 mappings restore classes, methods, and source lines but do not yet
-expand ambiguous inlined call chains into multiple frames. Breakpad symbolication
-resolves bounded function ranges, source lines, nested inline records, and
-`STACK CFI` records. Replay playback supports standard rrweb recordings and bounded
-session-wide segment assembly;
+ProGuard/R8 mappings restore classes, methods, source files, source lines, and
+bounded inline call chains, including cross-class inline methods. Breakpad
+symbolication resolves bounded function ranges, source lines, nested inline
+records, and `STACK CFI` records. Replay playback supports standard rrweb
+recordings and bounded session-wide segment assembly;
 Sentry-specific replay search, issue detection, and retention controls are not
 yet complete. Relay support covers the managed forwarding path, not every Relay
 processing-mode service or private Sentry endpoint. Unknown envelope categories

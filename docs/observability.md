@@ -125,11 +125,13 @@ Mach-O compact-unwind encodings are not yet evaluated.
 Java and Android frames can use ProGuard/R8 mapping files selected by the
 event's ProGuard UUID. Barktrace restores class, method, source filename, and
 line values while retaining their obfuscated values under `original_` fields.
-Mapping parsing is limited to 20 MiB and one million entries. Ambiguous R8
-inline-call chains currently resolve to one frame rather than expanding into
-several frames. Native uploads use `artifact_type=proguard`; compatible clients
-can also post multipart mapping files to
-`/api/0/projects/{organization}/{project}/files/proguard/`.
+Consecutive R8 mappings with the same obfuscated range expand into their
+bounded inline call chain, including methods owned by another class and
+class-specific source-file metadata. Event frames remain in Sentry's
+oldest-to-newest order, and each mapping lookup emits at most 512 frames.
+Mapping parsing is limited to 20 MiB and one million entries. Native uploads use
+`artifact_type=proguard`; compatible clients can also post multipart mapping
+files to `/api/0/projects/{organization}/{project}/files/proguard/`.
 
 ## Uptime
 
