@@ -97,8 +97,9 @@ Native minidumps use bounded Breakpad `STACK CFI`, Windows x86 `STACK WIN`
 program/FPO metadata, common ELF/Mach-O `.eh_frame` CFA rules, x86-64 and ARM64
 Mach-O compact-unwind tables, or frame pointers to unwind up to 256 captured
 threads and 2,048 total event frames. Universal Mach-O artifacts select their
-unwind slice from the minidump architecture. DWARF expression rules and legacy
-32-bit Mach-O compact-unwind encodings are not yet evaluated. PE/COFF
+unwind slice from the minidump architecture. Bounded DWARF CFA, register
+location, and register-value expressions cover the common stack-machine
+operations. Legacy 32-bit Mach-O compact-unwind encodings are not yet evaluated. PE/COFF
 images resolve embedded symbols and DWARF source locations. Standalone Microsoft
 PDB 7 files resolve bounded public and procedure symbols, C13 source locations,
 and nested `S_INLINESITE` records through IPI and inlinee-line metadata.

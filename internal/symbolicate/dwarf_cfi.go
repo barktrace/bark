@@ -44,12 +44,15 @@ const (
 	dwarfRuleOffset
 	dwarfRuleValueOffset
 	dwarfRuleRegister
+	dwarfRuleExpression
+	dwarfRuleValueExpression
 )
 
 type dwarfRule struct {
-	kind     dwarfRuleKind
-	register uint64
-	offset   int64
+	kind       dwarfRuleKind
+	register   uint64
+	offset     int64
+	expression []byte
 }
 
 type dwarfFrameState struct {
@@ -319,16 +322,29 @@ func (c *dwarfCFI) unwind(relative uint64, registers map[string]uint64, memory m
 	}
 	initial := cloneDwarfRules(state.registers)
 	state.location = selected.begin
-	if !executeDwarfCFI(selected.instructions, selected.cie, &state, relative, initial, c.order, c.pointerSize) || state.cfa.kind != dwarfRuleRegister {
+	if !executeDwarfCFI(selected.instructions, selected.cie, &state, relative, initial, c.order, c.pointerSize) {
 		return nil
 	}
-	cfaRegister := dwarfRegisterName(architecture, state.cfa.register)
-	cfaBase, ok := registers[cfaRegister]
-	if !ok {
-		return nil
-	}
-	cfa, ok := addDwarfOffset(cfaBase, state.cfa.offset)
-	if !ok {
+	var cfa uint64
+	var ok bool
+	switch state.cfa.kind {
+	case dwarfRuleRegister:
+		cfaRegister := dwarfRegisterName(architecture, state.cfa.register)
+		cfaBase, ok := registers[cfaRegister]
+		if !ok {
+			return nil
+		}
+		cfa, ok = addDwarfOffset(cfaBase, state.cfa.offset)
+		if !ok {
+			return nil
+		}
+	case dwarfRuleExpression:
+		var valid bool
+		cfa, _, valid = evaluateDwarfExpression(state.cfa.expression, registers, memory, architecture, 0, false, c.order, c.pointerSize)
+		if !valid {
+			return nil
+		}
+	default:
 		return nil
 	}
 	next := cloneRegisters(registers)
@@ -337,7 +353,7 @@ func (c *dwarfCFI) unwind(relative uint64, registers map[string]uint64, memory m
 		if name == "" {
 			continue
 		}
-		value, valid := evaluateDwarfRule(rule, cfa, registers, memory, architecture)
+		value, valid := evaluateDwarfRule(rule, cfa, registers, memory, architecture, c.order, c.pointerSize)
 		if valid {
 			next[name] = value
 		}
@@ -346,7 +362,7 @@ func (c *dwarfCFI) unwind(relative uint64, registers map[string]uint64, memory m
 	if !ok {
 		return nil
 	}
-	returnAddress, ok := evaluateDwarfRule(returnRule, cfa, registers, memory, architecture)
+	returnAddress, ok := evaluateDwarfRule(returnRule, cfa, registers, memory, architecture, c.order, c.pointerSize)
 	if !ok || returnAddress == 0 {
 		return nil
 	}
@@ -496,16 +512,22 @@ func executeDwarfCFI(instructions []byte, cie *dwarfCIE, state *dwarfFrameState,
 			}
 			state.cfa.offset = int64(offset)
 		case 0x0f:
-			if !reader.skipBlock() {
+			expression, valid := reader.block()
+			if !valid {
 				return false
 			}
-			state.cfa.kind = dwarfRuleUndefined
+			state.cfa = dwarfRule{kind: dwarfRuleExpression, expression: expression}
 		case 0x10, 0x16:
 			register, valid := reader.uleb()
-			if !valid || !reader.skipBlock() {
+			expression, expressionValid := reader.block()
+			if !valid || !expressionValid {
 				return false
 			}
-			state.registers[register] = dwarfRule{kind: dwarfRuleUndefined}
+			kind := dwarfRuleExpression
+			if opcode == 0x16 {
+				kind = dwarfRuleValueExpression
+			}
+			state.registers[register] = dwarfRule{kind: kind, expression: expression}
 		case 0x11, 0x14:
 			register, valid := reader.uleb()
 			offset, offsetValid := reader.sleb()
@@ -565,7 +587,7 @@ func executeDwarfCFI(instructions []byte, cie *dwarfCIE, state *dwarfFrameState,
 	return reader.offset == len(instructions)
 }
 
-func evaluateDwarfRule(rule dwarfRule, cfa uint64, registers map[string]uint64, memory minidumpMemory, architecture string) (uint64, bool) {
+func evaluateDwarfRule(rule dwarfRule, cfa uint64, registers map[string]uint64, memory minidumpMemory, architecture string, order binary.ByteOrder, pointerSize int) (uint64, bool) {
 	switch rule.kind {
 	case dwarfRuleSame:
 		value, ok := registers[dwarfRegisterName(architecture, rule.register)]
@@ -581,6 +603,15 @@ func evaluateDwarfRule(rule dwarfRule, cfa uint64, registers map[string]uint64, 
 		return memory.readPointer(address)
 	case dwarfRuleValueOffset:
 		return addDwarfOffset(cfa, rule.offset)
+	case dwarfRuleExpression, dwarfRuleValueExpression:
+		value, stackValue, ok := evaluateDwarfExpression(rule.expression, registers, memory, architecture, cfa, true, order, pointerSize)
+		if !ok {
+			return 0, false
+		}
+		if rule.kind == dwarfRuleValueExpression || stackValue {
+			return value, true
+		}
+		return memory.readPointer(value)
 	default:
 		return 0, false
 	}
@@ -805,13 +836,14 @@ func (r *dwarfReader) encoded(encoding byte) (uint64, bool) {
 	return base + raw, true
 }
 
-func (r *dwarfReader) skipBlock() bool {
+func (r *dwarfReader) block() ([]byte, bool) {
 	length, ok := r.uleb()
-	if !ok || r.offset > r.end() || length > uint64(r.end()-r.offset) {
-		return false
+	if !ok || length > maxDwarfExpressionBytes || r.offset > r.end() || length > uint64(r.end()-r.offset) {
+		return nil, false
 	}
+	result := append([]byte(nil), r.data[r.offset:r.offset+int(length)]...)
 	r.offset += int(length)
-	return true
+	return result, true
 }
 
 func (r *dwarfReader) end() int {

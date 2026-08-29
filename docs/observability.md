@@ -117,8 +117,10 @@ binary selection and a frame-pointer fallback. The DWARF interpreter covers the
 common CFA, register, offset, value-offset, advance, and saved-state
 instructions for x86, x86-64, and ARM64. Minidump parsing unwinds up to 256
 threads and 2,048 total event frames, retains the original dump as an event
-attachment, and limits each walk to 256 frames. DWARF expression rules and
-legacy 32-bit Mach-O compact-unwind encodings are not yet evaluated.
+attachment, and limits each walk to 256 frames. Bounded DWARF CFA, register
+location, and register-value expressions cover common arithmetic, branching,
+register-relative, dereference, and direct-value operations. Legacy 32-bit
+Mach-O compact-unwind encodings are not yet evaluated.
 
 Java and Android frames can use ProGuard/R8 mapping files selected by the
 event's ProGuard UUID. Barktrace restores class, method, source filename, and

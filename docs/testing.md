@@ -52,6 +52,14 @@ BARKTRACE_DWARF_CFI_FIXTURE=/path/to/executable \
   go test -count=1 -run TestRealDwarfCFIFixture -v ./internal/symbolicate
 ```
 
+Expression-based CFA and register rules have a separate real-object gate:
+
+```sh
+BARKTRACE_DWARF_EXPRESSION_FIXTURE=/path/to/executable \
+BARKTRACE_DWARF_EXPRESSION_ARCH=x86_64 \
+  go test -count=1 -run TestRealDwarfExpressionFixture -v ./internal/symbolicate
+```
+
 A thin or universal Mach-O executable can exercise its real compact-unwind
 table. Set the architecture when selecting a slice from a universal binary:
 
