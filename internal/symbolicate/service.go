@@ -28,6 +28,11 @@ type cachedSourceMap struct {
 	err   error
 }
 
+type cachedProguardMap struct {
+	value *ProguardMap
+	err   error
+}
+
 const maxDWARFBytes uint64 = 32 << 20
 
 func ProcessEvent(ctx context.Context, st *store.Store, projectID, releaseID string, raw []byte) ([]byte, bool, error) {
@@ -44,9 +49,10 @@ func ProcessEvent(ctx context.Context, st *store.Store, projectID, releaseID str
 	}
 	changed := false
 	sourceMaps := make(map[string]cachedSourceMap)
+	proguardMaps := make(map[string]cachedProguardMap)
 	dist := stringValue(payload["dist"])
 	for _, frame := range eventFrames(payload) {
-		if symbolicateJavaScriptFrame(st, artifacts, payload, dist, frame, sourceMaps) || symbolicateNativeFrame(st, artifacts, payload, frame) {
+		if symbolicateJavaScriptFrame(st, artifacts, payload, dist, frame, sourceMaps) || symbolicateProguardFrame(st, artifacts, payload, frame, proguardMaps) || symbolicateNativeFrame(st, artifacts, payload, frame) {
 			changed = true
 		}
 	}
@@ -246,7 +252,7 @@ func cleanArtifactName(value string) string {
 }
 
 func preserveOriginal(frame map[string]any) {
-	for _, key := range []string{"filename", "abs_path", "lineno", "colno", "function"} {
+	for _, key := range []string{"filename", "abs_path", "lineno", "colno", "function", "module", "package"} {
 		if value, ok := frame[key]; ok {
 			frame["original_"+key] = value
 		}

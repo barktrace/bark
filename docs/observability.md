@@ -104,7 +104,16 @@ sections exceed 32 MiB so a debug artifact cannot consume the container's whole
 memory budget. Breakpad files resolve bounded `FUNC` records before falling back
 to the nearest `PUBLIC` symbol and add `FILE` and source-line information when
 present. Inline-frame expansion, CFI stack unwinding, standalone Microsoft PDB,
-and ProGuard mapping are not currently implemented.
+and native inline-frame expansion are not currently implemented.
+
+Java and Android frames can use ProGuard/R8 mapping files selected by the
+event's ProGuard UUID. Barktrace restores class, method, source filename, and
+line values while retaining their obfuscated values under `original_` fields.
+Mapping parsing is limited to 20 MiB and one million entries. Ambiguous R8
+inline-call chains currently resolve to one frame rather than expanding into
+several frames. Native uploads use `artifact_type=proguard`; compatible clients
+can also post multipart mapping files to
+`/api/0/projects/{organization}/{project}/files/proguard/`.
 
 ## Uptime
 

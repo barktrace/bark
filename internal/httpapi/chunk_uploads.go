@@ -307,18 +307,35 @@ func (s *Server) assembleDebugFiles(w http.ResponseWriter, r *http.Request) {
 			response[checksum] = map[string]any{"state": "error", "missingChunks": []string{}, "detail": "assembled debug file checksum mismatch", "dif": nil}
 			continue
 		}
-		artifact, err := s.storeArtifactBytes(r.Context(), organizationID, projectID, "", file.Name, "debug_file", file.DebugID, "", "application/octet-stream", payload)
+		kind := "debug_file"
+		if artifactType("", file.Name) == "proguard" {
+			kind = "proguard"
+		}
+		debugID := file.DebugID
+		if kind == "proguard" && strings.TrimSpace(debugID) == "" {
+			debugID = proguardUUIDFromName(file.Name)
+		}
+		artifact, err := s.storeArtifactBytes(r.Context(), organizationID, projectID, "", file.Name, kind, debugID, "", "application/octet-stream", payload)
 		if err != nil {
 			response[checksum] = map[string]any{"state": "error", "missingChunks": []string{}, "detail": "could not index debug file", "dif": nil}
 			continue
 		}
 		dif := map[string]any{"objectName": file.Name, "cpuName": "unknown", "sha1": checksum, "data": map[string]any{}}
-		if file.DebugID != "" {
-			dif["debugId"] = file.DebugID
+		if debugID != "" {
+			dif["debugId"] = debugID
 		}
 		response[checksum] = map[string]any{"state": "ok", "missingChunks": []string{}, "detail": nil, "dif": dif, "artifactId": artifact["id"]}
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+func proguardUUIDFromName(name string) string {
+	base := strings.TrimSuffix(path.Base(strings.TrimSpace(name)), path.Ext(name))
+	parsed, err := uuid.Parse(base)
+	if err != nil {
+		return ""
+	}
+	return parsed.String()
 }
 
 func (s *Server) assembleChunks(ctx context.Context, organizationID string, checksums []string) ([]byte, []string, error) {

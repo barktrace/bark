@@ -62,6 +62,50 @@ func TestSentryChunkUploadAssemblesArtifactBundle(t *testing.T) {
 	}
 }
 
+func TestSentryChunkUploadAssemblesProguardMapping(t *testing.T) {
+	server, principal := managementFixture(t)
+	mapping := []byte("com.example.Checkout -> a.b:\n    1:1:void submit():42:42 -> c\n")
+	digest := sha1.Sum(mapping)
+	checksum := hex.EncodeToString(digest[:])
+	const debugID = "12345678-1234-1234-1234-123456789abc"
+
+	var upload bytes.Buffer
+	writer := multipart.NewWriter(&upload)
+	part, err := writer.CreateFormFile("file", checksum)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = part.Write(mapping)
+	_ = writer.Close()
+	request := principalRequest(t, principal, http.MethodPost, "/api/0/organizations/org/chunk-upload/", upload.String())
+	request.Body = ioNopCloser{bytes.NewReader(upload.Bytes())}
+	request.ContentLength = int64(upload.Len())
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	request.SetPathValue("org_slug", "org")
+	response := httptest.NewRecorder()
+	server.sentryChunkUpload(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("chunk upload status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	body := `{"` + checksum + `":{"name":"/proguard/` + debugID + `.txt","chunks":["` + checksum + `"]}}`
+	request = principalRequest(t, principal, http.MethodPost, "/api/0/projects/org/app/files/difs/assemble/", body)
+	request.SetPathValue("org_slug", "org")
+	request.SetPathValue("project_slug", "app")
+	response = httptest.NewRecorder()
+	server.assembleDebugFiles(response, request)
+	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(`"state":"ok"`)) || !bytes.Contains(response.Body.Bytes(), []byte(debugID)) {
+		t.Fatalf("ProGuard assembly status=%d body=%s", response.Code, response.Body.String())
+	}
+	var kind, storedDebugID string
+	if err := server.store.DB.QueryRow(`SELECT artifact_type, debug_id FROM project_artifacts WHERE project_id = 'project' AND name = ?`, "/proguard/"+debugID+".txt").Scan(&kind, &storedDebugID); err != nil {
+		t.Fatal(err)
+	}
+	if kind != "proguard" || storedDebugID != debugID {
+		t.Fatalf("stored kind=%q debug_id=%q", kind, storedDebugID)
+	}
+}
+
 func TestSentryReleaseResponseUsesCLIShape(t *testing.T) {
 	server, principal := managementFixture(t)
 	request := principalRequest(t, principal, http.MethodPost, "/api/0/organizations/org/releases/", `{"version":"api@2.0.0","projects":["app"],"dateReleased":"2026-08-29T12:00:00Z"}`)

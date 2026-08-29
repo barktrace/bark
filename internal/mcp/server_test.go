@@ -53,7 +53,7 @@ func TestInitializeAndListTools(t *testing.T) {
 	if result["protocolVersion"] != "2025-06-18" {
 		t.Fatalf("protocol version = %v", result["protocolVersion"])
 	}
-	if version := result["serverInfo"].(map[string]any)["version"]; version != "0.9.0" {
+	if version := result["serverInfo"].(map[string]any)["version"]; version != serverVersion {
 		t.Fatalf("server version = %v", version)
 	}
 

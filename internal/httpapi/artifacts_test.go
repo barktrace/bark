@@ -54,3 +54,49 @@ func TestArtifactTypeRecognizesNativeDebugFiles(t *testing.T) {
 		}
 	}
 }
+
+func TestSentryProguardUploadIndexesMappingAndUUID(t *testing.T) {
+	server, principal := managementFixture(t)
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	_ = writer.WriteField("proguard_uuid", "12345678-1234-1234-1234-123456789abc")
+	_ = writer.WriteField("version", "android@1.0.0")
+	file, err := writer.CreateFormFile("file", "mapping.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = file.Write([]byte("com.example.Checkout -> a.b:\n    1:1:void submit():42:42 -> c\n"))
+	_ = writer.Close()
+	request := httptest.NewRequest(http.MethodPost, "/api/0/projects/org/app/files/proguard/", &body)
+	request.SetPathValue("org_slug", "org")
+	request.SetPathValue("project_slug", "app")
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	request = request.WithContext(auth.WithPrincipal(request.Context(), principal))
+	response := httptest.NewRecorder()
+	server.sentryDebugArtifactUpload(response, request, "proguard")
+	if response.Code != http.StatusCreated {
+		t.Fatalf("upload status = %d body=%s", response.Code, response.Body.String())
+	}
+	var kind, debugID, release string
+	err = server.store.DB.QueryRow(`
+		SELECT a.artifact_type, a.debug_id, r.version
+		FROM project_artifacts a JOIN releases r ON r.id = a.release_id
+		WHERE a.project_id = 'project' AND a.name = 'mapping.txt'
+	`).Scan(&kind, &debugID, &release)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kind != "proguard" || debugID != "12345678-1234-1234-1234-123456789abc" || release != "android@1.0.0" {
+		t.Fatalf("stored kind=%q debug_id=%q release=%q", kind, debugID, release)
+	}
+}
+
+func TestProguardUUIDFromChunkName(t *testing.T) {
+	const expected = "12345678-1234-1234-1234-123456789abc"
+	if got := proguardUUIDFromName("/proguard/" + expected + ".txt"); got != expected {
+		t.Fatalf("proguardUUIDFromName() = %q, want %q", got, expected)
+	}
+	if got := proguardUUIDFromName("mapping.txt"); got != "" {
+		t.Fatalf("invalid ProGuard name produced UUID %q", got)
+	}
+}

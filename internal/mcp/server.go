@@ -20,7 +20,10 @@ import (
 	"github.com/barktrace/bark/internal/uptime"
 )
 
-const protocolVersion = "2025-11-25"
+const (
+	protocolVersion = "2025-11-25"
+	serverVersion   = "0.14.0"
+)
 
 var supportedProtocolVersions = map[string]bool{
 	"2025-11-25": true,
@@ -118,7 +121,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.writeResult(w, id, map[string]any{
 			"protocolVersion": version,
 			"capabilities":    map[string]any{"tools": map[string]bool{"listChanged": false}},
-			"serverInfo":      map[string]string{"name": "barktrace", "version": "0.9.0"},
+			"serverInfo":      map[string]string{"name": "barktrace", "version": serverVersion},
 		})
 	case "ping":
 		s.writeResult(w, id, map[string]any{})

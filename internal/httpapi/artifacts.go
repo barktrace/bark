@@ -192,13 +192,14 @@ func (s *Server) uploadArtifact(w http.ResponseWriter, r *http.Request, projectI
 	}
 	var oldBlobID sql.NullString
 	_ = tx.QueryRowContext(r.Context(), `SELECT blob_id FROM project_artifacts WHERE project_id = ? AND COALESCE(release_id, '') = ? AND name = ? AND dist = ?`, projectID, releaseID, name, r.FormValue("dist")).Scan(&oldBlobID)
+	debugID := strings.TrimSpace(firstNonEmpty(r.FormValue("debug_id"), r.FormValue("proguard_uuid"), r.FormValue("uuid")))
 	err = tx.QueryRowContext(r.Context(), `
 		INSERT INTO project_artifacts(id, project_id, release_id, blob_id, name, artifact_type, debug_id, dist)
 		VALUES (?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?)
 		ON CONFLICT (project_id, (COALESCE(release_id, '')), name, dist)
 		DO UPDATE SET blob_id = excluded.blob_id, artifact_type = excluded.artifact_type, debug_id = excluded.debug_id, created_at = CURRENT_TIMESTAMP
 		RETURNING id
-	`, artifactID, projectID, releaseID, blobID, name, kind, strings.TrimSpace(r.FormValue("debug_id")), strings.TrimSpace(r.FormValue("dist"))).Scan(&artifactID)
+	`, artifactID, projectID, releaseID, blobID, name, kind, debugID, strings.TrimSpace(r.FormValue("dist"))).Scan(&artifactID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not index artifact")
 		return
@@ -211,6 +212,25 @@ func (s *Server) uploadArtifact(w http.ResponseWriter, r *http.Request, projectI
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"id": artifactID, "name": name, "artifact_type": kind, "sha1": result.Checksum, "size": result.Size, "dist": r.FormValue("dist"), "dateCreated": time.Now().UTC().Format(time.RFC3339Nano)})
+}
+
+func (s *Server) sentryDebugArtifactUpload(w http.ResponseWriter, r *http.Request, kind string) {
+	principal, _ := auth.PrincipalFromContext(r.Context())
+	projectID, _, ok := s.projectBySlugs(r, r.PathValue("org_slug"), r.PathValue("project_slug"))
+	if !ok || !s.canManageProject(r, principal, projectID) {
+		writeError(w, http.StatusForbidden, "project administrator access required")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, blobstore.MaxBlobBytes+(1<<20))
+	if err := r.ParseMultipartForm(1 << 20); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid multipart artifact upload")
+		return
+	}
+	r.Form.Set("artifact_type", kind)
+	if r.FormValue("debug_id") == "" {
+		r.Form.Set("debug_id", firstNonEmpty(r.FormValue("proguard_uuid"), r.FormValue("uuid")))
+	}
+	s.uploadArtifact(w, r, projectID, strings.TrimSpace(r.FormValue("version")))
 }
 
 func (s *Server) ensureArtifactRelease(r *http.Request, organizationID, projectID, version string) (string, error) {

@@ -201,6 +201,12 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/0/organizations/{org_slug}/chunk-upload/", s.auth.Require(http.HandlerFunc(s.sentryChunkUpload)))
 	s.mux.Handle("POST /api/0/organizations/{org_slug}/artifactbundle/assemble/", s.auth.Require(http.HandlerFunc(s.assembleArtifactBundle)))
 	s.mux.Handle("POST /api/0/projects/{org_slug}/{project_slug}/files/difs/assemble/", s.auth.Require(http.HandlerFunc(s.assembleDebugFiles)))
+	s.mux.Handle("POST /api/0/projects/{org_slug}/{project_slug}/files/dsyms/", s.auth.Require(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.sentryDebugArtifactUpload(w, r, "debug_file")
+	})))
+	s.mux.Handle("POST /api/0/projects/{org_slug}/{project_slug}/files/proguard/", s.auth.Require(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.sentryDebugArtifactUpload(w, r, "proguard")
+	})))
 	s.mux.Handle("POST /api/0/projects/{org_slug}/{project_slug}/files/preprodartifacts/assemble/", s.auth.Require(http.HandlerFunc(s.assemblePreprodBuild)))
 	s.mux.Handle("GET /api/0/organizations/{org_slug}/preprodartifacts/{preprod_path...}", s.auth.Require(http.HandlerFunc(s.preprodOrganizationRoute)))
 	s.mux.Handle("POST /api/0/organizations/{org_slug}/preprodartifacts/{preprod_path...}", s.auth.Require(http.HandlerFunc(s.preprodOrganizationRoute)))

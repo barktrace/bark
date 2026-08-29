@@ -27,7 +27,7 @@ The current foundation includes:
 - webhook and Slack alert rules for new issues, regressions, and downtime;
 - SMTP email delivery, cron/metric/feedback triggers, conditions, and cooldowns;
 - cron check-ins, attachments, user feedback, interactive session replays, sampled-profile flamegraphs, and metric ingestion;
-- source maps, JavaScript rewriting, ELF/Mach-O/PE/Breakpad debug files, and reprocessing;
+- source maps, JavaScript rewriting, ProGuard/R8 mappings, ELF/Mach-O/PE/Breakpad debug files, and reprocessing;
 - release commits, deploy metadata, code mappings, and suspect commits;
 - `sentry-cli` build and snapshot upload/download workflows;
 - a durable leased ingestion queue with retries, dead letters, and category quotas;
