@@ -83,6 +83,95 @@ FUNC 2000 10 0 unrelated
 	}
 }
 
+func TestLookupBreakpadSymbolExpandsNestedInlineRecords(t *testing.T) {
+	matched := lookupBreakpadSymbol(bytes.NewBufferString(breakpadInlineFixture), 0x1010)
+	if matched.function != "physical_function" || matched.filename != "/src/inner.cc" || matched.line != 30 || len(matched.inlines) != 2 {
+		t.Fatalf("inline Breakpad match = %#v", matched)
+	}
+	if matched.inlines[0].function != "outer_inline" || matched.inlines[0].filename != "/src/physical.cc" || matched.inlines[0].line != 12 {
+		t.Fatalf("outer inline = %#v", matched.inlines[0])
+	}
+	if matched.inlines[1].function != "inner_inline" || matched.inlines[1].filename != "/src/outer.cc" || matched.inlines[1].line != 21 {
+		t.Fatalf("inner inline = %#v", matched.inlines[1])
+	}
+}
+
+func TestBreakpadInlineDepthIsBounded(t *testing.T) {
+	var fixture strings.Builder
+	fixture.WriteString("MODULE Linux x86_64 DEEP app\nFILE 0 deep.cc\nINLINE_ORIGIN 0 inlined\nFUNC 1000 20 0 physical\n")
+	for depth := 0; depth < maxNativeInlineDepth+100; depth++ {
+		fmt.Fprintf(&fixture, "INLINE %d 1 0 0 1000 20\n", depth)
+	}
+	fixture.WriteString("1000 20 1 0\n")
+	matched := lookupBreakpadSymbol(strings.NewReader(fixture.String()), 0x1008)
+	if len(matched.inlines) != maxNativeInlineDepth {
+		t.Fatalf("inline depth = %d, want %d", len(matched.inlines), maxNativeInlineDepth)
+	}
+}
+
+func TestEventStacksSupportsSentryContainerShapes(t *testing.T) {
+	stack := func() map[string]any { return map[string]any{"frames": []any{map[string]any{"function": "f"}}} }
+	payload := map[string]any{
+		"exception":  map[string]any{"values": []any{map[string]any{"stacktrace": stack()}}},
+		"threads":    map[string]any{"values": []any{map[string]any{"stacktrace": stack()}}},
+		"stacktrace": stack(),
+	}
+	if stacks := eventStacks(payload); len(stacks) != 3 {
+		t.Fatalf("stack count = %d, want 3", len(stacks))
+	}
+	payload["exception"] = []any{map[string]any{"stacktrace": stack()}}
+	if stacks := eventStacks(payload); len(stacks) != 3 {
+		t.Fatalf("exception-array stack count = %d, want 3", len(stacks))
+	}
+}
+
+func TestProcessEventExpandsNestedBreakpadFrames(t *testing.T) {
+	st := symbolicationStore(t)
+	putDebugArtifact(t, st, "INLINE123", breakpadInlineFixture)
+	payload := []byte(`{
+		"debug_meta":{"images":[{"type":"elf","image_addr":"0x400000","image_size":"0x10000","debug_id":"INLINE123"}]},
+		"exception":{"values":[{"stacktrace":{"frames":[{"instruction_addr":"0x401010","function":"unknown","filename":"app"}]}}]}
+	}`)
+	processed, changed, err := ProcessEvent(context.Background(), st, "project", "release", payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frames := processedFrames(t, processed)
+	if !changed || len(frames) != 3 {
+		t.Fatalf("expanded frames = %#v, changed=%v", frames, changed)
+	}
+	want := []struct {
+		function, filename string
+		line               float64
+		inline             bool
+	}{
+		{"physical_function", "/src/physical.cc", 12, false},
+		{"outer_inline", "/src/outer.cc", 21, true},
+		{"inner_inline", "/src/inner.cc", 30, true},
+	}
+	for index, expected := range want {
+		frame := frames[index]
+		if frame["function"] != expected.function || frame["filename"] != expected.filename || frame["lineno"] != expected.line || (frame["inline"] == true) != expected.inline || frame["symbolicated"] != true || frame["original_function"] != "unknown" {
+			t.Fatalf("frame %d = %#v", index, frame)
+		}
+		if expected.inline && frame["symbol_addr"] != "0x401008" {
+			t.Fatalf("inline frame %d symbol address = %v", index, frame["symbol_addr"])
+		}
+	}
+}
+
+const breakpadInlineFixture = `MODULE Linux x86_64 INLINE123 app
+FILE 1 /src/physical.cc
+FILE 2 /src/outer.cc
+FILE 3 /src/inner.cc
+INLINE_ORIGIN 10 outer_inline
+INLINE_ORIGIN 11 inner_inline
+FUNC 1000 40 0 physical_function
+INLINE 0 12 1 10 1008 18
+INLINE 1 21 2 11 1008 10
+1008 10 30 3
+`
+
 func TestProcessEventAddsBreakpadSourceLocation(t *testing.T) {
 	st := symbolicationStore(t)
 	putDebugArtifact(t, st, "ABCDEF", `MODULE Linux x86_64 ABCDEF app
@@ -486,6 +575,11 @@ func putDebugArtifactBytes(t *testing.T, st *store.Store, debugID string, conten
 
 func processedFrame(t *testing.T, raw []byte) map[string]any {
 	t.Helper()
+	return processedFrames(t, raw)[0]
+}
+
+func processedFrames(t *testing.T, raw []byte) []map[string]any {
+	t.Helper()
 	var payload map[string]any
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		t.Fatal(err)
@@ -493,5 +587,10 @@ func processedFrame(t *testing.T, raw []byte) map[string]any {
 	exception := payload["exception"].(map[string]any)
 	value := exception["values"].([]any)[0].(map[string]any)
 	stacktrace := value["stacktrace"].(map[string]any)
-	return stacktrace["frames"].([]any)[0].(map[string]any)
+	rawFrames := stacktrace["frames"].([]any)
+	frames := make([]map[string]any, 0, len(rawFrames))
+	for _, rawFrame := range rawFrames {
+		frames = append(frames, rawFrame.(map[string]any))
+	}
+	return frames
 }

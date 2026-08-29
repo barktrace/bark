@@ -39,6 +39,7 @@ type cachedPDBSymbols struct {
 }
 
 const maxDWARFBytes uint64 = 32 << 20
+const maxNativeInlineDepth = 512
 
 func ProcessEvent(ctx context.Context, st *store.Store, projectID, releaseID string, raw []byte) ([]byte, bool, error) {
 	var payload map[string]any
@@ -57,9 +58,33 @@ func ProcessEvent(ctx context.Context, st *store.Store, projectID, releaseID str
 	proguardMaps := make(map[string]cachedProguardMap)
 	pdbFiles := make(map[string]cachedPDBSymbols)
 	dist := stringValue(payload["dist"])
-	for _, frame := range eventFrames(payload) {
-		if symbolicateJavaScriptFrame(st, artifacts, payload, dist, frame, sourceMaps) || symbolicateProguardFrame(st, artifacts, payload, frame, proguardMaps) || symbolicateNativeFrame(st, artifacts, payload, frame, pdbFiles) {
-			changed = true
+	for _, stack := range eventStacks(payload) {
+		values, _ := stack["frames"].([]any)
+		expanded := make([]any, 0, len(values))
+		for _, value := range values {
+			frame, ok := value.(map[string]any)
+			if !ok {
+				expanded = append(expanded, value)
+				continue
+			}
+			frameChanged := symbolicateJavaScriptFrame(st, artifacts, payload, dist, frame, sourceMaps) || symbolicateProguardFrame(st, artifacts, payload, frame, proguardMaps)
+			var inlineFrames []map[string]any
+			if !frameChanged {
+				frameChanged, inlineFrames = symbolicateNativeFrame(st, artifacts, payload, frame, pdbFiles)
+			}
+			if frameChanged {
+				changed = true
+			}
+			if len(inlineFrames) == 0 {
+				expanded = append(expanded, frame)
+				continue
+			}
+			for _, inlineFrame := range inlineFrames {
+				expanded = append(expanded, inlineFrame)
+			}
+		}
+		if len(expanded) != len(values) {
+			stack["frames"] = expanded
 		}
 	}
 	if !changed {
@@ -90,15 +115,12 @@ func loadArtifacts(ctx context.Context, st *store.Store, projectID, releaseID st
 	return items, rows.Err()
 }
 
-func eventFrames(payload map[string]any) []map[string]any {
-	frames := make([]map[string]any, 0)
+func eventStacks(payload map[string]any) []map[string]any {
+	stacks := make([]map[string]any, 0)
 	appendFrames := func(stack any) {
 		stackMap, _ := stack.(map[string]any)
-		values, _ := stackMap["frames"].([]any)
-		for _, value := range values {
-			if frame, ok := value.(map[string]any); ok {
-				frames = append(frames, frame)
-			}
+		if _, ok := stackMap["frames"].([]any); ok {
+			stacks = append(stacks, stackMap)
 		}
 	}
 	appendValues := func(container any) {
@@ -119,7 +141,7 @@ func eventFrames(payload map[string]any) []map[string]any {
 	}
 	appendValues(payload["threads"])
 	appendFrames(payload["stacktrace"])
-	return frames
+	return stacks
 }
 
 func symbolicateJavaScriptFrame(st *store.Store, artifacts []artifact, payload map[string]any, eventDist string, frame map[string]any, cache map[string]cachedSourceMap) bool {
@@ -265,10 +287,10 @@ func preserveOriginal(frame map[string]any) {
 	}
 }
 
-func symbolicateNativeFrame(st *store.Store, artifacts []artifact, payload map[string]any, frame map[string]any, pdbCache map[string]cachedPDBSymbols) bool {
+func symbolicateNativeFrame(st *store.Store, artifacts []artifact, payload map[string]any, frame map[string]any, pdbCache map[string]cachedPDBSymbols) (bool, []map[string]any) {
 	address, ok := parseAddress(frame["instruction_addr"])
 	if !ok {
-		return false
+		return false, nil
 	}
 	debugID, imageBase, imageArch := frameDebugImage(payload, address)
 	for _, item := range artifacts {
@@ -319,9 +341,58 @@ func symbolicateNativeFrame(st *store.Store, artifacts []artifact, payload map[s
 			frame["colno"] = matched.column
 		}
 		frame["symbolicated"] = true
-		return true
+		if len(matched.inlines) > 0 {
+			return true, expandNativeInlineFrames(frame, matched, imageBase)
+		}
+		return true, nil
 	}
-	return false
+	return false, nil
+}
+
+func expandNativeInlineFrames(frame map[string]any, matched nativeSymbol, imageBase uint64) []map[string]any {
+	frames := make([]map[string]any, 0, len(matched.inlines)+1)
+	physical := cloneFrame(frame)
+	setNativeSource(physical, matched.inlines[0].filename, matched.inlines[0].line, 0)
+	frames = append(frames, physical)
+	for index, inline := range matched.inlines {
+		expanded := cloneFrame(frame)
+		expanded["function"] = inline.function
+		expanded["symbol_addr"] = fmt.Sprintf("0x%x", inline.address+imageBase)
+		expanded["inline"] = true
+		if index+1 < len(matched.inlines) {
+			next := matched.inlines[index+1]
+			setNativeSource(expanded, next.filename, next.line, 0)
+		} else {
+			setNativeSource(expanded, matched.filename, matched.line, matched.column)
+		}
+		frames = append(frames, expanded)
+	}
+	return frames
+}
+
+func cloneFrame(frame map[string]any) map[string]any {
+	cloned := make(map[string]any, len(frame)+1)
+	for key, value := range frame {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func setNativeSource(frame map[string]any, filename string, line, column int) {
+	if filename != "" {
+		frame["filename"], frame["abs_path"] = filename, filename
+		if line == 0 {
+			delete(frame, "lineno")
+		}
+	}
+	if line > 0 {
+		frame["lineno"] = line
+	}
+	if column > 0 {
+		frame["colno"] = column
+	} else {
+		delete(frame, "colno")
+	}
 }
 
 func frameDebugImage(payload map[string]any, address uint64) (string, uint64, string) {
@@ -661,6 +732,15 @@ type nativeSymbol struct {
 	filename string
 	line     int
 	column   int
+	inlines  []nativeInline
+}
+
+type nativeInline struct {
+	function           string
+	filename           string
+	line, level        int
+	originID, fileID   int
+	address, rangeSize uint64
 }
 
 func lookupBreakpadSymbol(reader io.Reader, relative uint64) nativeSymbol {
@@ -668,10 +748,13 @@ func lookupBreakpadSymbol(reader io.Reader, relative uint64) nativeSymbol {
 	buffer := make([]byte, 64<<10)
 	scanner.Buffer(buffer, 1<<20)
 	files := make(map[int]string)
+	origins := make(map[int]string)
+	inlineMatches := make(map[int]nativeInline)
 	bestFunction := nativeSymbol{}
 	bestPublic := nativeSymbol{}
 	currentFunctionMatches := false
-	for scanner.Scan() {
+	currentFunctionAddress := uint64(0)
+	for records := 0; records < 1000000 && scanner.Scan(); records++ {
 		line := scanner.Text()
 		if strings.HasPrefix(line, "FILE ") {
 			fields := strings.SplitN(strings.TrimSpace(strings.TrimPrefix(line, "FILE ")), " ", 2)
@@ -683,11 +766,36 @@ func lookupBreakpadSymbol(reader io.Reader, relative uint64) nativeSymbol {
 			currentFunctionMatches = false
 			continue
 		}
+		if strings.HasPrefix(line, "INLINE_ORIGIN ") {
+			id, name, ok := parseBreakpadInlineOrigin(line)
+			if ok {
+				origins[id] = name
+			}
+			continue
+		}
 		if strings.HasPrefix(line, "FUNC ") {
 			address, size, name, ok := parseBreakpadFunction(line)
 			currentFunctionMatches = ok && size > 0 && relative >= address && relative-address < size
+			currentFunctionAddress = address
 			if currentFunctionMatches && (bestFunction.function == "" || address >= bestFunction.address) {
+				if bestFunction.function == "" || address > bestFunction.address {
+					inlineMatches = make(map[int]nativeInline)
+				}
 				bestFunction = nativeSymbol{function: name, address: address}
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "INLINE ") {
+			if currentFunctionMatches && currentFunctionAddress == bestFunction.address {
+				if inline, ok := parseBreakpadInline(line, relative); ok {
+					if inline.level >= maxNativeInlineDepth {
+						continue
+					}
+					previous, found := inlineMatches[inline.level]
+					if !found || inline.rangeSize < previous.rangeSize {
+						inlineMatches[inline.level] = inline
+					}
+				}
 			}
 			continue
 		}
@@ -699,7 +807,7 @@ func lookupBreakpadSymbol(reader io.Reader, relative uint64) nativeSymbol {
 			}
 			continue
 		}
-		if !currentFunctionMatches {
+		if !currentFunctionMatches || currentFunctionAddress != bestFunction.address {
 			continue
 		}
 		address, size, sourceLine, fileID, ok := parseBreakpadLine(line)
@@ -712,9 +820,58 @@ func lookupBreakpadSymbol(reader io.Reader, relative uint64) nativeSymbol {
 		}
 	}
 	if bestFunction.function != "" {
+		for level := 0; ; level++ {
+			inline, ok := inlineMatches[level]
+			if !ok {
+				break
+			}
+			inline.function = origins[inline.originID]
+			inline.filename = files[inline.fileID]
+			if inline.function == "" {
+				break
+			}
+			bestFunction.inlines = append(bestFunction.inlines, inline)
+		}
 		return bestFunction
 	}
 	return bestPublic
+}
+
+func parseBreakpadInlineOrigin(line string) (int, string, bool) {
+	fields := strings.SplitN(strings.TrimSpace(strings.TrimPrefix(line, "INLINE_ORIGIN ")), " ", 2)
+	if len(fields) != 2 {
+		return 0, "", false
+	}
+	id, err := strconv.Atoi(fields[0])
+	name := strings.TrimSpace(fields[1])
+	return id, name, err == nil && id >= 0 && name != ""
+}
+
+func parseBreakpadInline(line string, relative uint64) (nativeInline, bool) {
+	fields := strings.Fields(line)
+	if len(fields) < 7 || (len(fields)-5)%2 != 0 {
+		return nativeInline{}, false
+	}
+	level, levelErr := strconv.Atoi(fields[1])
+	callLine, lineErr := strconv.Atoi(fields[2])
+	fileID, fileErr := strconv.Atoi(fields[3])
+	originID, originErr := strconv.Atoi(fields[4])
+	if levelErr != nil || lineErr != nil || fileErr != nil || originErr != nil || level < 0 || callLine < 0 || fileID < 0 || originID < 0 {
+		return nativeInline{}, false
+	}
+	matchedAddress, matchedSize := uint64(0), ^uint64(0)
+	for index := 5; index+1 < len(fields); index += 2 {
+		address, addressErr := strconv.ParseUint(fields[index], 16, 64)
+		size, sizeErr := strconv.ParseUint(fields[index+1], 16, 64)
+		if addressErr == nil && sizeErr == nil && size > 0 && relative >= address && relative-address < size && size < matchedSize {
+			matchedAddress = address
+			matchedSize = size
+		}
+	}
+	if matchedSize == ^uint64(0) {
+		return nativeInline{}, false
+	}
+	return nativeInline{level: level, line: callLine, fileID: fileID, originID: originID, address: matchedAddress, rangeSize: matchedSize}, true
 }
 
 func parseBreakpadFunction(line string) (uint64, uint64, string, bool) {
