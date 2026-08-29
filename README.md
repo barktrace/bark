@@ -27,7 +27,7 @@ The current foundation includes:
 - scheduled HTTP uptime monitors with check and incident history;
 - webhook and Slack alert rules for new issues, regressions, and downtime;
 - SMTP email delivery, cron/metric/feedback triggers, conditions, and cooldowns;
-- cron check-ins, attachments, user feedback, interactive session replays, sampled-profile flamegraphs, and metric ingestion;
+- cron check-ins, attachments, user feedback, interactive session replays with dead/rage-click issues, sampled-profile flamegraphs, and metric ingestion;
 - source maps, JavaScript rewriting, ProGuard/R8 mappings with inline-call expansion, ELF/Mach-O/PE/PDB/Breakpad debug files, and reprocessing;
 - native minidump ingestion with bounded multi-thread x86/x86-64/ARM64 context parsing, Breakpad CFI, Windows `STACK WIN`, expression-aware ELF/Mach-O `.eh_frame`, and x86/x86-64/ARM64 Mach-O compact-unwind support;
 - release commits, deploy metadata, code mappings, and suspect commits;

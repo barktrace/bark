@@ -71,7 +71,7 @@ The DSN shown in the project setup page should always be copied verbatim.
 | Organization and project detail endpoints | Supported, including project DSN-key discovery |
 | Organization members and teams | Listing, team CRUD, team membership, project links, and project responses |
 | Issue and event detail endpoints | Supported, including latest/group events, status, priority, user/team assignment, bookmark, snooze, public sharing, and permanent discard updates |
-| Replay endpoints | Organization search/count/detail/selectors, project-scoped decoded recording segments, dead/rage-click classification, viewer history, issue correlation, and durable administrator deletion jobs |
+| Replay endpoints | Organization search/count/detail/selectors, project-scoped decoded recording segments, dead/rage-click issue creation, viewer history, issue correlation, and durable administrator deletion jobs |
 | Managed Sentry Relay | Registration, Ed25519 request authentication, v3 project configs, public-key lookup, and liveness |
 
 The compatibility checks currently exercise real `sentry-sdk` 2.21.0 and
@@ -110,8 +110,9 @@ symbolication resolves bounded function ranges, source lines, nested inline
 records, and `STACK CFI` records. Replay playback supports standard rrweb
 recordings, bounded session-wide segment assembly, indexed error/issue
 correlation, filtered organization search, and audited retention/deletion.
-Replay interaction classification uses bounded, documented heuristics; automatic
-creation of Sentry-style dead/rage-click issues is not yet complete. Relay support covers the managed forwarding path, not every Relay
+Replay interaction classification uses bounded, documented heuristics and
+creates deduplicated, release-aware issue events for normal triage and alerting.
+Relay support covers the managed forwarding path, not every Relay
 processing-mode service or private Sentry endpoint. Unknown envelope categories
 receive a successful response and an ingestion outcome so clients do not retry
 forever.

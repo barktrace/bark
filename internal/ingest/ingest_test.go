@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/andybalholm/brotli"
@@ -232,6 +233,95 @@ func TestStoresCheckInsReplaysProfilesAndMetrics(t *testing.T) {
 		if err := st.DB.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&got); err != nil || got != want {
 			t.Fatalf("%s count = %d, %v", table, got, err)
 		}
+	}
+}
+
+func TestReplayInteractionsCreateIdempotentEnrichedIssues(t *testing.T) {
+	st, project := testProject(t)
+	service := New(st, 20<<20)
+	if _, err := st.DB.Exec(`
+		INSERT INTO alert_rules(id, project_id, name, trigger, destination_type, destination_url) VALUES
+			('new-replay-issue', 'project', 'New Replay issues', 'new_issue', 'webhook', 'https://alerts.example.com/new'),
+			('replay-regression', 'project', 'Replay regressions', 'regression', 'webhook', 'https://alerts.example.com/regression');
+	`); err != nil {
+		t.Fatal(err)
+	}
+	const replayID = "34343434343434343434343434343434"
+	recording := []byte(`{"replay_id":"` + replayID + `","segment_id":0}` + "\n" + `[
+		{"type":2,"timestamp":1787997600000,"data":{"node":{"type":0,"id":1,"childNodes":[{"type":2,"id":7,"tagName":"button","attributes":{"id":"checkout","class":"primary"},"childNodes":[]},{"type":2,"id":8,"tagName":"a","attributes":{"class":"help"},"childNodes":[]}]}}},
+		{"type":3,"timestamp":1787997600200,"data":{"source":2,"type":2,"id":7}},
+		{"type":3,"timestamp":1787997600500,"data":{"source":2,"type":2,"id":7}},
+		{"type":3,"timestamp":1787997600900,"data":{"source":2,"type":2,"id":7}},
+		{"type":3,"timestamp":1787997601000,"data":{"source":0,"adds":[],"removes":[],"texts":[],"attributes":[]}},
+		{"type":3,"timestamp":1787997602000,"data":{"source":2,"type":2,"id":8}},
+		{"type":1,"timestamp":1787997610000,"data":{}}
+	]`)
+	// Recording and Replay event queue jobs may be claimed in either order.
+	if err := service.StoreReplayRecording(context.Background(), project, replayID, recording); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.StoreReplayEvent(context.Background(), project, []byte(`{"replay_id":"`+replayID+`","segment_id":0,"timestamp":"2026-08-29T10:05:00Z","replay_start_timestamp":"2026-08-29T10:00:00Z","environment":"production","release":"web@2.0","urls":["https://example.com/checkout"],"user":{"id":"customer-7"}}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.StoreReplayRecording(context.Background(), project, replayID, recording); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := st.DB.Query(`SELECT issue_type, issue_category, event_count, status FROM issues ORDER BY issue_type`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	types := make([]string, 0, 2)
+	for rows.Next() {
+		var issueType, category, status string
+		var count int
+		if err := rows.Scan(&issueType, &category, &count, &status); err != nil {
+			t.Fatal(err)
+		}
+		if category != "replay" || count != 1 || status != "unresolved" {
+			t.Fatalf("issue %s category=%s count=%d status=%s", issueType, category, count, status)
+		}
+		types = append(types, issueType)
+	}
+	if strings.Join(types, ",") != "dead_click,rage_click" {
+		t.Fatalf("Replay issue types = %v", types)
+	}
+	var events, occurrences int
+	_ = st.DB.QueryRow(`SELECT COUNT(*) FROM events WHERE environment = 'production' AND release_id = (SELECT id FROM releases WHERE version = 'web@2.0')`).Scan(&events)
+	_ = st.DB.QueryRow(`SELECT COUNT(*) FROM replay_issue_occurrences WHERE replay_id = ?`, replayID).Scan(&occurrences)
+	if events != 2 || occurrences != 2 {
+		t.Fatalf("synthetic events=%d occurrences=%d, want 2/2", events, occurrences)
+	}
+	var payload string
+	if err := st.DB.QueryRow(`SELECT CAST(payload AS TEXT) FROM events WHERE environment = 'production' ORDER BY event_id LIMIT 1`).Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(payload, `"replay_id":"`+replayID+`"`) || !strings.Contains(payload, `"url":"https://example.com/checkout"`) {
+		t.Fatalf("Replay issue event was not enriched: %s", payload)
+	}
+	var initialAlerts int
+	_ = st.DB.QueryRow(`SELECT COUNT(*) FROM alert_deliveries WHERE event_type = 'new_issue'`).Scan(&initialAlerts)
+	if initialAlerts != 2 {
+		t.Fatalf("new Replay issue alerts=%d, want 2", initialAlerts)
+	}
+	if _, err := st.DB.Exec(`UPDATE issues SET status = 'resolved' WHERE issue_type = 'rage_click'`); err != nil {
+		t.Fatal(err)
+	}
+	const secondReplayID = "45454545454545454545454545454545"
+	if err := service.StoreReplayEvent(context.Background(), project, []byte(`{"replay_id":"`+secondReplayID+`","segment_id":0,"timestamp":"2026-08-29T11:05:00Z","replay_start_timestamp":"2026-08-29T11:00:00Z","environment":"production","release":"web@2.0","urls":["https://example.com/checkout"]}`)); err != nil {
+		t.Fatal(err)
+	}
+	secondRecording := bytes.ReplaceAll(recording, []byte(replayID), []byte(secondReplayID))
+	if err := service.StoreReplayRecording(context.Background(), project, secondReplayID, secondRecording); err != nil {
+		t.Fatal(err)
+	}
+	var rageStatus string
+	var rageEvents, regressions int
+	_ = st.DB.QueryRow(`SELECT status, event_count FROM issues WHERE issue_type = 'rage_click'`).Scan(&rageStatus, &rageEvents)
+	_ = st.DB.QueryRow(`SELECT COUNT(*) FROM alert_deliveries WHERE event_type = 'regression'`).Scan(&regressions)
+	if rageStatus != "unresolved" || rageEvents != 2 || regressions != 1 {
+		t.Fatalf("rage regression status=%s events=%d alerts=%d", rageStatus, rageEvents, regressions)
 	}
 }
 

@@ -180,6 +180,7 @@ try {
     if (await page.getByText('E2EError: Browser workflow failed', { exact: true }).count()) break;
     await page.waitForTimeout(250);
   }
+  await page.getByText('Rage click on button#checkout.primary', { exact: true }).waitFor();
   await page.getByText('E2EError: Browser workflow failed', { exact: true }).click();
   await page.getByRole('heading', { name: 'E2EError', exact: true }).waitFor();
   await page.getByText('checkout@1.0.0', { exact: true }).waitFor();
@@ -198,6 +199,13 @@ try {
   const issueList = await page.request.get(`/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/issues/`);
   const sentryIssues = await issueList.json();
   if (!issueList.ok() || !sentryIssues[0]?.id) throw new Error('Sentry issue discovery failed');
+  const replayIssue = sentryIssues.find((item) => item.issueType === 'rage_click');
+  if (!replayIssue || replayIssue.issueCategory !== 'replay') throw new Error(`Sentry Replay issue discovery failed: ${JSON.stringify(sentryIssues)}`);
+  const replayIssueDetail = await page.request.get(`/api/0/issues/${encodeURIComponent(replayIssue.id)}/`);
+  if (!replayIssueDetail.ok() || (await replayIssueDetail.json()).issueType !== 'rage_click') throw new Error('Sentry Replay issue detail failed');
+  const replayIssueEvent = await page.request.get(`/api/0/issues/${encodeURIComponent(replayIssue.id)}/events/latest/`);
+  const replayIssueEventBody = await replayIssueEvent.json();
+  if (!replayIssueEvent.ok() || replayIssueEventBody.contexts?.replay?.replay_id !== replayID || replayIssueEventBody.contexts.replay.click_count !== 3) throw new Error(`Sentry Replay issue event failed: ${JSON.stringify(replayIssueEventBody)}`);
   const issueDetail = await page.request.get(`/api/0/issues/${encodeURIComponent(sentryIssues[0].id)}/`);
   if (!issueDetail.ok() || (await issueDetail.json()).shortId !== sentryIssues[0].shortId) throw new Error('Sentry issue detail endpoint failed');
   const latestEvent = await page.request.get(`/api/0/issues/${encodeURIComponent(sentryIssues[0].id)}/events/latest/`);
@@ -238,7 +246,7 @@ try {
   await page.getByRole('heading', { name: 'Error volume', exact: true }).waitFor();
   await page.locator('.widget-number').waitFor();
   const widgetValue = await page.locator('.widget-number').textContent();
-  if (!widgetValue?.trim().startsWith('1')) throw new Error(`unexpected dashboard widget value: ${widgetValue}`);
+  if (!widgetValue?.trim().startsWith('2')) throw new Error(`unexpected dashboard widget value after Replay issue creation: ${widgetValue}`);
 
   await page.getByRole('link', { name: 'Telemetry' }).click();
   await page.getByRole('heading', { name: 'Cron monitors' }).waitFor();
@@ -364,6 +372,8 @@ try {
     await page.waitForTimeout(500);
   }
   if (!deletionComplete) throw new Error('Replay deletion job did not complete');
+  const issuesAfterReplayDeletion = await (await page.request.get(`/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/issues/`)).json();
+  if (issuesAfterReplayDeletion.some((item) => item.issueType === 'rage_click')) throw new Error('Replay deletion retained its synthetic issue');
 
   await page.locator('#account-button').click();
   await page.getByRole('button', { name: 'Sign out' }).click();
@@ -372,7 +382,7 @@ try {
   if (me.status() !== 401) throw new Error(`logout left session active: /auth/me returned ${me.status()}`);
 
   if (browserErrors.length) throw new Error(browserErrors.join('\n'));
-  console.log('browser E2E passed: OIDC, ingestion, source-map symbolication, Sentry Replay interactions/deletion, Discover, dashboards, teams, profiles, telemetry, MCP, and logout');
+  console.log('browser E2E passed: OIDC, ingestion, source-map symbolication, Sentry Replay issues/interactions/deletion, Discover, dashboards, teams, profiles, telemetry, MCP, and logout');
 } finally {
   await browser.close();
 }

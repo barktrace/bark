@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/barktrace/bark/internal/replayissues"
 	"github.com/barktrace/bark/internal/store"
 )
 
@@ -275,6 +276,29 @@ func CleanupOrganization(ctx context.Context, db *sql.DB, organizationID string,
 	}
 	defer tx.Rollback()
 	for _, target := range selected {
+		if target.name == "replays" {
+			rows, err := tx.QueryContext(ctx, `SELECT DISTINCT project_id, replay_id FROM replays WHERE project_id IN (SELECT id FROM projects WHERE organization_id = ?) AND finished_at < ?`, organizationID, cutoffText)
+			if err != nil {
+				return result, err
+			}
+			byProject := make(map[string][]string)
+			for rows.Next() {
+				var projectID, replayID string
+				if err := rows.Scan(&projectID, &replayID); err != nil {
+					_ = rows.Close()
+					return result, err
+				}
+				byProject[projectID] = append(byProject[projectID], replayID)
+			}
+			if err := rows.Close(); err != nil {
+				return result, err
+			}
+			for projectID, replayIDs := range byProject {
+				if err := replayissues.DeleteSessions(ctx, tx, projectID, replayIDs); err != nil {
+					return result, err
+				}
+			}
+		}
 		execution, err := tx.ExecContext(ctx, target.deleteSQL, organizationID, cutoffText)
 		if err != nil {
 			return result, err

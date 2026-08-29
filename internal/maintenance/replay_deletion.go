@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+
+	"github.com/barktrace/bark/internal/replayissues"
 )
 
 const replayDeletionBatchSize = 500
@@ -108,6 +110,11 @@ func (s *Service) RunReplayDeletionJobs(ctx context.Context) {
 	deleteArguments = append(deleteArguments, projectID)
 	for _, replayID := range replayIDs {
 		deleteArguments = append(deleteArguments, replayID)
+	}
+	if err := replayissues.DeleteSessions(ctx, tx, projectID, replayIDs); err != nil {
+		_ = tx.Rollback()
+		s.failReplayDeletionJob(ctx, jobID, err.Error())
+		return
 	}
 	for _, table := range []string{"replay_views", "replay_clicks", "replay_error_links", "replays"} {
 		if _, err = tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE project_id = ? AND replay_id IN (`+marks+`)`, deleteArguments...); err != nil {

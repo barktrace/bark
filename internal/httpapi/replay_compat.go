@@ -13,6 +13,7 @@ import (
 
 	"github.com/barktrace/bark/internal/auth"
 	"github.com/barktrace/bark/internal/maintenance"
+	"github.com/barktrace/bark/internal/replayissues"
 	telemetryanalysis "github.com/barktrace/bark/internal/telemetry"
 )
 
@@ -708,12 +709,17 @@ func replayReleases(release string) []string {
 
 func (s *Server) replayCorrelations(ctx context.Context, projectID, replayID string) ([]string, []map[string]any, error) {
 	rows, err := s.store.DB.QueryContext(ctx, `
-		SELECT DISTINCT rel.event_id, i.rowid, i.id, i.title, i.status
-		FROM replay_error_links rel
-		LEFT JOIN events e ON e.project_id = rel.project_id AND e.event_id = rel.event_id
+		SELECT DISTINCT linked.event_id, linked.is_error, i.rowid, i.id, i.title, i.status
+		FROM (
+			SELECT event_id, 1 AS is_error FROM replay_error_links WHERE project_id = ? AND replay_id = ?
+			UNION ALL
+			SELECT e.event_id, 0 AS is_error FROM replay_issue_occurrences rio JOIN events e ON e.id = rio.event_id
+			WHERE rio.project_id = ? AND rio.replay_id = ?
+		) linked
+		LEFT JOIN events e ON e.project_id = ? AND e.event_id = linked.event_id
 		LEFT JOIN issues i ON i.id = e.issue_id
-		WHERE rel.project_id = ? AND rel.replay_id = ? ORDER BY rel.event_id
-	`, projectID, replayID)
+		ORDER BY linked.event_id
+	`, projectID, replayID, projectID, replayID, projectID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -723,12 +729,15 @@ func (s *Server) replayCorrelations(ctx context.Context, projectID, replayID str
 	seenIssues := make(map[string]struct{})
 	for rows.Next() {
 		var eventID string
+		var isError int
 		var legacyID sql.NullInt64
 		var issueID, title, status sql.NullString
-		if err := rows.Scan(&eventID, &legacyID, &issueID, &title, &status); err != nil {
+		if err := rows.Scan(&eventID, &isError, &legacyID, &issueID, &title, &status); err != nil {
 			return nil, nil, err
 		}
-		errorIDs = append(errorIDs, eventID)
+		if isError != 0 {
+			errorIDs = append(errorIDs, eventID)
+		}
 		if issueID.Valid {
 			if _, exists := seenIssues[issueID.String]; !exists {
 				seenIssues[issueID.String] = struct{}{}
@@ -774,6 +783,9 @@ func (s *Server) deleteReplaySession(w http.ResponseWriter, r *http.Request, pri
 	}
 	defer tx.Rollback()
 	_, err = tx.ExecContext(r.Context(), `INSERT INTO audit_logs(organization_id, project_id, actor_user_id, action, target_type, target_id) VALUES (?, ?, ?, 'delete_replay', 'replay', ?)`, organizationID, projectID, principal.UserID, replayID)
+	if err == nil {
+		err = replayissues.DeleteSessions(r.Context(), tx, projectID, []string{replayID})
+	}
 	if err == nil {
 		_, err = tx.ExecContext(r.Context(), `DELETE FROM replay_error_links WHERE project_id = ? AND replay_id = ?`, projectID, replayID)
 	}

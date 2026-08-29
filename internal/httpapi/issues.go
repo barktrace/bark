@@ -16,12 +16,12 @@ func (s *Server) issueDetail(w http.ResponseWriter, r *http.Request) {
 	principal, _ := auth.PrincipalFromContext(r.Context())
 	issueID := r.PathValue("issue_id")
 	var issue map[string]any
-	var projectID, title, status, level, priority, firstSeen, lastSeen, firstRelease, lastRelease string
+	var projectID, title, status, level, issueType, issueCategory, priority, firstSeen, lastSeen, firstRelease, lastRelease string
 	var assigneeID, assigneeName, assigneeTeamID, assigneeTeamName, snoozedUntil sql.NullString
 	var count int64
 	var bookmarked bool
 	err := s.store.DB.QueryRowContext(r.Context(), `
-		SELECT i.project_id, i.title, i.status, i.level, i.priority, i.event_count,
+		SELECT i.project_id, i.title, i.status, i.level, i.issue_type, i.issue_category, i.priority, i.event_count,
 		       i.first_seen_at, i.last_seen_at, COALESCE(fr.version, ''), COALESCE(lr.version, ''),
 		       i.assignee_user_id, u.name, i.assignee_team_id, at.name, i.bookmarked, i.snoozed_until
 		FROM issues i
@@ -30,7 +30,7 @@ func (s *Server) issueDetail(w http.ResponseWriter, r *http.Request) {
 		LEFT JOIN users u ON u.id = i.assignee_user_id
 		LEFT JOIN teams at ON at.id = i.assignee_team_id
 		WHERE i.id = ?
-	`, issueID).Scan(&projectID, &title, &status, &level, &priority, &count, &firstSeen, &lastSeen, &firstRelease, &lastRelease, &assigneeID, &assigneeName, &assigneeTeamID, &assigneeTeamName, &bookmarked, &snoozedUntil)
+	`, issueID).Scan(&projectID, &title, &status, &level, &issueType, &issueCategory, &priority, &count, &firstSeen, &lastSeen, &firstRelease, &lastRelease, &assigneeID, &assigneeName, &assigneeTeamID, &assigneeTeamName, &bookmarked, &snoozedUntil)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "issue not found")
 		return
@@ -39,7 +39,7 @@ func (s *Server) issueDetail(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "issue access required")
 		return
 	}
-	issue = map[string]any{"id": issueID, "project_id": projectID, "title": title, "status": status, "level": level, "priority": priority, "event_count": count, "first_seen_at": firstSeen, "last_seen_at": lastSeen, "first_release": firstRelease, "last_release": lastRelease, "assignee_user_id": nullString(assigneeID), "assignee_name": nullString(assigneeName), "assignee_team_id": nullString(assigneeTeamID), "assignee_team_name": nullString(assigneeTeamName), "bookmarked": bookmarked, "snoozed_until": nullString(snoozedUntil)}
+	issue = map[string]any{"id": issueID, "project_id": projectID, "title": title, "status": status, "level": level, "issue_type": issueType, "issue_category": issueCategory, "priority": priority, "event_count": count, "first_seen_at": firstSeen, "last_seen_at": lastSeen, "first_release": firstRelease, "last_release": lastRelease, "assignee_user_id": nullString(assigneeID), "assignee_name": nullString(assigneeName), "assignee_team_id": nullString(assigneeTeamID), "assignee_team_name": nullString(assigneeTeamName), "bookmarked": bookmarked, "snoozed_until": nullString(snoozedUntil)}
 
 	eventRows, err := s.store.DB.QueryContext(r.Context(), `
 		SELECT e.id, e.event_id, e.timestamp, e.environment, e.platform, e.level,

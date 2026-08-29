@@ -22,7 +22,7 @@ import (
 
 const (
 	protocolVersion = "2025-11-25"
-	serverVersion   = "0.31.0"
+	serverVersion   = "0.32.0"
 )
 
 var supportedProtocolVersions = map[string]bool{
@@ -657,7 +657,7 @@ func (s *Service) listIssues(ctx context.Context, projectID, status, query strin
 		return nil, errors.New("status must be all, unresolved, resolved, or ignored")
 	}
 	statement := `
-		SELECT i.id, i.title, i.status, i.level, i.event_count, i.first_seen_at, i.last_seen_at,
+		SELECT i.id, i.title, i.status, i.level, i.issue_type, i.issue_category, i.event_count, i.first_seen_at, i.last_seen_at,
 		       COALESCE(fr.version, ''), COALESCE(lr.version, '')
 		FROM issues i
 		LEFT JOIN releases fr ON fr.id = i.first_release_id
@@ -681,34 +681,34 @@ func (s *Service) listIssues(ctx context.Context, projectID, status, query strin
 	defer rows.Close()
 	items := make([]map[string]any, 0)
 	for rows.Next() {
-		var id, title, issueStatus, level, firstSeen, lastSeen, firstRelease, lastRelease string
+		var id, title, issueStatus, level, issueType, issueCategory, firstSeen, lastSeen, firstRelease, lastRelease string
 		var count int64
-		if err := rows.Scan(&id, &title, &issueStatus, &level, &count, &firstSeen, &lastSeen, &firstRelease, &lastRelease); err != nil {
+		if err := rows.Scan(&id, &title, &issueStatus, &level, &issueType, &issueCategory, &count, &firstSeen, &lastSeen, &firstRelease, &lastRelease); err != nil {
 			return nil, err
 		}
-		items = append(items, map[string]any{"id": id, "title": title, "status": issueStatus, "level": level, "event_count": count, "first_seen_at": firstSeen, "last_seen_at": lastSeen, "first_release": firstRelease, "last_release": lastRelease})
+		items = append(items, map[string]any{"id": id, "title": title, "status": issueStatus, "level": level, "issue_type": issueType, "issue_category": issueCategory, "event_count": count, "first_seen_at": firstSeen, "last_seen_at": lastSeen, "first_release": firstRelease, "last_release": lastRelease})
 	}
 	return items, rows.Err()
 }
 
 func (s *Service) getIssue(ctx context.Context, issueID string) (any, error) {
-	var id, projectID, projectSlug, title, status, level, fingerprint, firstSeen, lastSeen, firstRelease, lastRelease string
+	var id, projectID, projectSlug, title, status, level, issueType, issueCategory, fingerprint, firstSeen, lastSeen, firstRelease, lastRelease string
 	var count int64
 	err := s.store.DB.QueryRowContext(ctx, `
-		SELECT i.id, i.project_id, p.slug, i.title, i.status, i.level, i.fingerprint, i.event_count,
+		SELECT i.id, i.project_id, p.slug, i.title, i.status, i.level, i.issue_type, i.issue_category, i.fingerprint, i.event_count,
 		       i.first_seen_at, i.last_seen_at, COALESCE(fr.version, ''), COALESCE(lr.version, '')
 		FROM issues i JOIN projects p ON p.id = i.project_id
 		LEFT JOIN releases fr ON fr.id = i.first_release_id
 		LEFT JOIN releases lr ON lr.id = i.last_release_id
 		WHERE i.id = ?
-	`, issueID).Scan(&id, &projectID, &projectSlug, &title, &status, &level, &fingerprint, &count, &firstSeen, &lastSeen, &firstRelease, &lastRelease)
+	`, issueID).Scan(&id, &projectID, &projectSlug, &title, &status, &level, &issueType, &issueCategory, &fingerprint, &count, &firstSeen, &lastSeen, &firstRelease, &lastRelease)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, errors.New("issue not found")
 	}
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"id": id, "project_id": projectID, "project_slug": projectSlug, "title": title, "status": status, "level": level, "fingerprint": fingerprint, "event_count": count, "first_seen_at": firstSeen, "last_seen_at": lastSeen, "first_release": firstRelease, "last_release": lastRelease}, nil
+	return map[string]any{"id": id, "project_id": projectID, "project_slug": projectSlug, "title": title, "status": status, "level": level, "issue_type": issueType, "issue_category": issueCategory, "fingerprint": fingerprint, "event_count": count, "first_seen_at": firstSeen, "last_seen_at": lastSeen, "first_release": firstRelease, "last_release": lastRelease}, nil
 }
 
 func (s *Service) updateIssueStatus(ctx context.Context, issueID, status string) (any, error) {

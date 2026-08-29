@@ -16,6 +16,7 @@ import (
 	"github.com/barktrace/bark/internal/blobstore"
 	"github.com/barktrace/bark/internal/cronmon"
 	"github.com/barktrace/bark/internal/quota"
+	"github.com/barktrace/bark/internal/replayissues"
 	telemetryanalysis "github.com/barktrace/bark/internal/telemetry"
 	"github.com/google/uuid"
 )
@@ -226,6 +227,11 @@ func (s *Service) StoreReplayEvent(ctx context.Context, project Project, raw []b
 			return err
 		}
 	}
+	if err := replayissues.RefreshSegmentMetadata(ctx, tx, replayissues.Project{ID: project.ID, OrganizationID: project.OrganizationID}, replayissues.Segment{
+		ReplayID: replay.ReplayID, SegmentID: replay.SegmentID, Environment: replay.Environment, Release: replay.Release, UserID: userID, URL: urlValue,
+	}, finished.Format(time.RFC3339Nano)); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -280,7 +286,23 @@ func (s *Service) StoreReplayRecording(ctx context.Context, project Project, env
 			return err
 		}
 	}
-	return tx.Commit()
+	var environment, release, userID, targetURL string
+	if err := tx.QueryRowContext(ctx, `SELECT environment, release, user_id, url FROM replays WHERE project_id = ? AND replay_id = ? AND segment_id = ?`, project.ID, replayID, header.SegmentID).Scan(&environment, &release, &userID, &targetURL); err != nil {
+		return err
+	}
+	notifications, err := replayissues.SyncSegment(ctx, tx, replayissues.Project{ID: project.ID, OrganizationID: project.OrganizationID}, replayissues.Segment{
+		ReplayID: replayID, SegmentID: header.SegmentID, Environment: environment, Release: release, UserID: userID, URL: targetURL,
+	}, interactions)
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	for _, notification := range notifications {
+		_ = alerts.Queue(ctx, s.store.DB, project.ID, notification.Trigger, notification.Payload)
+	}
+	return nil
 }
 
 func (s *Service) StoreProfile(ctx context.Context, project Project, raw []byte) error {

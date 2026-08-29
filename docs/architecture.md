@@ -68,7 +68,9 @@ event payload.
 
 Transactions, logs, check-ins, replays, profiles, metrics, feedback, and
 attachments are normalized into compact indexed tables or content-addressed
-blobs. Background ingestion, uptime, alert delivery, cron evaluation, Replay
+blobs. Classified Replay interactions create idempotent synthetic events in the
+shared issue lifecycle, with occurrence links ensuring Replay deletion and
+retention also repair their issue groups. Background ingestion, uptime, alert delivery, cron evaluation, Replay
 batch deletion, and retention work uses database leases or atomic job leases so
 multiple processes do not duplicate scheduled work. Public HTTP/HTTPS targets are allowed by default;
 loopback, link-local, and private IPs are rejected before creation and again at

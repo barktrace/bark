@@ -445,7 +445,7 @@ func (s *Server) issues(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, err := s.store.DB.QueryContext(r.Context(), `
-		SELECT i.id, i.title, i.status, i.level, i.event_count, i.first_seen_at, i.last_seen_at,
+		SELECT i.id, i.title, i.status, i.level, i.issue_type, i.issue_category, i.event_count, i.first_seen_at, i.last_seen_at,
 		       COALESCE(fr.version, ''), COALESCE(lr.version, ''), i.priority,
 		       COALESCE(i.assignee_user_id, ''), COALESCE(u.name, ''),
 		       COALESCE(i.assignee_team_id, ''), COALESCE(at.name, ''), i.bookmarked,
@@ -464,14 +464,14 @@ func (s *Server) issues(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	items := make([]map[string]any, 0)
 	for rows.Next() {
-		var id, title, status, level, firstSeen, lastSeen, firstRelease, lastRelease, priority, assigneeID, assigneeName, assigneeTeamID, assigneeTeamName, snoozedUntil string
+		var id, title, status, level, issueType, issueCategory, firstSeen, lastSeen, firstRelease, lastRelease, priority, assigneeID, assigneeName, assigneeTeamID, assigneeTeamName, snoozedUntil string
 		var count int64
 		var bookmarked bool
-		if err := rows.Scan(&id, &title, &status, &level, &count, &firstSeen, &lastSeen, &firstRelease, &lastRelease, &priority, &assigneeID, &assigneeName, &assigneeTeamID, &assigneeTeamName, &bookmarked, &snoozedUntil); err != nil {
+		if err := rows.Scan(&id, &title, &status, &level, &issueType, &issueCategory, &count, &firstSeen, &lastSeen, &firstRelease, &lastRelease, &priority, &assigneeID, &assigneeName, &assigneeTeamID, &assigneeTeamName, &bookmarked, &snoozedUntil); err != nil {
 			writeError(w, http.StatusInternalServerError, "could not list issues")
 			return
 		}
-		items = append(items, map[string]any{"id": id, "title": title, "status": status, "level": level, "event_count": count, "first_seen_at": firstSeen, "last_seen_at": lastSeen, "first_release": firstRelease, "last_release": lastRelease, "priority": priority, "assignee_user_id": assigneeID, "assignee_name": assigneeName, "assignee_team_id": assigneeTeamID, "assignee_team_name": assigneeTeamName, "bookmarked": bookmarked, "snoozed_until": snoozedUntil})
+		items = append(items, map[string]any{"id": id, "title": title, "status": status, "level": level, "issue_type": issueType, "issue_category": issueCategory, "event_count": count, "first_seen_at": firstSeen, "last_seen_at": lastSeen, "first_release": firstRelease, "last_release": lastRelease, "priority": priority, "assignee_user_id": assigneeID, "assignee_name": assigneeName, "assignee_team_id": assigneeTeamID, "assignee_team_name": assigneeTeamName, "bookmarked": bookmarked, "snoozed_until": snoozedUntil})
 	}
 	writeJSON(w, http.StatusOK, items)
 }

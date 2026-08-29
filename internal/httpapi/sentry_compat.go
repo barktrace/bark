@@ -414,7 +414,7 @@ func (s *Server) sentryProjectIssues(w http.ResponseWriter, r *http.Request) {
 	}
 	query := strings.TrimSpace(r.URL.Query().Get("query"))
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
-	rows, err := s.store.DB.QueryContext(r.Context(), `SELECT rowid, title, last_seen_at, status, level FROM issues WHERE project_id = ? AND (? = '' OR title LIKE '%' || ? || '%') AND (? = '' OR status = ?) ORDER BY last_seen_at DESC LIMIT 100`, projectID, query, query, status, status)
+	rows, err := s.store.DB.QueryContext(r.Context(), `SELECT rowid, title, last_seen_at, status, level, issue_type, issue_category FROM issues WHERE project_id = ? AND (? = '' OR title LIKE '%' || ? || '%' OR issue_type LIKE '%' || ? || '%') AND (? = '' OR status = ?) ORDER BY last_seen_at DESC LIMIT 100`, projectID, query, query, query, status, status)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not list issues")
 		return
@@ -423,9 +423,9 @@ func (s *Server) sentryProjectIssues(w http.ResponseWriter, r *http.Request) {
 	items := make([]map[string]any, 0)
 	for rows.Next() {
 		var id int64
-		var title, lastSeen, issueStatus, level string
-		if rows.Scan(&id, &title, &lastSeen, &issueStatus, &level) == nil {
-			items = append(items, map[string]any{"id": strconv.FormatInt(id, 10), "shortId": strings.ToUpper(r.PathValue("project_slug")) + "-" + strconv.FormatInt(id, 10), "title": title, "lastSeen": normalizeAPITime(lastSeen), "status": issueStatus, "level": level})
+		var title, lastSeen, issueStatus, level, issueType, issueCategory string
+		if rows.Scan(&id, &title, &lastSeen, &issueStatus, &level, &issueType, &issueCategory) == nil {
+			items = append(items, map[string]any{"id": strconv.FormatInt(id, 10), "shortId": strings.ToUpper(r.PathValue("project_slug")) + "-" + strconv.FormatInt(id, 10), "title": title, "lastSeen": normalizeAPITime(lastSeen), "status": issueStatus, "level": level, "issueType": issueType, "issueCategory": issueCategory})
 		}
 	}
 	writeJSON(w, http.StatusOK, items)

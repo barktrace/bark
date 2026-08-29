@@ -94,7 +94,12 @@ multi-node lease, and resume after restart. Click targets are resolved from
 rrweb snapshots and mutations; three same-node clicks within one second are
 classified as rage clicks, while clicks followed by seven seconds without a DOM
 mutation or navigation are classified as dead clicks. Form values are never
-stored in the selector index.
+stored in the selector index. Each interaction type and selector forms a
+deduplicated Replay issue. A Replay segment contributes one synthetic issue
+event containing its selector, count, environment, release, URL, and Replay ID;
+reingestion is idempotent, resolved groups reopen as regressions, and normal
+issue alerts, assignment, snoozing, and resolution workflows apply. Removing a
+Replay also removes its synthetic events and repairs or removes affected groups.
 
 ## Profiling
 

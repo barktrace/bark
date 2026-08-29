@@ -28,12 +28,38 @@ func TestSentryReplaySearchCorrelationSegmentsAndDelete(t *testing.T) {
 	if err := service.StoreReplayRecording(context.Background(), project, replayID, []byte(`{"replay_id":"`+replayID+`","segment_id":0}`+"\n"+`[{"type":2,"timestamp":1787997600000,"data":{"node":{"type":0,"id":1,"childNodes":[{"type":2,"id":42,"tagName":"button","attributes":{"id":"checkout","class":"primary"},"childNodes":[]}]}}},{"type":3,"timestamp":1787997600200,"data":{"source":2,"type":2,"id":42}},{"type":3,"timestamp":1787997600500,"data":{"source":2,"type":2,"id":42}},{"type":3,"timestamp":1787997600900,"data":{"source":2,"type":2,"id":42}},{"type":3,"timestamp":1787997601000,"data":{"source":0,"adds":[],"removes":[],"texts":[],"attributes":[]}}]`)); err != nil {
 		t.Fatal(err)
 	}
+	var replayIssueID, replayIssueType, replayIssueCategory string
+	var replayIssueEvents int
+	if err := server.store.DB.QueryRow(`SELECT id, issue_type, issue_category, event_count FROM issues WHERE issue_type = 'rage_click'`).Scan(&replayIssueID, &replayIssueType, &replayIssueCategory, &replayIssueEvents); err != nil {
+		t.Fatal(err)
+	}
+	if replayIssueType != "rage_click" || replayIssueCategory != "replay" || replayIssueEvents != 1 {
+		t.Fatalf("Replay issue type=%s category=%s events=%d", replayIssueType, replayIssueCategory, replayIssueEvents)
+	}
+	nativeIssue := principalRequest(t, principal, http.MethodGet, "/issues/"+replayIssueID, "")
+	nativeIssue.SetPathValue("issue_id", replayIssueID)
+	response := httptest.NewRecorder()
+	server.issueDetail(response, nativeIssue)
+	if response.Code != http.StatusOK || !containsAll(response.Body.String(), `"issue_type":"rage_click"`, `"issue_category":"replay"`, `"replay_id":"`+replayID+`"`) {
+		t.Fatalf("native Replay issue status=%d body=%s", response.Code, response.Body.String())
+	}
+	var replayLegacyIssueID int64
+	if err := server.store.DB.QueryRow(`SELECT rowid FROM issues WHERE id = ?`, replayIssueID).Scan(&replayLegacyIssueID); err != nil {
+		t.Fatal(err)
+	}
+	sentryIssue := principalRequest(t, principal, http.MethodGet, "/api/0/issues/"+strconv.FormatInt(replayLegacyIssueID, 10)+"/", "")
+	sentryIssue.SetPathValue("issue_id", strconv.FormatInt(replayLegacyIssueID, 10))
+	response = httptest.NewRecorder()
+	server.sentryIssueDetail(response, sentryIssue)
+	if response.Code != http.StatusOK || !containsAll(response.Body.String(), `"issueType":"rage_click"`, `"issueCategory":"replay"`) {
+		t.Fatalf("Sentry Replay issue status=%d body=%s", response.Code, response.Body.String())
+	}
 	var legacyIssueID int64
 	if err := server.store.DB.QueryRow(`SELECT rowid FROM issues WHERE id = 'issue'`).Scan(&legacyIssueID); err != nil {
 		t.Fatal(err)
 	}
 	native := principalRequest(t, principal, http.MethodGet, "/replays?project_id=project&environment=production&q=checkout&has_error=true&issue_id="+strconv.FormatInt(legacyIssueID, 10), "")
-	response := httptest.NewRecorder()
+	response = httptest.NewRecorder()
 	server.replays(response, native)
 	if response.Code != http.StatusOK || !containsAll(response.Body.String(), `"replay_id":"`+replayID+`"`, `"environment":"production"`, `"error_count":1`) {
 		t.Fatalf("native replay search status=%d body=%s", response.Code, response.Body.String())
@@ -43,7 +69,7 @@ func TestSentryReplaySearchCorrelationSegmentsAndDelete(t *testing.T) {
 	request.SetPathValue("org_slug", "org")
 	response = httptest.NewRecorder()
 	server.sentryOrganizationReplays(response, request)
-	if response.Code != http.StatusOK || !containsAll(response.Body.String(), `"replayId":"`+replayID+`"`, `"title":"Boom"`, `"error_ids":["`+eventID+`"]`, `"count_segments":1`, `"hasRecording":true`) {
+	if response.Code != http.StatusOK || !containsAll(response.Body.String(), `"replayId":"`+replayID+`"`, `"title":"Boom"`, `"title":"Rage click on button#checkout.primary"`, `"error_ids":["`+eventID+`"]`, `"count_segments":1`, `"hasRecording":true`) {
 		t.Fatalf("replay search status=%d body=%s", response.Code, response.Body.String())
 	}
 
@@ -128,6 +154,13 @@ func TestSentryReplaySearchCorrelationSegmentsAndDelete(t *testing.T) {
 			t.Fatalf("%s count=%d want=%d err=%v", table, got, want, err)
 		}
 	}
+	var remainingEvents, remainingIssues, occurrences int
+	_ = server.store.DB.QueryRow(`SELECT COUNT(*) FROM events`).Scan(&remainingEvents)
+	_ = server.store.DB.QueryRow(`SELECT COUNT(*) FROM issues`).Scan(&remainingIssues)
+	_ = server.store.DB.QueryRow(`SELECT COUNT(*) FROM replay_issue_occurrences`).Scan(&occurrences)
+	if remainingEvents != 1 || remainingIssues != 1 || occurrences != 0 {
+		t.Fatalf("after Replay delete events=%d issues=%d occurrences=%d", remainingEvents, remainingIssues, occurrences)
+	}
 	var audits int
 	if err := server.store.DB.QueryRow(`SELECT COUNT(*) FROM audit_logs WHERE action = 'delete_replay' AND target_id = ?`, replayID).Scan(&audits); err != nil || audits != 1 {
 		t.Fatalf("delete replay audits=%d err=%v", audits, err)
@@ -154,6 +187,15 @@ func TestSentryReplayDeletionJobIsDurableAndFiltered(t *testing.T) {
 		INSERT INTO replay_clicks(project_id, replay_id, segment_id, sequence, node_id, timestamp, dom_element, element, is_dead) VALUES
 			('project', '11111111111111111111111111111111', 0, 0, 1, '2026-08-29T10:01:00Z', 'button.production', '{}', 1),
 			('project', '22222222222222222222222222222222', 0, 0, 2, '2026-08-29T10:01:00Z', 'button.staging', '{}', 1);
+		INSERT INTO issues(id, project_id, fingerprint, title, level, first_seen_at, last_seen_at, issue_type, issue_category) VALUES
+			('production-replay-issue', 'project', 'production-replay-fingerprint', 'Dead click production', 'warning', '2026-08-29T10:01:00Z', '2026-08-29T10:01:00Z', 'dead_click', 'replay'),
+			('staging-replay-issue', 'project', 'staging-replay-fingerprint', 'Dead click staging', 'warning', '2026-08-29T10:01:00Z', '2026-08-29T10:01:00Z', 'dead_click', 'replay');
+		INSERT INTO events(id, event_id, project_id, issue_id, environment, level, timestamp, payload) VALUES
+			('production-replay-event', '33333333333333333333333333333333', 'project', 'production-replay-issue', 'production', 'warning', '2026-08-29T10:01:00Z', '{}'),
+			('staging-replay-event', '44444444444444444444444444444444', 'project', 'staging-replay-issue', 'staging', 'warning', '2026-08-29T10:01:00Z', '{}');
+		INSERT INTO replay_issue_occurrences(project_id, replay_id, segment_id, issue_type, dom_element, timestamp, issue_id, event_id) VALUES
+			('project', '11111111111111111111111111111111', 0, 'dead_click', 'button.production', '2026-08-29T10:01:00Z', 'production-replay-issue', 'production-replay-event'),
+			('project', '22222222222222222222222222222222', 0, 'dead_click', 'button.staging', '2026-08-29T10:01:00Z', 'staging-replay-issue', 'staging-replay-event');
 	`, principal.UserID, principal.UserID); err != nil {
 		t.Fatal(err)
 	}
@@ -189,13 +231,19 @@ func TestSentryReplayDeletionJobIsDurableAndFiltered(t *testing.T) {
 	if production != 0 || staging != 1 {
 		t.Fatalf("filtered replay counts production=%d staging=%d", production, staging)
 	}
-	for _, table := range []string{"replay_views", "replay_clicks"} {
+	for _, table := range []string{"replay_views", "replay_clicks", "replay_issue_occurrences"} {
 		var removed, retained int
 		_ = server.store.DB.QueryRow(`SELECT COUNT(*) FROM ` + table + ` WHERE replay_id = '11111111111111111111111111111111'`).Scan(&removed)
 		_ = server.store.DB.QueryRow(`SELECT COUNT(*) FROM ` + table + ` WHERE replay_id = '22222222222222222222222222222222'`).Scan(&retained)
 		if removed != 0 || retained != 1 {
 			t.Fatalf("%s filtered rows removed=%d retained=%d", table, removed, retained)
 		}
+	}
+	var removedIssue, retainedIssue int
+	_ = server.store.DB.QueryRow(`SELECT COUNT(*) FROM issues WHERE id = 'production-replay-issue'`).Scan(&removedIssue)
+	_ = server.store.DB.QueryRow(`SELECT COUNT(*) FROM issues WHERE id = 'staging-replay-issue'`).Scan(&retainedIssue)
+	if removedIssue != 0 || retainedIssue != 1 {
+		t.Fatalf("filtered Replay issues removed=%d retained=%d", removedIssue, retainedIssue)
 	}
 	var audits int
 	_ = server.store.DB.QueryRow(`SELECT COUNT(*) FROM audit_logs WHERE action = 'create_replay_deletion_job'`).Scan(&audits)

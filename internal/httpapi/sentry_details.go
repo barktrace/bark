@@ -27,6 +27,8 @@ type sentryIssueRecord struct {
 	Title            string
 	Status           string
 	Level            string
+	IssueType        string
+	IssueCategory    string
 	Priority         string
 	EventCount       int64
 	FirstSeen        string
@@ -333,7 +335,7 @@ func (s *Server) loadSentryIssueByShare(r *http.Request, shareID string) (sentry
 
 const sentryIssueSelect = `
 		SELECT i.rowid, i.id, i.project_id, p.sentry_id, p.slug, p.name, COALESCE(p.platform, ''),
-		       o.id, o.slug, i.fingerprint, i.title, i.status, i.level, i.priority, i.event_count,
+		       o.id, o.slug, i.fingerprint, i.title, i.status, i.level, i.issue_type, i.issue_category, i.priority, i.event_count,
 		       i.first_seen_at, i.last_seen_at, i.assignee_user_id, u.name, u.email,
 		       i.assignee_team_id, at.slug, at.name, i.bookmarked, i.snoozed_until, i.share_id
 		FROM issues i
@@ -346,7 +348,7 @@ func sentryIssueScanTargets(issue *sentryIssueRecord) []any {
 	return []any{
 		&issue.LegacyID, &issue.ID, &issue.ProjectID, &issue.SentryProject, &issue.ProjectSlug,
 		&issue.ProjectName, &issue.ProjectPlatform, &issue.OrganizationID, &issue.OrganizationSlug,
-		&issue.Fingerprint, &issue.Title, &issue.Status, &issue.Level, &issue.Priority, &issue.EventCount,
+		&issue.Fingerprint, &issue.Title, &issue.Status, &issue.Level, &issue.IssueType, &issue.IssueCategory, &issue.Priority, &issue.EventCount,
 		&issue.FirstSeen, &issue.LastSeen, &issue.AssigneeID, &issue.AssigneeName,
 		&issue.AssigneeEmail, &issue.AssigneeTeamID, &issue.AssigneeTeamSlug, &issue.AssigneeTeamName,
 		&issue.Bookmarked, &issue.SnoozedUntil, &issue.ShareID,
@@ -378,8 +380,8 @@ func (s *Server) sentryIssueResponse(issue sentryIssueRecord) map[string]any {
 		},
 		"type": "error", "metadata": map[string]string{"title": issue.Title}, "numComments": 0,
 		"assignedTo": assignedTo, "isBookmarked": issue.Bookmarked, "isSubscribed": true,
-		"subscriptionDetails": nil, "hasSeen": false, "annotations": []any{}, "issueType": "error",
-		"issueCategory": "error", "priority": issue.Priority, "priorityLockedAt": nil,
+		"subscriptionDetails": nil, "hasSeen": false, "annotations": []any{}, "issueType": issue.IssueType,
+		"issueCategory": issue.IssueCategory, "priority": issue.Priority, "priorityLockedAt": nil,
 		"count": strconv.FormatInt(issue.EventCount, 10), "userCount": 0,
 		"firstSeen": normalizeAPITime(issue.FirstSeen), "lastSeen": normalizeAPITime(issue.LastSeen),
 	}
