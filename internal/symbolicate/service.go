@@ -281,6 +281,9 @@ func symbolicateNativeFrame(st *store.Store, artifacts []artifact, payload map[s
 			matched = lookupPEFrame(file, address, imageBase)
 		}
 		if matched.function == "" && matched.filename == "" {
+			matched = lookupPDBFrame(file, address, imageBase)
+		}
+		if matched.function == "" && matched.filename == "" {
 			_, _ = file.Seek(0, io.SeekStart)
 			matched = lookupBreakpadSymbol(file, address-imageBase)
 		}
