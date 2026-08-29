@@ -22,6 +22,15 @@ SENTRY_CLI_BIN=/path/to/sentry-cli \
   go test -count=1 -run TestSentryCLIWorkflow -v ./internal/httpapi
 ```
 
+The standalone PDB parser has an opt-in fixture check for compiler-produced
+Microsoft PDB 7 files. It verifies both public/procedure symbols and CodeView
+C13 source locations:
+
+```sh
+BARKTRACE_PDB_FIXTURE=/path/to/application.pdb \
+  go test -count=1 -run TestRealPDBFixture -v ./internal/symbolicate
+```
+
 The replicated SQLite integration test downloads a checksum-verified, pinned
 libSQL server and proves concurrent Barktrace replicas can migrate and share
 metadata:

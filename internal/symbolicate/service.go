@@ -33,6 +33,11 @@ type cachedProguardMap struct {
 	err   error
 }
 
+type cachedPDBSymbols struct {
+	value *pdbSymbols
+	err   error
+}
+
 const maxDWARFBytes uint64 = 32 << 20
 
 func ProcessEvent(ctx context.Context, st *store.Store, projectID, releaseID string, raw []byte) ([]byte, bool, error) {
@@ -50,9 +55,10 @@ func ProcessEvent(ctx context.Context, st *store.Store, projectID, releaseID str
 	changed := false
 	sourceMaps := make(map[string]cachedSourceMap)
 	proguardMaps := make(map[string]cachedProguardMap)
+	pdbFiles := make(map[string]cachedPDBSymbols)
 	dist := stringValue(payload["dist"])
 	for _, frame := range eventFrames(payload) {
-		if symbolicateJavaScriptFrame(st, artifacts, payload, dist, frame, sourceMaps) || symbolicateProguardFrame(st, artifacts, payload, frame, proguardMaps) || symbolicateNativeFrame(st, artifacts, payload, frame) {
+		if symbolicateJavaScriptFrame(st, artifacts, payload, dist, frame, sourceMaps) || symbolicateProguardFrame(st, artifacts, payload, frame, proguardMaps) || symbolicateNativeFrame(st, artifacts, payload, frame, pdbFiles) {
 			changed = true
 		}
 	}
@@ -259,7 +265,7 @@ func preserveOriginal(frame map[string]any) {
 	}
 }
 
-func symbolicateNativeFrame(st *store.Store, artifacts []artifact, payload map[string]any, frame map[string]any) bool {
+func symbolicateNativeFrame(st *store.Store, artifacts []artifact, payload map[string]any, frame map[string]any, pdbCache map[string]cachedPDBSymbols) bool {
 	address, ok := parseAddress(frame["instruction_addr"])
 	if !ok {
 		return false
@@ -281,7 +287,14 @@ func symbolicateNativeFrame(st *store.Store, artifacts []artifact, payload map[s
 			matched = lookupPEFrame(file, address, imageBase)
 		}
 		if matched.function == "" && matched.filename == "" {
-			matched = lookupPDBFrame(file, address, imageBase)
+			cached, found := pdbCache[item.storageKey]
+			if !found {
+				cached.value, cached.err = parsePDBSymbols(file)
+				pdbCache[item.storageKey] = cached
+			}
+			if cached.err == nil {
+				matched = lookupPDBSymbols(cached.value, address, imageBase)
+			}
 		}
 		if matched.function == "" && matched.filename == "" {
 			_, _ = file.Seek(0, io.SeekStart)
