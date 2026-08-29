@@ -748,6 +748,8 @@ func machoArchMatches(expected, actual string) bool {
 		switch value {
 		case "x8664":
 			return "amd64"
+		case "386", "i386":
+			return "x86"
 		case "aarch64":
 			return "arm64"
 		default:

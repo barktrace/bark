@@ -17,6 +17,9 @@ const (
 	compactUnwindX8664RBPFrame       = 0x01000000
 	compactUnwindX8664StackImmediate = 0x02000000
 	compactUnwindX8664StackIndirect  = 0x03000000
+	compactUnwindX86EBPFrame         = 0x01000000
+	compactUnwindX86StackImmediate   = 0x02000000
+	compactUnwindX86StackIndirect    = 0x03000000
 	compactUnwindARM64Frameless      = 0x02000000
 	compactUnwindARM64DWARF          = 0x03000000
 	compactUnwindARM64Frame          = 0x04000000
@@ -255,6 +258,8 @@ func (c *machoCompactUnwind) unwind(relative uint64, registers map[string]uint64
 	}
 	entry := c.entries[index]
 	switch architecture {
+	case "x86":
+		return c.unwindX86(entry, registers, memory)
 	case "x86_64":
 		return c.unwindX8664(entry, registers, memory)
 	case "arm64":
@@ -262,6 +267,86 @@ func (c *machoCompactUnwind) unwind(relative uint64, registers map[string]uint64
 	default:
 		return nil
 	}
+}
+
+func (c *machoCompactUnwind) unwindX86(entry machoCompactEntry, registers map[string]uint64, memory minidumpMemory) map[string]uint64 {
+	if memory.pointerSize != 4 {
+		return nil
+	}
+	var callerSP, returnSlot uint64
+	next := cloneRegisters(registers)
+	switch entry.encoding & compactUnwindModeMask {
+	case compactUnwindX86EBPFrame:
+		frame := registers["ebp"]
+		if frame == 0 || frame > ^uint64(0)-8 {
+			return nil
+		}
+		savedOffset := uint64((entry.encoding & 0x00ff0000) >> 16)
+		if savedOffset > frame/4 || !restoreX86EBPRegisters(next, memory, frame-savedOffset*4, entry.encoding&0x00007fff) {
+			return nil
+		}
+		callerFrame, ok := memory.readPointer(frame)
+		if !ok {
+			return nil
+		}
+		next["ebp"] = callerFrame
+		callerSP, returnSlot = frame+8, frame+4
+	case compactUnwindX86StackImmediate, compactUnwindX86StackIndirect:
+		stackSize := uint64((entry.encoding & 0x00ff0000) >> 16)
+		if entry.encoding&compactUnwindModeMask == compactUnwindX86StackIndirect {
+			immediate, ok := c.x86StackImmediate(entry.begin, stackSize)
+			if !ok {
+				return nil
+			}
+			stackSize = uint64(immediate) + uint64((entry.encoding&0x0000e000)>>13)*4
+		} else {
+			stackSize *= 4
+		}
+		stack := registers["esp"]
+		if stackSize < 4 || stack > ^uint64(0)-stackSize {
+			return nil
+		}
+		callerSP, returnSlot = stack+stackSize, stack+stackSize-4
+		registerCount := uint32((entry.encoding & 0x00001c00) >> 10)
+		if registerCount > 6 || returnSlot < uint64(registerCount)*4 || !restoreX86FramelessRegisters(next, memory, returnSlot-uint64(registerCount)*4, registerCount, entry.encoding&0x000003ff) {
+			return nil
+		}
+	default:
+		return nil
+	}
+	returnAddress, ok := memory.readPointer(returnSlot)
+	if !ok || returnAddress == 0 {
+		return nil
+	}
+	next["eip"], next["esp"] = returnAddress, callerSP
+	return next
+}
+
+func restoreX86EBPRegisters(registers map[string]uint64, memory minidumpMemory, address uint64, encoded uint32) bool {
+	names := []string{"", "ebx", "ecx", "edx", "edi", "esi"}
+	for slot := 0; slot < 5; slot++ {
+		register := encoded & 7
+		if register >= uint32(len(names)) {
+			return false
+		}
+		if register != 0 {
+			value, ok := memory.readPointer(address)
+			if !ok {
+				return false
+			}
+			registers[names[register]] = value
+		}
+		if address > ^uint64(0)-4 {
+			return false
+		}
+		address += 4
+		encoded >>= 3
+	}
+	return true
+}
+
+func restoreX86FramelessRegisters(registers map[string]uint64, memory minidumpMemory, address uint64, count, permutation uint32) bool {
+	return restoreX86Permutation(registers, memory, address, count, permutation, 4, []string{"", "ebx", "ecx", "edx", "edi", "esi", "ebp"})
 }
 
 func (c *machoCompactUnwind) unwindX8664(entry machoCompactEntry, registers map[string]uint64, memory minidumpMemory) map[string]uint64 {
@@ -290,9 +375,10 @@ func (c *machoCompactUnwind) unwindX8664(entry machoCompactEntry, registers map[
 			if !ok {
 				return nil
 			}
-			stackSize = uint64(immediate)/8 + uint64((entry.encoding&0x0000e000)>>13)
+			stackSize = uint64(immediate) + uint64((entry.encoding&0x0000e000)>>13)*8
+		} else {
+			stackSize *= 8
 		}
-		stackSize *= 8
 		stack := registers["rsp"]
 		if stackSize < 8 || stack > ^uint64(0)-stackSize {
 			return nil
@@ -337,6 +423,10 @@ func restoreX8664RBPRegisters(registers map[string]uint64, memory minidumpMemory
 }
 
 func restoreX8664FramelessRegisters(registers map[string]uint64, memory minidumpMemory, address uint64, count, permutation uint32) bool {
+	return restoreX86Permutation(registers, memory, address, count, permutation, 8, []string{"", "rbx", "r12", "r13", "r14", "r15", "rbp"})
+}
+
+func restoreX86Permutation(registers map[string]uint64, memory minidumpMemory, address uint64, count, permutation uint32, pointerSize uint64, registerNames []string) bool {
 	if count == 0 {
 		return true
 	}
@@ -350,7 +440,6 @@ func restoreX8664FramelessRegisters(registers map[string]uint64, memory minidump
 		permutation %= weight
 	}
 	used := [7]bool{}
-	registerNames := []string{"", "rbx", "r12", "r13", "r14", "r15", "rbp"}
 	for _, ordinal := range permuted {
 		var register uint32
 		for candidate := uint32(1); candidate < 7; candidate++ {
@@ -372,15 +461,19 @@ func restoreX8664FramelessRegisters(registers map[string]uint64, memory minidump
 		}
 		registers[registerNames[register]] = value
 		used[register] = true
-		if address > ^uint64(0)-8 {
+		if address > ^uint64(0)-pointerSize {
 			return false
 		}
-		address += 8
+		address += pointerSize
 	}
 	return true
 }
 
 func (c *machoCompactUnwind) x8664StackImmediate(function, instructionOffset uint64) (uint32, bool) {
+	return c.x86StackImmediate(function, instructionOffset)
+}
+
+func (c *machoCompactUnwind) x86StackImmediate(function, instructionOffset uint64) (uint32, bool) {
 	if function > ^uint64(0)-c.imageBase || instructionOffset > ^uint64(0)-(c.imageBase+function) {
 		return 0, false
 	}

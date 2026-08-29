@@ -112,15 +112,16 @@ ELF, Mach-O/dSYM, and DWARF-enabled PE files likewise expand bounded
 `DW_TAG_inlined_subroutine` chains with call-site locations. Stack unwinding for
 uploaded minidumps uses matching Breakpad `STACK CFI` records, Windows x86
 `STACK WIN` program/FPO metadata, bounded ELF or Mach-O `.eh_frame` tables, and
-x86-64/ARM64 Mach-O compact-unwind records, with architecture-aware universal
+x86/x86-64/ARM64 Mach-O compact-unwind records, with architecture-aware universal
 binary selection and a frame-pointer fallback. The DWARF interpreter covers the
 common CFA, register, offset, value-offset, advance, and saved-state
 instructions for x86, x86-64, and ARM64. Minidump parsing unwinds up to 256
 threads and 2,048 total event frames, retains the original dump as an event
 attachment, and limits each walk to 256 frames. Bounded DWARF CFA, register
 location, and register-value expressions cover common arithmetic, branching,
-register-relative, dereference, and direct-value operations. Legacy 32-bit
-Mach-O compact-unwind encodings are not yet evaluated.
+register-relative, dereference, and direct-value operations. Mach-O compact
+unwind supports frame-based and immediate/indirect frameless x86 and x86-64
+encodings, plus ARM64 frame-based and frameless encodings.
 
 Java and Android frames can use ProGuard/R8 mapping files selected by the
 event's ProGuard UUID. Barktrace restores class, method, source filename, and
