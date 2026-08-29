@@ -5,6 +5,7 @@ import (
 	"context"
 	"debug/dwarf"
 	"debug/elf"
+	"debug/macho"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -256,7 +257,7 @@ func symbolicateNativeFrame(st *store.Store, artifacts []artifact, payload map[s
 	if !ok {
 		return false
 	}
-	debugID, imageBase := frameDebugImage(payload, address)
+	debugID, imageBase, imageArch := frameDebugImage(payload, address)
 	for _, item := range artifacts {
 		if item.kind != "debug_file" || (debugID != "" && normalizeDebugID(item.debugID) != debugID) {
 			continue
@@ -266,6 +267,9 @@ func symbolicateNativeFrame(st *store.Store, artifacts []artifact, payload map[s
 			continue
 		}
 		matched := lookupELFFrame(file, address, imageBase)
+		if matched.function == "" && matched.filename == "" {
+			matched = lookupMachOFrame(file, address, imageBase, imageArch)
+		}
 		if matched.function == "" && matched.filename == "" {
 			_, _ = file.Seek(0, io.SeekStart)
 			matched = lookupBreakpadSymbol(file, address-imageBase)
@@ -294,18 +298,18 @@ func symbolicateNativeFrame(st *store.Store, artifacts []artifact, payload map[s
 	return false
 }
 
-func frameDebugImage(payload map[string]any, address uint64) (string, uint64) {
+func frameDebugImage(payload map[string]any, address uint64) (string, uint64, string) {
 	debugMeta, _ := payload["debug_meta"].(map[string]any)
 	images, _ := debugMeta["images"].([]any)
 	for _, raw := range images {
 		image, _ := raw.(map[string]any)
 		base, baseOK := parseAddress(image["image_addr"])
 		size, _ := parseAddress(image["image_size"])
-		if baseOK && address >= base && (size == 0 || address < base+size) {
-			return normalizeDebugID(firstString(image, "debug_id", "code_id")), base
+		if baseOK && address >= base && (size == 0 || address-base < size) {
+			return normalizeDebugID(firstString(image, "debug_id", "code_id")), base, firstString(image, "arch", "cpu_name")
 		}
 	}
-	return "", 0
+	return "", 0, ""
 }
 
 func lookupELFFrame(reader io.ReaderAt, address, imageBase uint64) nativeSymbol {
@@ -314,13 +318,31 @@ func lookupELFFrame(reader io.ReaderAt, address, imageBase uint64) nativeSymbol 
 		return nativeSymbol{}
 	}
 	defer file.Close()
-	relative := address
+	preferredBase := elfPreferredBase(file)
+	lookupAddress, symbolBias := address, uint64(0)
 	if imageBase > 0 && address >= imageBase {
-		relative = address - imageBase
+		lookupAddress = preferredBase + address - imageBase
+		symbolBias = preferredBase
 	}
-	function, symbolAddress := lookupELFSymbol(file, relative)
-	filename, line, column := lookupDWARFLine(file, relative)
+	function, symbolAddress := lookupELFSymbol(file, lookupAddress)
+	filename, line, column := lookupDWARFLine(file, lookupAddress)
+	if symbolAddress >= symbolBias {
+		symbolAddress -= symbolBias
+	}
 	return nativeSymbol{function: function, address: symbolAddress, filename: filename, line: line, column: column}
+}
+
+func elfPreferredBase(file *elf.File) uint64 {
+	base := ^uint64(0)
+	for _, program := range file.Progs {
+		if program.Type == elf.PT_LOAD && program.Vaddr < base {
+			base = program.Vaddr
+		}
+	}
+	if base == ^uint64(0) {
+		return 0
+	}
+	return base
 }
 
 func lookupELFSymbol(file *elf.File, relative uint64) (string, uint64) {
@@ -348,6 +370,10 @@ func lookupDWARFLine(file *elf.File, address uint64) (string, int, int) {
 	if err != nil {
 		return "", 0, 0
 	}
+	return lookupDWARFLineData(data, address)
+}
+
+func lookupDWARFLineData(data *dwarf.Data, address uint64) (string, int, int) {
 	reader := data.Reader()
 	for units := 0; units < 100000; units++ {
 		entry, err := reader.Next()
@@ -369,6 +395,127 @@ func lookupDWARFLine(file *elf.File, address uint64) (string, int, int) {
 		return position.File.Name, position.Line, position.Column
 	}
 	return "", 0, 0
+}
+
+func lookupMachOFrame(reader io.ReaderAt, address, imageBase uint64, arch string) nativeSymbol {
+	if file, err := macho.NewFile(reader); err == nil {
+		defer file.Close()
+		return lookupMachOFile(file, address, imageBase)
+	}
+	fat, err := macho.NewFatFile(reader)
+	if err != nil {
+		return nativeSymbol{}
+	}
+	defer fat.Close()
+	fallback := nativeSymbol{}
+	for _, candidate := range fat.Arches {
+		matched := lookupMachOFile(candidate.File, address, imageBase)
+		if matched.function == "" && matched.filename == "" {
+			continue
+		}
+		if machoArchMatches(arch, candidate.Cpu.String()) {
+			return matched
+		}
+		if fallback.function == "" && fallback.filename == "" {
+			fallback = matched
+		}
+	}
+	return fallback
+}
+
+func lookupMachOFile(file *macho.File, address, imageBase uint64) nativeSymbol {
+	preferredBase := uint64(0)
+	if text := file.Segment("__TEXT"); text != nil {
+		preferredBase = text.Addr
+	}
+	lookupAddress, symbolBias := address, uint64(0)
+	if imageBase > 0 && address >= imageBase {
+		lookupAddress = preferredBase + address - imageBase
+		symbolBias = preferredBase
+	}
+	function, symbolAddress := lookupMachOSymbol(file, lookupAddress)
+	filename, line, column := lookupMachODWARFLine(file, lookupAddress)
+	if symbolAddress >= symbolBias {
+		symbolAddress -= symbolBias
+	}
+	return nativeSymbol{function: function, address: symbolAddress, filename: filename, line: line, column: column}
+}
+
+func lookupMachOSymbol(file *macho.File, address uint64) (string, uint64) {
+	if file.Symtab == nil {
+		return "", 0
+	}
+	bestIndex := -1
+	for index, symbol := range file.Symtab.Syms {
+		if symbol.Sect == 0 || symbol.Name == "" || symbol.Value > address {
+			continue
+		}
+		if bestIndex < 0 || symbol.Value > file.Symtab.Syms[bestIndex].Value {
+			bestIndex = index
+		}
+	}
+	if bestIndex < 0 {
+		return "", 0
+	}
+	best := file.Symtab.Syms[bestIndex]
+	end := ^uint64(0)
+	if sectionIndex := int(best.Sect) - 1; sectionIndex >= 0 && sectionIndex < len(file.Sections) {
+		section := file.Sections[sectionIndex]
+		if section.Size <= ^uint64(0)-section.Addr {
+			end = section.Addr + section.Size
+		}
+	}
+	for _, symbol := range file.Symtab.Syms {
+		if symbol.Sect == best.Sect && symbol.Value > best.Value && symbol.Value < end {
+			end = symbol.Value
+		}
+	}
+	if address >= end {
+		return "", 0
+	}
+	return best.Name, best.Value
+}
+
+func lookupMachODWARFLine(file *macho.File, address uint64) (string, int, int) {
+	var size uint64
+	found := false
+	for _, section := range file.Sections {
+		if section.Seg != "__DWARF" && !strings.HasPrefix(section.Name, "__debug_") && !strings.HasPrefix(section.Name, "__zdebug_") {
+			continue
+		}
+		found = true
+		if section.Size > maxDWARFBytes-size {
+			return "", 0, 0
+		}
+		size += section.Size
+	}
+	if !found {
+		return "", 0, 0
+	}
+	data, err := file.DWARF()
+	if err != nil {
+		return "", 0, 0
+	}
+	return lookupDWARFLineData(data, address)
+}
+
+func machoArchMatches(expected, actual string) bool {
+	normalize := func(value string) string {
+		value = strings.ToLower(value)
+		value = strings.TrimPrefix(value, "cpu")
+		return strings.NewReplacer("_", "", "-", "", " ", "").Replace(value)
+	}
+	expected, actual = normalize(expected), normalize(actual)
+	if expected == "" {
+		return true
+	}
+	if expected == "x8664" {
+		expected = "amd64"
+	}
+	if expected == "aarch64" {
+		expected = "arm64"
+	}
+	return expected == actual
 }
 
 func hasBoundedDWARF(file *elf.File) bool {

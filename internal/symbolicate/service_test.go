@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"debug/elf"
+	"debug/macho"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -164,16 +166,22 @@ func main() { _ = dwarf_target() }
 	}
 	st := symbolicationStore(t)
 	putDebugArtifactBytes(t, st, "DWARF123", binary)
+	parsed, err = elf.NewFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	imageBase := elfPreferredBase(parsed)
+	_ = parsed.Close()
 	payload := []byte(fmt.Sprintf(`{
-		"debug_meta":{"images":[{"type":"elf","image_addr":"0x0","image_size":"0x0","debug_id":"DWARF123"}]},
+		"debug_meta":{"images":[{"type":"elf","image_addr":"0x%x","image_size":"0x0","debug_id":"DWARF123"}]},
 		"exception":{"values":[{"stacktrace":{"frames":[{"instruction_addr":"0x%x","filename":"fixture"}]}}]}
-	}`, address))
+	}`, imageBase, address))
 	processed, changed, err := ProcessEvent(context.Background(), st, "project", "release", payload)
 	if err != nil {
 		t.Fatal(err)
 	}
 	frame := processedFrame(t, processed)
-	if !changed || filepath.Base(frame["filename"].(string)) != "fixture.go" || frame["lineno"].(float64) < 4 || frame["symbolicated"] != true {
+	if !changed || filepath.Base(frame["filename"].(string)) != "fixture.go" || frame["lineno"].(float64) < 4 || frame["symbol_addr"] != fmt.Sprintf("0x%x", address) || frame["symbolicated"] != true {
 		t.Fatalf("processed ELF/DWARF frame = %#v, changed=%v", frame, changed)
 	}
 }
@@ -191,6 +199,156 @@ func TestDWARFSectionBudget(t *testing.T) {
 	if hasBoundedDWARF(file) {
 		t.Fatal("DWARF data above the memory limit was accepted")
 	}
+}
+
+func TestLookupMachOFrameAddsDWARFSourceLocation(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("cross-compiled Mach-O fixture requires the Linux test environment")
+	}
+	directory := t.TempDir()
+	sourcePath := filepath.Join(directory, "fixture.go")
+	binaryPath := filepath.Join(directory, "fixture-macos")
+	source := `package main
+
+//go:noinline
+func macho_target() int {
+	return 84
+}
+
+func main() { _ = macho_target() }
+`
+	if err := os.WriteFile(sourcePath, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("go", "build", "-gcflags=all=-N -l", "-o", binaryPath, sourcePath)
+	command.Env = append(os.Environ(), "GOOS=darwin", "GOARCH=amd64", "CGO_ENABLED=0", "GOTOOLCHAIN=local")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("build Mach-O fixture: %v\n%s", err, output)
+	}
+	file, err := os.Open(binaryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	parsed, err := macho.NewFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Symtab == nil {
+		t.Fatal("Mach-O fixture has no symbol table")
+	}
+	var address uint64
+	for _, symbol := range parsed.Symtab.Syms {
+		if strings.HasSuffix(symbol.Name, ".macho_target") {
+			address = symbol.Value
+			break
+		}
+	}
+	text := parsed.Segment("__TEXT")
+	if address == 0 || text == nil {
+		t.Fatal("Mach-O fixture function or __TEXT segment not found")
+	}
+	imageBase := text.Addr
+	_ = parsed.Close()
+
+	matched := lookupMachOFrame(file, address, imageBase, "x86_64")
+	if !strings.HasSuffix(matched.function, ".macho_target") || matched.address+imageBase != address || filepath.Base(matched.filename) != "fixture.go" || matched.line < 4 {
+		t.Fatalf("Mach-O/DWARF match = %#v", matched)
+	}
+
+	binary, err := os.ReadFile(binaryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := symbolicationStore(t)
+	putDebugArtifactBytes(t, st, "MACHO123", binary)
+	payload := []byte(fmt.Sprintf(`{
+		"debug_meta":{"images":[{"type":"macho","image_addr":"0x%x","image_size":"0x0","debug_id":"MACHO123","arch":"x86_64"}]},
+		"exception":{"values":[{"stacktrace":{"frames":[{"instruction_addr":"0x%x","filename":"fixture-macos"}]}}]}
+	}`, imageBase, address))
+	processed, changed, err := ProcessEvent(context.Background(), st, "project", "release", payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame := processedFrame(t, processed)
+	if !changed || filepath.Base(frame["filename"].(string)) != "fixture.go" || frame["lineno"].(float64) < 4 || frame["symbol_addr"] != fmt.Sprintf("0x%x", address) {
+		t.Fatalf("processed Mach-O/DWARF frame = %#v, changed=%v", frame, changed)
+	}
+}
+
+func TestLookupUniversalMachOSelectsEventArchitecture(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("cross-compiled Mach-O fixtures require the Linux test environment")
+	}
+	directory := t.TempDir()
+	amd, amdAddress, amdBase, amdCPU, amdSubCPU := buildMachOFixture(t, directory, "amd64", "amd_target")
+	arm, armAddress, armBase, armCPU, armSubCPU := buildMachOFixture(t, directory, "arm64", "arm_target")
+
+	const alignment = uint32(12)
+	align := func(value int) int { return (value + (1 << alignment) - 1) &^ ((1 << alignment) - 1) }
+	amdOffset := align(8 + 20*2)
+	armOffset := align(amdOffset + len(amd))
+	fat := make([]byte, armOffset+len(arm))
+	binary.BigEndian.PutUint32(fat[0:4], 0xcafebabe)
+	binary.BigEndian.PutUint32(fat[4:8], 2)
+	writeArch := func(offset int, cpu, subCPU uint32, payloadOffset, size int) {
+		binary.BigEndian.PutUint32(fat[offset:offset+4], cpu)
+		binary.BigEndian.PutUint32(fat[offset+4:offset+8], subCPU)
+		binary.BigEndian.PutUint32(fat[offset+8:offset+12], uint32(payloadOffset))
+		binary.BigEndian.PutUint32(fat[offset+12:offset+16], uint32(size))
+		binary.BigEndian.PutUint32(fat[offset+16:offset+20], alignment)
+	}
+	writeArch(8, amdCPU, amdSubCPU, amdOffset, len(amd))
+	writeArch(28, armCPU, armSubCPU, armOffset, len(arm))
+	copy(fat[amdOffset:], amd)
+	copy(fat[armOffset:], arm)
+
+	amdMatch := lookupMachOFrame(bytes.NewReader(fat), amdAddress, amdBase, "x86_64")
+	if !strings.HasSuffix(amdMatch.function, ".amd_target") || filepath.Base(amdMatch.filename) != "amd_target.go" {
+		t.Fatalf("universal x86_64 match = %#v", amdMatch)
+	}
+	armMatch := lookupMachOFrame(bytes.NewReader(fat), armAddress, armBase, "arm64")
+	if !strings.HasSuffix(armMatch.function, ".arm_target") || filepath.Base(armMatch.filename) != "arm_target.go" {
+		t.Fatalf("universal arm64 match = %#v", armMatch)
+	}
+}
+
+func buildMachOFixture(t *testing.T, directory, arch, target string) ([]byte, uint64, uint64, uint32, uint32) {
+	t.Helper()
+	sourcePath := filepath.Join(directory, target+".go")
+	binaryPath := filepath.Join(directory, target)
+	source := fmt.Sprintf("package main\n\n//go:noinline\nfunc %s() int { return 42 }\n\nfunc main() { _ = %s() }\n", target, target)
+	if err := os.WriteFile(sourcePath, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("go", "build", "-gcflags=all=-N -l", "-o", binaryPath, sourcePath)
+	command.Env = append(os.Environ(), "GOOS=darwin", "GOARCH="+arch, "CGO_ENABLED=0", "GOTOOLCHAIN=local")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("build %s Mach-O fixture: %v\n%s", arch, err, output)
+	}
+	payload, err := os.ReadFile(binaryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := macho.NewFile(bytes.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer parsed.Close()
+	if parsed.Symtab == nil || parsed.Segment("__TEXT") == nil {
+		t.Fatal("Mach-O fixture is missing symbols or __TEXT")
+	}
+	var address uint64
+	for _, symbol := range parsed.Symtab.Syms {
+		if strings.HasSuffix(symbol.Name, "."+target) {
+			address = symbol.Value
+			break
+		}
+	}
+	if address == 0 {
+		t.Fatalf("Mach-O fixture symbol %s not found", target)
+	}
+	return payload, address, parsed.Segment("__TEXT").Addr, uint32(parsed.Cpu), uint32(parsed.SubCpu)
 }
 
 func symbolicationStore(t *testing.T) *store.Store {
