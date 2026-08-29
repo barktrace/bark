@@ -66,6 +66,8 @@ The DSN shown in the project setup page should always be copied verbatim.
 | Snapshot image upload, latest-base lookup, and ZIP download | Supported |
 | Durable queue, retry, and dead-letter handling | Supported |
 | Organization events/Discover endpoint | Errors, transactions, spans, logs, metrics, bounded filters and aggregates |
+| Organization and project detail endpoints | Supported, including project DSN-key discovery |
+| Issue and event detail endpoints | Supported, including latest/group events and issue status, priority, assignment, bookmark, and snooze updates |
 | Managed Sentry Relay | Registration, Ed25519 request authentication, v3 project configs, public-key lookup, and liveness |
 
 The compatibility checks currently exercise real `sentry-sdk` 2.21.0 and

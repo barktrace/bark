@@ -82,7 +82,7 @@ func (s *Service) auditScope(r *http.Request) (organizationID, projectID, target
 		}
 	}
 	if projectID == "" && targetType == "issue" {
-		_ = s.store.DB.QueryRowContext(r.Context(), `SELECT project_id FROM issues WHERE id = ?`, targetID).Scan(&projectID)
+		_ = s.store.DB.QueryRowContext(r.Context(), `SELECT project_id FROM issues WHERE id = ? OR CAST(rowid AS TEXT) = ?`, targetID, targetID).Scan(&projectID)
 	}
 	if targetType == "dashboard" {
 		_ = s.store.DB.QueryRowContext(r.Context(), `SELECT organization_id, COALESCE(project_id, '') FROM dashboards WHERE id = ?`, targetID).Scan(&organizationID, &projectID)

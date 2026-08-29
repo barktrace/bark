@@ -35,7 +35,8 @@ metadata:
 The browser test builds the production image and launches a disposable OIDC
 provider. A real Chromium browser signs in, proves automatic account creation,
 creates a project, sends a Sentry event, opens the resulting issue and telemetry
-views, runs a Discover query, creates a saved dashboard widget, renders an
+views, verifies Sentry-compatible organization/project/key/issue/event detail
+routes, runs a Discover query, creates a saved dashboard widget, renders an
 interactive rrweb replay, analyzes a sampled profile, and signs out.
 
 ```sh

@@ -139,6 +139,27 @@ try {
   await page.getByRole('heading', { name: 'E2EError', exact: true }).waitFor();
   await page.getByText('checkout@1.0.0', { exact: true }).waitFor();
 
+  const organizationDetail = await page.request.get('/api/0/organizations/e2e/');
+  if (!organizationDetail.ok() || (await organizationDetail.json()).slug !== 'e2e') throw new Error('Sentry organization detail endpoint failed');
+  const projectListResponse = await page.request.get('/api/0/organizations/e2e/projects/');
+  const sentryProjects = await projectListResponse.json();
+  const sentryProject = sentryProjects.find((item) => item.id === projectID);
+  if (!projectListResponse.ok() || !sentryProject) throw new Error('Sentry project discovery failed');
+  const projectDetail = await page.request.get(`/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/`);
+  if (!projectDetail.ok() || (await projectDetail.json()).id !== projectID) throw new Error('Sentry project detail endpoint failed');
+  const projectKeys = await page.request.get(`/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/keys/`);
+  const keys = await projectKeys.json();
+  if (!projectKeys.ok() || keys[0]?.public !== parsed.username) throw new Error('Sentry project key endpoint failed');
+  const issueList = await page.request.get(`/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/issues/`);
+  const sentryIssues = await issueList.json();
+  if (!issueList.ok() || !sentryIssues[0]?.id) throw new Error('Sentry issue discovery failed');
+  const issueDetail = await page.request.get(`/api/0/issues/${encodeURIComponent(sentryIssues[0].id)}/`);
+  if (!issueDetail.ok() || (await issueDetail.json()).shortId !== sentryIssues[0].shortId) throw new Error('Sentry issue detail endpoint failed');
+  const latestEvent = await page.request.get(`/api/0/issues/${encodeURIComponent(sentryIssues[0].id)}/events/latest/`);
+  if (!latestEvent.ok() || (await latestEvent.json()).eventID !== eventID) throw new Error('Sentry latest issue event endpoint failed');
+  const eventDetail = await page.request.get(`/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/events/${eventID}/`);
+  if (!eventDetail.ok() || (await eventDetail.json()).groupID !== sentryIssues[0].id) throw new Error('Sentry event detail endpoint failed');
+
   await page.getByRole('link', { name: 'Discover' }).click();
   await page.locator('#discover-form input[name="query"]').fill('environment:e2e');
   await page.locator('#discover-form').getByRole('button', { name: 'Run query' }).click();
@@ -180,7 +201,7 @@ try {
   if (me.status() !== 401) throw new Error(`logout left session active: /auth/me returned ${me.status()}`);
 
   if (browserErrors.length) throw new Error(browserErrors.join('\n'));
-  console.log('browser E2E passed: OIDC, ingestion, issue detail, Discover, dashboards, interactive replay, profile analysis, telemetry, and logout');
+  console.log('browser E2E passed: OIDC, ingestion, Sentry API details, Discover, dashboards, interactive replay, profile analysis, telemetry, and logout');
 } finally {
   await browser.close();
 }
