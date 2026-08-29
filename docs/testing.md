@@ -13,7 +13,7 @@ npm ci --prefix ui
 npm run build --prefix ui
 ```
 
-The opt-in CLI integration uses a real `sentry-cli` binary and covers releases,
+The CLI integration uses a real `sentry-cli` binary and covers releases,
 commits, deploys, source maps, debug files, pre-production builds, snapshots,
 issues, events, logs, repositories, monitors, and code mappings:
 
@@ -21,6 +21,9 @@ issues, events, logs, repositories, monitors, and code mappings:
 SENTRY_CLI_BIN=/path/to/sentry-cli \
   go test -count=1 -run TestSentryCLIWorkflow -v ./internal/httpapi
 ```
+
+CI downloads checksum-pinned `sentry-cli` 3.7.0 and runs this test. Setting
+`SENTRY_CLI_BIN` makes the same integration available locally.
 
 The standalone PDB parser has opt-in fixture checks for compiler-produced
 Microsoft PDB 7 files. They verify public/procedure symbols, CodeView C13 source
@@ -93,8 +96,9 @@ creates a project, sends a Sentry event, opens the resulting issue and telemetry
 views, uploads and applies a distribution-specific indexed source map by debug
 ID, verifies Sentry-compatible organization/project/key/issue/event detail
 routes, runs a Discover query, creates a saved dashboard widget, renders an
-interactive rrweb replay, analyzes a sampled profile, exercises MCP triage,
-quota, retention, alert, uptime, and cron operations, and signs out.
+interactive rrweb replay, analyzes a sampled profile, exercises team ownership
+and assignment plus MCP triage, quota, retention, alert, uptime, and cron
+operations, and signs out.
 
 ```sh
 npm ci --prefix tests/e2e

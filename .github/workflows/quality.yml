@@ -22,6 +22,14 @@ jobs:
           cache: true
       - run: go vet ./...
       - run: go test -race ./...
+      - name: Test sentry-cli 3.7.0 compatibility
+        run: |
+          curl --fail --location --silent --show-error \
+            --output /tmp/sentry-cli \
+            https://github.com/getsentry/sentry-cli/releases/download/3.7.0/sentry-cli-Linux-x86_64
+          echo "cec71d46a7cc394c94b6e75f1601985c710d457376c546ef3975567b3671563b  /tmp/sentry-cli" | sha256sum --check
+          chmod 0755 /tmp/sentry-cli
+          SENTRY_CLI_BIN=/tmp/sentry-cli go test -count=1 -run TestSentryCLIWorkflow -v ./internal/httpapi
       - run: ./scripts/test-libsql.sh
 
   browser:

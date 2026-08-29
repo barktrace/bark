@@ -7,6 +7,11 @@ The `main` branch is published for AMD64 and ARM64 as
 `1.2.3` and `1.2` image tags. Pull requests build the image without publishing
 it.
 
+GitHub creates a new container package as private. Make the package public once
+under **Organization settings → Packages → bark → Package settings**, or add a
+classic `GHCR_ADMIN_TOKEN` Actions secret with `admin:org` and `write:packages`
+scopes. Package visibility then applies to all subsequently published tags.
+
 ```sh
 docker pull ghcr.io/barktrace/bark:latest
 ```

@@ -69,12 +69,13 @@ The DSN shown in the project setup page should always be copied verbatim.
 | Durable queue, retry, and dead-letter handling | Supported |
 | Organization events/Discover endpoint | Errors, transactions, spans, logs, metrics, bounded filters and aggregates |
 | Organization and project detail endpoints | Supported, including project DSN-key discovery |
-| Issue and event detail endpoints | Supported, including latest/group events, status, priority, assignment, bookmark, snooze, public sharing, and permanent discard updates |
+| Organization members and teams | Listing, team CRUD, team membership, project links, and project responses |
+| Issue and event detail endpoints | Supported, including latest/group events, status, priority, user/team assignment, bookmark, snooze, public sharing, and permanent discard updates |
 | Managed Sentry Relay | Registration, Ed25519 request authentication, v3 project configs, public-key lookup, and liveness |
 
 The compatibility checks currently exercise real `sentry-sdk` 2.21.0 and
-`sentry-go` 0.43.0 clients against the production Docker image. An opt-in test
-also exercises real `sentry-cli` 3.7.0 release, source-map, debug-file, build,
+`sentry-go` 0.43.0 clients against the production Docker image. CI also
+exercises real, checksum-pinned `sentry-cli` 3.7.0 release, source-map, debug-file, build,
 snapshot, issue, event, log, deploy, repository, monitor, and code-mapping
 workflows.
 

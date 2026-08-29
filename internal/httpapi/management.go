@@ -182,8 +182,30 @@ func (s *Server) deleteMember(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "organization must keep at least one owner")
 		return
 	}
-	if _, err := s.store.DB.ExecContext(r.Context(), `DELETE FROM organization_memberships WHERE organization_id = ? AND user_id = ?`, organizationID, userID); err != nil {
+	tx, err := s.store.DB.BeginTx(r.Context(), nil)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not remove member")
+		return
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(r.Context(), `UPDATE issues SET assignee_user_id = NULL WHERE assignee_user_id = ? AND project_id IN (SELECT id FROM projects WHERE organization_id = ?)`, userID, organizationID); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not clear member assignments")
+		return
+	}
+	if _, err := tx.ExecContext(r.Context(), `DELETE FROM project_memberships WHERE user_id = ? AND project_id IN (SELECT id FROM projects WHERE organization_id = ?)`, userID, organizationID); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not remove project memberships")
+		return
+	}
+	if _, err := tx.ExecContext(r.Context(), `DELETE FROM team_memberships WHERE user_id = ? AND team_id IN (SELECT id FROM teams WHERE organization_id = ?)`, userID, organizationID); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not remove team memberships")
+		return
+	}
+	if _, err := tx.ExecContext(r.Context(), `DELETE FROM organization_memberships WHERE organization_id = ? AND user_id = ?`, organizationID, userID); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not remove member")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit member removal")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

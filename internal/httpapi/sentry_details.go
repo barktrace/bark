@@ -34,6 +34,9 @@ type sentryIssueRecord struct {
 	AssigneeID       sql.NullString
 	AssigneeName     sql.NullString
 	AssigneeEmail    sql.NullString
+	AssigneeTeamID   sql.NullString
+	AssigneeTeamSlug sql.NullString
+	AssigneeTeamName sql.NullString
 	Bookmarked       bool
 	SnoozedUntil     sql.NullString
 	ShareID          sql.NullString
@@ -74,7 +77,8 @@ func (s *Server) sentryOrganizationDetail(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id": organizationID, "slug": slug, "name": name, "dateCreated": normalizeAPITime(createdAt),
 		"status":         map[string]string{"id": "active", "name": "active"},
-		"isEarlyAdopter": false, "require2FA": false, "role": membership.Role,
+		"isEarlyAdopter": false, "require2FA": false, "requireEmailVerification": false, "role": membership.Role,
+		"features": []string{},
 	})
 }
 
@@ -278,11 +282,31 @@ func (s *Server) sentryProjectResponse(r *http.Request, projectID, organizationI
 	if err != nil {
 		return nil, err
 	}
+	teamRows, err := s.store.DB.QueryContext(r.Context(), `SELECT t.id, t.slug, t.name FROM team_projects tp JOIN teams t ON t.id = tp.team_id WHERE tp.project_id = ? ORDER BY t.name`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	teams := make([]map[string]string, 0)
+	for teamRows.Next() {
+		var id, teamSlug, teamName string
+		if err := teamRows.Scan(&id, &teamSlug, &teamName); err != nil {
+			_ = teamRows.Close()
+			return nil, err
+		}
+		teams = append(teams, map[string]string{"id": id, "slug": teamSlug, "name": teamName})
+	}
+	if err := teamRows.Close(); err != nil {
+		return nil, err
+	}
+	var primaryTeam any
+	if len(teams) > 0 {
+		primaryTeam = teams[0]
+	}
 	return map[string]any{
 		"id": sentryID, "slug": slug, "name": name, "platform": platform,
 		"dateCreated": normalizeAPITime(createdAt), "isBookmarked": false,
 		"organization": map[string]string{"id": organizationID, "slug": organizationSlug, "name": organizationName},
-		"team":         nil, "teams": []any{}, "features": []string{},
+		"team":         primaryTeam, "teams": teams, "features": []string{},
 		"dsn": map[string]string{"public": dsnURL(s.cfg.PublicURL, publicKey, sentryID)},
 	}, nil
 }
@@ -311,11 +335,12 @@ const sentryIssueSelect = `
 		SELECT i.rowid, i.id, i.project_id, p.sentry_id, p.slug, p.name, COALESCE(p.platform, ''),
 		       o.id, o.slug, i.fingerprint, i.title, i.status, i.level, i.priority, i.event_count,
 		       i.first_seen_at, i.last_seen_at, i.assignee_user_id, u.name, u.email,
-		       i.bookmarked, i.snoozed_until, i.share_id
+		       i.assignee_team_id, at.slug, at.name, i.bookmarked, i.snoozed_until, i.share_id
 		FROM issues i
 		JOIN projects p ON p.id = i.project_id
 		JOIN organizations o ON o.id = p.organization_id
-		LEFT JOIN users u ON u.id = i.assignee_user_id`
+		LEFT JOIN users u ON u.id = i.assignee_user_id
+		LEFT JOIN teams at ON at.id = i.assignee_team_id`
 
 func sentryIssueScanTargets(issue *sentryIssueRecord) []any {
 	return []any{
@@ -323,7 +348,8 @@ func sentryIssueScanTargets(issue *sentryIssueRecord) []any {
 		&issue.ProjectName, &issue.ProjectPlatform, &issue.OrganizationID, &issue.OrganizationSlug,
 		&issue.Fingerprint, &issue.Title, &issue.Status, &issue.Level, &issue.Priority, &issue.EventCount,
 		&issue.FirstSeen, &issue.LastSeen, &issue.AssigneeID, &issue.AssigneeName,
-		&issue.AssigneeEmail, &issue.Bookmarked, &issue.SnoozedUntil, &issue.ShareID,
+		&issue.AssigneeEmail, &issue.AssigneeTeamID, &issue.AssigneeTeamSlug, &issue.AssigneeTeamName,
+		&issue.Bookmarked, &issue.SnoozedUntil, &issue.ShareID,
 	}
 }
 
@@ -331,6 +357,8 @@ func (s *Server) sentryIssueResponse(issue sentryIssueRecord) map[string]any {
 	var assignedTo any
 	if issue.AssigneeID.Valid {
 		assignedTo = map[string]any{"type": "user", "id": issue.AssigneeID.String, "name": issue.AssigneeName.String, "email": issue.AssigneeEmail.String}
+	} else if issue.AssigneeTeamID.Valid {
+		assignedTo = map[string]any{"type": "team", "id": issue.AssigneeTeamID.String, "slug": issue.AssigneeTeamSlug.String, "name": issue.AssigneeTeamName.String}
 	}
 	statusDetails := map[string]any{}
 	if issue.SnoozedUntil.Valid {
@@ -441,18 +469,35 @@ func (s *Server) updateSentryIssue(w http.ResponseWriter, r *http.Request, princ
 		sharingChanged = true
 	}
 	if len(input.AssignedTo) > 0 {
-		assigneeID, err := sentryAssigneeID(input.AssignedTo)
+		assigneeType, assigneeID, err := sentryAssignee(input.AssignedTo)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return false, false
 		}
-		if assigneeID != "" && !s.userCanAccessProject(r, assigneeID, issue.ProjectID) {
-			writeError(w, http.StatusBadRequest, "assignee is not a project member")
-			return false, false
-		}
-		if assigneeID != issue.AssigneeID.String {
-			issue.AssigneeID = sql.NullString{String: assigneeID, Valid: assigneeID != ""}
-			changes = append(changes, [2]string{"assignment", assigneeID})
+		switch assigneeType {
+		case "user":
+			if assigneeID != "" && !s.userCanAccessProject(r, assigneeID, issue.ProjectID) {
+				writeError(w, http.StatusBadRequest, "assignee is not a project member")
+				return false, false
+			}
+			if assigneeID != issue.AssigneeID.String || issue.AssigneeTeamID.Valid {
+				issue.AssigneeID = sql.NullString{String: assigneeID, Valid: assigneeID != ""}
+				issue.AssigneeTeamID = sql.NullString{}
+				changes = append(changes, [2]string{"assignment", assigneeID})
+			}
+		case "team":
+			var teamSlug, teamName string
+			if err := s.store.DB.QueryRowContext(r.Context(), `SELECT t.slug, t.name FROM teams t JOIN team_projects tp ON tp.team_id = t.id WHERE t.id = ? AND tp.project_id = ?`, assigneeID, issue.ProjectID).Scan(&teamSlug, &teamName); err != nil {
+				writeError(w, http.StatusBadRequest, "assignee team is not linked to the project")
+				return false, false
+			}
+			if assigneeID != issue.AssigneeTeamID.String || issue.AssigneeID.Valid {
+				issue.AssigneeID = sql.NullString{}
+				issue.AssigneeTeamID = sql.NullString{String: assigneeID, Valid: true}
+				issue.AssigneeTeamSlug = sql.NullString{String: teamSlug, Valid: true}
+				issue.AssigneeTeamName = sql.NullString{String: teamName, Valid: true}
+				changes = append(changes, [2]string{"assignment", "team:" + assigneeID})
+			}
 		}
 	}
 	if input.Status != nil {
@@ -472,7 +517,7 @@ func (s *Server) updateSentryIssue(w http.ResponseWriter, r *http.Request, princ
 		return false, false
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(r.Context(), `UPDATE issues SET status = ?, priority = ?, assignee_user_id = ?, bookmarked = ?, snoozed_until = ?, share_id = ? WHERE id = ?`, issue.Status, issue.Priority, nullStringValue(issue.AssigneeID), boolInteger(issue.Bookmarked), nullStringValue(issue.SnoozedUntil), nullStringValue(issue.ShareID), issue.ID); err != nil {
+	if _, err := tx.ExecContext(r.Context(), `UPDATE issues SET status = ?, priority = ?, assignee_user_id = ?, assignee_team_id = ?, bookmarked = ?, snoozed_until = ?, share_id = ? WHERE id = ?`, issue.Status, issue.Priority, nullStringValue(issue.AssigneeID), nullStringValue(issue.AssigneeTeamID), boolInteger(issue.Bookmarked), nullStringValue(issue.SnoozedUntil), nullStringValue(issue.ShareID), issue.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not update issue")
 		return false, false
 	}
@@ -499,19 +544,23 @@ func (s *Server) updateSentryIssue(w http.ResponseWriter, r *http.Request, princ
 	return true, false
 }
 
-func sentryAssigneeID(raw json.RawMessage) (string, error) {
+func sentryAssignee(raw json.RawMessage) (string, string, error) {
 	if len(raw) == 0 || string(raw) == "null" {
-		return "", nil
+		return "user", "", nil
 	}
 	var value string
 	if err := json.Unmarshal(raw, &value); err != nil {
-		return "", errors.New("assignedTo must be a user identifier or null")
+		return "", "", errors.New("assignedTo must be a user or team identifier, or null")
 	}
 	value = strings.TrimSpace(value)
 	if strings.HasPrefix(value, "team:") {
-		return "", errors.New("team assignment is not supported")
+		value = strings.TrimPrefix(value, "team:")
+		if value == "" {
+			return "", "", errors.New("assignedTo team identifier is empty")
+		}
+		return "team", value, nil
 	}
-	return strings.TrimPrefix(value, "user:"), nil
+	return "user", strings.TrimPrefix(value, "user:"), nil
 }
 
 func sentrySnoozedUntil(status string, details map[string]any) (sql.NullString, error) {

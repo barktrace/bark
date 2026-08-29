@@ -68,6 +68,9 @@ curl --fail-with-body https://errors.example.com/mcp \
 | `list_projects` | Lists projects and DSNs, optionally by organization slug. |
 | `get_project_summary` | Returns issue, open issue, event, and release counts. |
 | `list_project_permissions` | Lists organization roles, explicit project overrides, and effective project roles. |
+| `list_teams`, `create_team` | Lists or creates organization teams. |
+| `add_team_member`, `remove_team_member` | Manages membership of an organization team. |
+| `link_team_project`, `unlink_team_project` | Manages a team's role on a project. |
 | `list_issues` | Searches and filters grouped issues for a project. |
 | `get_issue` | Returns an issue and its release linkage. |
 | `update_issue_status` | Sets an issue to unresolved, resolved, or ignored. |
@@ -102,7 +105,7 @@ curl --fail-with-body https://errors.example.com/mcp \
 
 Database-backed MCP tokens can access only their organization. `read` tokens
 cannot invoke mutation tools; `write` tokens can update issue triage state,
-manage dashboards, alerts, uptime and cron monitors, manage quotas, operate
+manage teams, dashboards, alerts, uptime and cron monitors, manage quotas, operate
 dead-letter jobs, and change retention.
 Successful mutations are recorded with actor type `mcp`. Treat every token as a
 secret and use HTTPS. `BARKTRACE_MCP_TOKEN`, when configured, deliberately keeps

@@ -306,6 +306,18 @@ try {
     max_runtime: 120,
   });
   await mcpCall(13, 'delete_cron_monitor', { project_id: nativeProject.id, monitor_id: mcpCron.id });
+  const mcpTeam = await mcpCall(14, 'create_team', { organization_id: nativeOrganization.organization_id, name: 'E2E Responders', slug: 'e2e-responders' });
+  await mcpCall(15, 'link_team_project', { team_id: mcpTeam.id, project_id: nativeProject.id, role: 'admin' });
+  const mcpTeams = await mcpCall(16, 'list_teams', { organization_id: nativeOrganization.organization_id });
+  if (!mcpTeams.some((team) => team.id === mcpTeam.id && team.project_count === 1)) throw new Error('MCP team lifecycle failed');
+  const assignedIssue = await mcpCall(17, 'update_issue', { issue_id: nativeIssues[0].id, assignee_team_id: mcpTeam.id });
+  if (assignedIssue.assignee_team_id !== mcpTeam.id || assignedIssue.assignee_user_id !== null) throw new Error('MCP team issue assignment failed');
+
+  await page.reload();
+  await page.locator('#page:not([hidden])').waitFor();
+  await page.getByRole('link', { name: 'Organization' }).click();
+  await page.getByRole('heading', { name: 'Teams' }).waitFor();
+  await page.getByText('E2E Responders', { exact: true }).waitFor();
 
   await page.locator('#account-button').click();
   await page.getByRole('button', { name: 'Sign out' }).click();
@@ -314,7 +326,7 @@ try {
   if (me.status() !== 401) throw new Error(`logout left session active: /auth/me returned ${me.status()}`);
 
   if (browserErrors.length) throw new Error(browserErrors.join('\n'));
-  console.log('browser E2E passed: OIDC, ingestion, debug-ID/indexed source-map symbolication, Sentry API details, Discover, dashboards, interactive replay, profile analysis, telemetry, MCP operations, and logout');
+  console.log('browser E2E passed: OIDC, ingestion, debug-ID/indexed source-map symbolication, Sentry API details, Discover, dashboards, teams, interactive replay, profile analysis, telemetry, MCP operations, and logout');
 } finally {
   await browser.close();
 }

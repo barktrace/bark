@@ -11,6 +11,19 @@ Otherwise the invitation stays pending for seven days and is accepted
 automatically when that verified email signs in through OIDC. There is no
 password or invitation-link login path.
 
+## Teams and project access
+
+Organization administrators can create teams, add existing organization
+members, and link each team to projects as `viewer`, `member`, or `admin`.
+Team roles can raise a member's inherited project role. An explicit per-user
+project override takes precedence, including `none`, so an administrator can
+deny one user without removing the rest of their team.
+
+Issues can be assigned to either one user or one linked team. Unlinking a team
+from a project clears that team's issue assignments, and deleting a team clears
+all of its assignments. Removing an organization member also removes their team
+memberships in that organization. Team mutations appear in the audit log.
+
 ## API tokens
 
 Any member can create a personal token scoped to one organization. Tokens start

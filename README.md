@@ -14,7 +14,7 @@ The current foundation includes:
   external and multi-node metadata deployments;
 - generic OpenID Connect login with PKCE, state, nonce, verified-email account
   linking, and automatic organization provisioning;
-- organization memberships and project-scoped access;
+- organization memberships, teams, team/user issue assignment, and project-scoped access;
 - member invitations, role administration, and organization-scoped API tokens;
 - Sentry envelope and store ingestion with per-project rate limits;
 - deterministic issue grouping, event detail, triage activity, public issue links,
@@ -33,9 +33,9 @@ The current foundation includes:
 - release commits, deploy metadata, code mappings, and suspect commits;
 - `sentry-cli` build and snapshot upload/download workflows;
 - a durable leased ingestion queue with retries, dead letters, and category quotas;
-- organization and project roles plus a queryable mutation audit log;
+- organization, team, and project roles plus a queryable mutation audit log;
 - configurable retention, manual cleanup previews, and storage reporting;
-- an organization-scoped Streamable HTTP MCP server with 52 investigation, dashboard, triage, alerting, and operations tools;
+- an organization-scoped Streamable HTTP MCP server with 58 investigation, dashboard, triage, team, alerting, and operations tools;
 - optional managed Sentry Relay registration and project-configuration support;
 - optional S3-compatible shared blob storage and leased background workers;
 - one final Docker image containing the API and compiled Astro dashboard.

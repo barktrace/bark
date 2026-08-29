@@ -13,6 +13,15 @@ import (
 	"testing"
 )
 
+func TestSentryUserRegionsUsesCurrentCLIShape(t *testing.T) {
+	server, _ := managementFixture(t)
+	response := httptest.NewRecorder()
+	server.sentryUserRegions(response, httptest.NewRequest(http.MethodGet, "/api/0/users/me/regions/", nil))
+	if response.Code != http.StatusOK || response.Body.String() != "{\"regions\":[]}\n" {
+		t.Fatalf("regions status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestSentryChunkUploadAssemblesArtifactBundle(t *testing.T) {
 	server, principal := managementFixture(t)
 	bundle := testArtifactBundle(t)

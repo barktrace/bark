@@ -17,19 +17,20 @@ func (s *Server) issueDetail(w http.ResponseWriter, r *http.Request) {
 	issueID := r.PathValue("issue_id")
 	var issue map[string]any
 	var projectID, title, status, level, priority, firstSeen, lastSeen, firstRelease, lastRelease string
-	var assigneeID, assigneeName, snoozedUntil sql.NullString
+	var assigneeID, assigneeName, assigneeTeamID, assigneeTeamName, snoozedUntil sql.NullString
 	var count int64
 	var bookmarked bool
 	err := s.store.DB.QueryRowContext(r.Context(), `
 		SELECT i.project_id, i.title, i.status, i.level, i.priority, i.event_count,
 		       i.first_seen_at, i.last_seen_at, COALESCE(fr.version, ''), COALESCE(lr.version, ''),
-		       i.assignee_user_id, u.name, i.bookmarked, i.snoozed_until
+		       i.assignee_user_id, u.name, i.assignee_team_id, at.name, i.bookmarked, i.snoozed_until
 		FROM issues i
 		LEFT JOIN releases fr ON fr.id = i.first_release_id
 		LEFT JOIN releases lr ON lr.id = i.last_release_id
 		LEFT JOIN users u ON u.id = i.assignee_user_id
+		LEFT JOIN teams at ON at.id = i.assignee_team_id
 		WHERE i.id = ?
-	`, issueID).Scan(&projectID, &title, &status, &level, &priority, &count, &firstSeen, &lastSeen, &firstRelease, &lastRelease, &assigneeID, &assigneeName, &bookmarked, &snoozedUntil)
+	`, issueID).Scan(&projectID, &title, &status, &level, &priority, &count, &firstSeen, &lastSeen, &firstRelease, &lastRelease, &assigneeID, &assigneeName, &assigneeTeamID, &assigneeTeamName, &bookmarked, &snoozedUntil)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "issue not found")
 		return
@@ -38,7 +39,7 @@ func (s *Server) issueDetail(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "issue access required")
 		return
 	}
-	issue = map[string]any{"id": issueID, "project_id": projectID, "title": title, "status": status, "level": level, "priority": priority, "event_count": count, "first_seen_at": firstSeen, "last_seen_at": lastSeen, "first_release": firstRelease, "last_release": lastRelease, "assignee_user_id": nullString(assigneeID), "assignee_name": nullString(assigneeName), "bookmarked": bookmarked, "snoozed_until": nullString(snoozedUntil)}
+	issue = map[string]any{"id": issueID, "project_id": projectID, "title": title, "status": status, "level": level, "priority": priority, "event_count": count, "first_seen_at": firstSeen, "last_seen_at": lastSeen, "first_release": firstRelease, "last_release": lastRelease, "assignee_user_id": nullString(assigneeID), "assignee_name": nullString(assigneeName), "assignee_team_id": nullString(assigneeTeamID), "assignee_team_name": nullString(assigneeTeamName), "bookmarked": bookmarked, "snoozed_until": nullString(snoozedUntil)}
 
 	eventRows, err := s.store.DB.QueryContext(r.Context(), `
 		SELECT e.id, e.event_id, e.timestamp, e.environment, e.platform, e.level,
@@ -121,6 +122,7 @@ func (s *Server) updateIssue(w http.ResponseWriter, r *http.Request) {
 		Status         *string `json:"status"`
 		Priority       *string `json:"priority"`
 		AssigneeUserID *string `json:"assignee_user_id"`
+		AssigneeTeamID *string `json:"assignee_team_id"`
 		Bookmarked     *bool   `json:"bookmarked"`
 		SnoozedUntil   *string `json:"snoozed_until"`
 	}
@@ -128,13 +130,17 @@ func (s *Server) updateIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var status, priority string
-	var assignee, snoozed sql.NullString
+	var assignee, assigneeTeam, snoozed sql.NullString
 	var bookmarked bool
-	if err := s.store.DB.QueryRowContext(r.Context(), `SELECT status, priority, assignee_user_id, bookmarked, snoozed_until FROM issues WHERE id = ?`, issueID).Scan(&status, &priority, &assignee, &bookmarked, &snoozed); err != nil {
+	if err := s.store.DB.QueryRowContext(r.Context(), `SELECT status, priority, assignee_user_id, assignee_team_id, bookmarked, snoozed_until FROM issues WHERE id = ?`, issueID).Scan(&status, &priority, &assignee, &assigneeTeam, &bookmarked, &snoozed); err != nil {
 		writeError(w, http.StatusNotFound, "issue not found")
 		return
 	}
 	changes := make([][2]string, 0)
+	if input.AssigneeUserID != nil && input.AssigneeTeamID != nil {
+		writeError(w, http.StatusBadRequest, "set either assignee_user_id or assignee_team_id")
+		return
+	}
 	if input.Status != nil {
 		value := strings.ToLower(strings.TrimSpace(*input.Status))
 		if value != "unresolved" && value != "resolved" && value != "ignored" {
@@ -163,9 +169,26 @@ func (s *Server) updateIssue(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "assignee is not an organization member")
 			return
 		}
-		if value != assignee.String {
+		if value != assignee.String || assigneeTeam.Valid {
 			assignee = sql.NullString{String: value, Valid: value != ""}
+			assigneeTeam = sql.NullString{}
 			changes = append(changes, [2]string{"assignment", value})
+		}
+	}
+	if input.AssigneeTeamID != nil {
+		value := strings.TrimSpace(*input.AssigneeTeamID)
+		if value != "" {
+			var linked int
+			_ = s.store.DB.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM team_projects WHERE team_id = ? AND project_id = ?`, value, projectID).Scan(&linked)
+			if linked == 0 {
+				writeError(w, http.StatusBadRequest, "assignee team is not linked to the project")
+				return
+			}
+		}
+		if value != assigneeTeam.String || assignee.Valid {
+			assignee = sql.NullString{}
+			assigneeTeam = sql.NullString{String: value, Valid: value != ""}
+			changes = append(changes, [2]string{"assignment", map[bool]string{true: "team:" + value, false: ""}[value != ""]})
 		}
 	}
 	if input.Bookmarked != nil && *input.Bookmarked != bookmarked {
@@ -193,7 +216,7 @@ func (s *Server) updateIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(r.Context(), `UPDATE issues SET status = ?, priority = ?, assignee_user_id = ?, bookmarked = ?, snoozed_until = ? WHERE id = ?`, status, priority, nullStringValue(assignee), boolInteger(bookmarked), nullStringValue(snoozed), issueID); err != nil {
+	if _, err := tx.ExecContext(r.Context(), `UPDATE issues SET status = ?, priority = ?, assignee_user_id = ?, assignee_team_id = ?, bookmarked = ?, snoozed_until = ? WHERE id = ?`, status, priority, nullStringValue(assignee), nullStringValue(assigneeTeam), boolInteger(bookmarked), nullStringValue(snoozed), issueID); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not update issue")
 		return
 	}
@@ -207,7 +230,7 @@ func (s *Server) updateIssue(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not commit issue update")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"id": issueID, "status": status, "priority": priority, "assignee_user_id": nullString(assignee), "bookmarked": bookmarked, "snoozed_until": nullString(snoozed)})
+	writeJSON(w, http.StatusOK, map[string]any{"id": issueID, "status": status, "priority": priority, "assignee_user_id": nullString(assignee), "assignee_team_id": nullString(assigneeTeam), "bookmarked": bookmarked, "snoozed_until": nullString(snoozed)})
 }
 
 func (s *Server) createIssueComment(w http.ResponseWriter, r *http.Request) {

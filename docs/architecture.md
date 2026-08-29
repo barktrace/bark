@@ -43,10 +43,13 @@ discovery, SQLite WAL, health checks, and the embedded dashboard loaded measured
 
 ## Tenancy and identity
 
-Users are global identities. Organizations own projects and releases through
-memberships. OIDC issuer/subject is immutable; verified email is used only once
-for safe account linking. The first user in the default organization becomes
-owner, while later auto-provisioned users become members.
+Users are global identities. Organizations own teams, projects, and releases
+through memberships. Teams link organization members to projects with viewer,
+member, or administrator roles and can own issues. Explicit per-user project
+overrides take precedence over team roles. OIDC issuer/subject is immutable;
+verified email is used only once for safe account linking. The first user in
+the default organization becomes owner, while later auto-provisioned users
+become members.
 
 ## Release linkage
 

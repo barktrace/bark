@@ -211,7 +211,7 @@ func (s *Server) uploadArtifact(w http.ResponseWriter, r *http.Request, projectI
 		writeError(w, http.StatusInternalServerError, "could not commit artifact")
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"id": artifactID, "name": name, "artifact_type": kind, "sha1": result.Checksum, "size": result.Size, "dist": r.FormValue("dist"), "dateCreated": time.Now().UTC().Format(time.RFC3339Nano)})
+	writeJSON(w, http.StatusCreated, map[string]any{"id": artifactID, "name": name, "artifact_type": kind, "sha1": result.Checksum, "size": result.Size, "dist": r.FormValue("dist"), "dateCreated": time.Now().UTC().Format(time.RFC3339Nano), "headers": map[string]string{}})
 }
 
 func (s *Server) sentryDebugArtifactUpload(w http.ResponseWriter, r *http.Request, kind string) {
@@ -271,7 +271,7 @@ func (s *Server) listArtifacts(r *http.Request, projectID, version string) ([]ma
 		if err := rows.Scan(&id, &name, &kind, &debugID, &dist, &checksum, &size, &contentType, &createdAt, &release); err != nil {
 			return nil, err
 		}
-		items = append(items, map[string]any{"id": id, "name": name, "artifact_type": kind, "debug_id": debugID, "dist": dist, "sha1": checksum, "size": size, "content_type": contentType, "dateCreated": createdAt, "release": release})
+		items = append(items, map[string]any{"id": id, "name": name, "artifact_type": kind, "debug_id": debugID, "dist": dist, "sha1": checksum, "size": size, "content_type": contentType, "dateCreated": createdAt, "release": release, "headers": map[string]string{}})
 	}
 	return items, rows.Err()
 }

@@ -60,8 +60,55 @@ func TestInitializeAndListTools(t *testing.T) {
 	listed := call(t, service, `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
 	toolsResult := listed["result"].(map[string]any)
 	available := toolsResult["tools"].([]any)
-	if len(available) != 52 {
-		t.Fatalf("tool count = %d, want 52", len(available))
+	if len(available) != 58 {
+		t.Fatalf("tool count = %d, want 58", len(available))
+	}
+}
+
+func TestTeamToolsAndTeamIssueAssignment(t *testing.T) {
+	st := testStore(t)
+	seedMCPData(t, st)
+	plain := "bark_mcp_team-write-token"
+	hash := sha256.Sum256([]byte(plain))
+	_, err := st.DB.Exec(`
+		INSERT INTO users(id, email, name) VALUES ('creator', 'creator@example.com', 'Creator'), ('responder', 'responder@example.com', 'Responder');
+		INSERT INTO organization_memberships(organization_id, user_id, role) VALUES ('org', 'creator', 'owner'), ('org', 'responder', 'member');
+		INSERT INTO mcp_tokens(id, organization_id, created_by, name, token_hash, token_prefix, scopes) VALUES ('mcp-team', 'org', 'creator', 'Teams', ?, 'bark_mcp_team', '["write"]');
+	`, hash[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := New(st, "", "https://errors.example")
+	created := callWithToken(t, service, plain, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"create_team","arguments":{"name":"Backend","slug":"backend"}}}`)
+	createdResult := created["result"].(map[string]any)
+	if createdResult["isError"] != false {
+		t.Fatalf("create_team failed: %#v", created)
+	}
+	teamID := createdResult["structuredContent"].(map[string]any)["id"].(string)
+
+	for id, payload := range []string{
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"add_team_member","arguments":{"team_id":"` + teamID + `","user_id":"responder"}}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"link_team_project","arguments":{"team_id":"` + teamID + `","project_id":"project","role":"admin"}}}`,
+		`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"update_issue","arguments":{"issue_id":"issue","assignee_team_id":"` + teamID + `"}}}`,
+	} {
+		result := callWithToken(t, service, plain, payload)["result"].(map[string]any)
+		if result["isError"] != false {
+			t.Fatalf("team tool %d failed: %#v", id, result)
+		}
+	}
+
+	listed := callWithToken(t, service, plain, `{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"list_teams","arguments":{}}}`)
+	result := listed["result"].(map[string]any)
+	if result["isError"] != false {
+		t.Fatalf("list_teams failed: %#v", listed)
+	}
+	items := result["structuredContent"].([]any)
+	if len(items) != 1 || items[0].(map[string]any)["member_count"] != float64(2) || items[0].(map[string]any)["project_count"] != float64(1) {
+		t.Fatalf("team list = %#v", items)
+	}
+	var assignedTeam string
+	if err := st.DB.QueryRow(`SELECT COALESCE(assignee_team_id, '') FROM issues WHERE id = 'issue'`).Scan(&assignedTeam); err != nil || assignedTeam != teamID {
+		t.Fatalf("assigned team=%q err=%v", assignedTeam, err)
 	}
 }
 

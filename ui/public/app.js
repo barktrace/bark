@@ -26,6 +26,7 @@ const state = {
   issueStatus: 'all',
   providerName: 'OIDC',
   members: { members: [], invitations: [] },
+  teams: [],
   tokens: [],
   storage: null,
   alerts: [],
@@ -264,7 +265,7 @@ function renderIssueDetail() {
   const activity = detail.activities.map((item) => `<div class="activity-item"><span class="activity-icon">${item.kind === 'comment' ? '”' : '•'}</span><p><strong>${escapeHTML(item.user_name || item.user_email || 'System')}</strong> ${item.kind === 'comment' ? escapeHTML(item.value) : `${escapeHTML(item.kind)} → ${escapeHTML(item.value || 'cleared')}`}<small>${escapeHTML(relative(item.created_at))}</small></p></div>`).join('');
   const attachments = state.attachments.map((item) => `<a class="management-row" href="/attachments/${encodeURIComponent(item.id)}"><span class="platform-icon">FILE</span><span><strong>${escapeHTML(item.filename)}</strong><small>${escapeHTML(item.attachment_type)} · ${Number(item.size).toLocaleString()} bytes</small></span></a>`).join('');
   return `<div class="issue-detail-head"><button class="button secondary small" data-back-issues>← All issues</button><div class="inline-actions"><button class="icon-text-button ${issue.bookmarked ? 'active' : ''}" data-bookmark-issue>${issue.bookmarked ? '★ Bookmarked' : '☆ Bookmark'}</button><button class="button secondary small" data-snooze-issue>${issue.snoozed_until ? 'Unsnooze' : 'Snooze 24h'}</button><button class="button secondary small" data-issue-status="${issue.status === 'resolved' ? 'unresolved' : 'resolved'}">${issue.status === 'resolved' ? 'Reopen' : 'Resolve'}</button>${canAdminister() ? '<button class="button danger small" data-delete-issue>Delete</button>' : ''}</div></div>
-    <section class="issue-hero card"><div><div class="issue-meta"><span class="severity ${escapeHTML(issue.level)}"></span><span class="status ${escapeHTML(issue.status)}">${escapeHTML(issue.status)}</span><span>${escapeHTML(issue.level)}</span><span>${Number(issue.event_count).toLocaleString()} events</span>${issue.snoozed_until ? `<span>Snoozed until ${escapeHTML(new Date(issue.snoozed_until).toLocaleString())}</span>` : ''}</div><h2>${escapeHTML(issue.title)}</h2><p class="muted">First seen ${escapeHTML(relative(issue.first_seen_at))} · Last seen ${escapeHTML(relative(issue.last_seen_at))}</p></div><div class="issue-controls"><label>Assignee<select id="issue-assignee"><option value="">Unassigned</option>${state.members.members.map((member) => `<option value="${escapeHTML(member.id)}" ${issue.assignee_user_id === member.id ? 'selected' : ''}>${escapeHTML(member.name || member.email)}</option>`).join('')}</select></label><label>Priority<select id="issue-priority">${['low', 'medium', 'high', 'critical'].map((value) => `<option value="${value}" ${issue.priority === value ? 'selected' : ''}>${value}</option>`).join('')}</select></label><label>Status<select id="issue-status">${['unresolved', 'resolved', 'ignored'].map((value) => `<option value="${value}" ${issue.status === value ? 'selected' : ''}>${value}</option>`).join('')}</select></label></div></section>
+    <section class="issue-hero card"><div><div class="issue-meta"><span class="severity ${escapeHTML(issue.level)}"></span><span class="status ${escapeHTML(issue.status)}">${escapeHTML(issue.status)}</span><span>${escapeHTML(issue.level)}</span><span>${Number(issue.event_count).toLocaleString()} events</span>${issue.snoozed_until ? `<span>Snoozed until ${escapeHTML(new Date(issue.snoozed_until).toLocaleString())}</span>` : ''}</div><h2>${escapeHTML(issue.title)}</h2><p class="muted">First seen ${escapeHTML(relative(issue.first_seen_at))} · Last seen ${escapeHTML(relative(issue.last_seen_at))}</p></div><div class="issue-controls"><label>Assignee<select id="issue-assignee"><option value="">Unassigned</option><optgroup label="People">${state.members.members.map((member) => `<option value="user:${escapeHTML(member.id)}" ${issue.assignee_user_id === member.id ? 'selected' : ''}>${escapeHTML(member.name || member.email)}</option>`).join('')}</optgroup><optgroup label="Teams">${state.teams.filter((team) => team.projects?.some((project) => project.id === state.projectId)).map((team) => `<option value="team:${escapeHTML(team.id)}" ${issue.assignee_team_id === team.id ? 'selected' : ''}>#${escapeHTML(team.slug)}</option>`).join('')}</optgroup></select></label><label>Priority<select id="issue-priority">${['low', 'medium', 'high', 'critical'].map((value) => `<option value="${value}" ${issue.priority === value ? 'selected' : ''}>${value}</option>`).join('')}</select></label><label>Status<select id="issue-status">${['unresolved', 'resolved', 'ignored'].map((value) => `<option value="${value}" ${issue.status === value ? 'selected' : ''}>${value}</option>`).join('')}</select></label></div></section>
     <div class="issue-detail-grid"><section class="card event-detail"><div class="event-picker">${detail.events.map((event, index) => `<button class="${event.id === selected?.id ? 'active' : ''}" data-event-id="${escapeHTML(event.id)}"><strong>#${detail.events.length - index}</strong><span>${escapeHTML(event.environment || 'default')}</span><small>${escapeHTML(relative(event.timestamp))}</small></button>`).join('')}</div>${selected ? `<div class="event-content"><div class="event-facts"><span><small>Event ID</small><code>${escapeHTML(selected.event_id)}</code></span><span><small>Release</small><code>${escapeHTML(selected.release || '—')}</code></span><span><small>Platform</small><b>${escapeHTML(selected.platform || 'generic')}</b></span><span><small>Environment</small><b>${escapeHTML(selected.environment || 'default')}</b></span></div>${exception.type || exception.value ? `<div class="exception-block"><p class="eyebrow">Exception</p><h3>${escapeHTML(exception.type || 'Error')}</h3><p>${escapeHTML(exception.value || payload.message || '')}</p></div>` : ''}<div class="detail-section"><h3>Stack trace</h3>${frames.length ? `<div class="stacktrace">${frames.map((frame) => `<div class="frame ${frame.in_app ? 'in-app' : ''}"><div><strong class="mono">${escapeHTML(frame.function || '<unknown>')}</strong><span class="mono">${escapeHTML(frame.filename || frame.abs_path || '')}:${escapeHTML(frame.lineno || '')}</span></div>${frame.context_line ? `<pre>${escapeHTML(frame.context_line)}</pre>` : ''}</div>`).join('')}</div>` : '<p class="muted">No stack frames were included in this event.</p>'}</div>${breadcrumbs.length ? `<div class="detail-section"><h3>Breadcrumbs</h3><div class="breadcrumb-list">${breadcrumbs.slice(-30).reverse().map((crumb) => `<div><time>${escapeHTML(crumb.timestamp || '')}</time><span class="log-level ${escapeHTML(crumb.level || 'info')}">${escapeHTML(crumb.category || crumb.type || 'log')}</span><strong>${escapeHTML(crumb.message || JSON.stringify(crumb.data || {}))}</strong></div>`).join('')}</div></div>` : ''}<details class="raw-event"><summary>Raw event JSON</summary><pre>${escapeHTML(JSON.stringify(payload, null, 2))}</pre></details></div>` : '<div class="empty-state"><h3>No retained events</h3></div>'}</section>
     <aside class="card activity-panel"><div class="card-heading"><div><p class="eyebrow">Collaboration</p><h2>Activity</h2></div></div><form id="issue-comment"><textarea name="body" maxlength="4000" placeholder="Leave a note for your team…" required></textarea><button class="button small">Comment</button></form><div class="activity-list">${activity || '<p class="muted padded">No activity yet.</p>'}</div><h3 class="section-title">Attachments</h3><div class="management-list compact-management">${attachments || '<p class="muted padded">No attachments for this event.</p>'}</div></aside></div>`;
 }
@@ -298,6 +299,12 @@ function renderSettings() {
   const tokens = state.tokens.map((item) => `<div class="management-row"><span class="platform-icon">API</span><span><strong>${escapeHTML(item.name)}</strong><small class="mono">${escapeHTML(item.prefix)}… · ${item.last_used_at ? `used ${escapeHTML(relative(item.last_used_at))}` : 'never used'}</small></span><small>${item.expires_at ? `expires ${escapeHTML(relative(item.expires_at))}` : 'no expiry'}</small><button class="icon-text-button danger-text" data-delete-token="${escapeHTML(item.id)}">Revoke</button></div>`).join('');
   const mcpTokens = state.mcpTokens.map((item) => `<div class="management-row"><span class="platform-icon">MCP</span><span><strong>${escapeHTML(item.name)}</strong><small class="mono">${escapeHTML(item.token_prefix)}… · ${Array.isArray(item.scopes) ? item.scopes.map(escapeHTML).join(', ') : 'read'} · ${item.last_used_at ? `used ${escapeHTML(relative(item.last_used_at))}` : 'never used'}</small></span><small>${item.expires_at ? `expires ${escapeHTML(relative(item.expires_at))}` : 'no expiry'}</small><button class="icon-text-button danger-text" data-delete-mcp-token="${escapeHTML(item.id)}">Revoke</button></div>`).join('');
   const projectMemberships = state.projectMemberships.map((item) => `<div class="management-row"><span class="avatar small-avatar">${escapeHTML((item.name || item.email || '?')[0].toUpperCase())}</span><span><strong>${escapeHTML(item.name || item.email)}</strong><small>${escapeHTML(item.organization_role)} organization role · effective ${escapeHTML(item.effective_role)}</small></span><select data-project-role="${escapeHTML(item.user_id)}"><option value="" ${!item.project_role ? 'selected' : ''}>inherit</option>${['viewer', 'member', 'admin', 'none'].map((role) => `<option value="${role}" ${item.project_role === role ? 'selected' : ''}>${role}</option>`).join('')}</select></div>`).join('');
+  const teams = state.teams.map((team) => {
+    const linked = team.projects?.find((project) => project.id === state.projectId);
+    const availableMembers = state.members.members.filter((member) => !team.members?.some((item) => item.id === member.id));
+    const memberNames = team.members?.map((member) => `<span>${escapeHTML(member.name || member.email)}${admin ? ` <button class="icon-text-button danger-text" data-remove-team-member="${escapeHTML(team.id)}" data-user-id="${escapeHTML(member.id)}">×</button>` : ''}</span>`).join('') || '<span class="muted">No members</span>';
+    return `<div class="management-row team-row"><span class="platform-icon">#</span><span><strong>${escapeHTML(team.name)}</strong><small>#${escapeHTML(team.slug)} · ${Number(team.member_count)} members · ${Number(team.project_count)} projects</small><small>${memberNames}</small></span>${admin && state.projectId ? `<select data-team-project="${escapeHTML(team.id)}"><option value="" ${!linked ? 'selected' : ''}>not linked</option>${['viewer', 'member', 'admin'].map((role) => `<option value="${role}" ${linked?.role === role ? 'selected' : ''}>${role}</option>`).join('')}</select>` : ''}${admin && availableMembers.length ? `<form class="inline-form add-team-member" data-team-id="${escapeHTML(team.id)}"><select name="user_id">${availableMembers.map((member) => `<option value="${escapeHTML(member.id)}">${escapeHTML(member.name || member.email)}</option>`).join('')}</select><button class="button small">Add</button></form>` : ''}${admin ? `<button class="icon-text-button danger-text" data-delete-team="${escapeHTML(team.id)}">Delete</button>` : ''}</div>`;
+  }).join('');
   const auditRows = state.auditLogs.slice(0, 30).map((item) => `<div class="management-row"><span class="platform-icon">LOG</span><span><strong>${escapeHTML(item.action)}</strong><small>${escapeHTML(item.actor_email || item.actor_type)} · ${escapeHTML(item.target_type || 'request')} ${escapeHTML(item.target_id || '')}</small></span><small>${escapeHTML(relative(item.created_at))}</small></div>`).join('');
   const totals = state.storage?.totals || {};
   const alerts = state.alerts.map((item) => `<div class="management-row"><i class="monitor-state ${item.enabled ? 'up' : 'pending'}"></i><span><strong>${escapeHTML(item.name)}</strong><small>${escapeHTML(item.trigger.replaceAll('_', ' '))} · ${escapeHTML(item.destination_type)} · ${escapeHTML(item.destination_host)}</small></span><button class="button secondary small" data-toggle-alert="${escapeHTML(item.id)}" data-enabled="${item.enabled}">${item.enabled ? 'Disable' : 'Enable'}</button><button class="button secondary small" data-test-alert="${escapeHTML(item.id)}">Test</button><button class="icon-text-button danger-text" data-delete-alert="${escapeHTML(item.id)}">Delete</button></div>`).join('');
@@ -306,6 +313,7 @@ function renderSettings() {
     <section class="card settings-card"><p class="eyebrow">Workspace</p><h2>${escapeHTML(organization?.organization_name || 'Organization')}</h2><dl><div><dt>Slug</dt><dd class="mono">${escapeHTML(organization?.organization_slug || '')}</dd></div><div><dt>Your role</dt><dd><span class="status unresolved">${escapeHTML(membership?.role || '')}</span></dd></div><div><dt>Projects</dt><dd>${state.projects.length}</dd></div></dl></section>
     <section class="card settings-card"><p class="eyebrow">Identity</p><h2>Single sign-on</h2><p class="muted">Accounts are provisioned from your OIDC provider. Password authentication is disabled.</p><dl><div><dt>Signed in as</dt><dd>${escapeHTML(state.me?.email || '')}</dd></div><div><dt>Provider</dt><dd>${escapeHTML(state.providerName)}</dd></div></dl></section>
     <section class="card settings-card span-two"><div class="card-heading"><div><p class="eyebrow">Team</p><h2>Members and invitations</h2></div>${admin ? `<form id="invite-member" class="inline-form"><input name="email" type="email" required placeholder="teammate@example.com" /><select name="role"><option>member</option><option>viewer</option><option>admin</option></select><button class="button small">Invite</button></form>` : ''}</div><div class="management-list">${members || '<p class="muted padded">No members.</p>'}${invitations}</div></section>
+    <section class="card settings-card span-two"><div class="card-heading"><div><p class="eyebrow">Ownership</p><h2>Teams</h2></div>${admin ? `<form id="create-team" class="inline-form"><input name="name" required placeholder="Backend responders" /><input name="slug" placeholder="backend" pattern="[a-z0-9-]+" /><button class="button small">Create</button></form>` : ''}</div><div class="management-list">${teams || '<p class="muted padded">No teams.</p>'}</div></section>
     <section class="card settings-card span-two"><div class="card-heading"><div><p class="eyebrow">Automation</p><h2>API tokens</h2></div><form id="create-token" class="inline-form"><input name="name" required placeholder="CI deployment" /><select name="expires_in_days"><option value="0">No expiry</option><option value="30">30 days</option><option value="90">90 days</option><option value="365">1 year</option></select><button class="button small">Create</button></form></div>${state.newToken ? `<div class="token-secret"><strong>Copy this token now — it will not be shown again.</strong><div class="copy-field"><code>${escapeHTML(state.newToken)}</code><button data-copy="${escapeHTML(state.newToken)}">${icon('copy')} Copy</button></div></div>` : ''}<div class="management-list">${tokens || '<p class="muted padded">No personal API tokens.</p>'}</div></section>
     ${admin ? `<section class="card settings-card span-two"><div class="card-heading"><div><p class="eyebrow">AI integrations</p><h2>Organization MCP tokens</h2></div><form id="create-mcp-token" class="inline-form"><input name="name" required placeholder="Coding agent" /><select name="scope"><option value="read">Read only</option><option value="write">Read and write</option></select><select name="expires_in_days"><option value="0">No expiry</option><option value="30">30 days</option><option value="90">90 days</option><option value="365">1 year</option></select><button class="button small">Create</button></form></div>${state.newMCPToken ? `<div class="token-secret"><strong>Copy this MCP token now — it will not be shown again.</strong><div class="copy-field"><code>${escapeHTML(state.newMCPToken)}</code><button data-copy="${escapeHTML(state.newMCPToken)}">${icon('copy')} Copy</button></div></div>` : ''}<div class="management-list">${mcpTokens || '<p class="muted padded">No organization MCP tokens.</p>'}</div></section>` : ''}
     ${canAdministerProject() ? `<section class="card settings-card span-two"><div class="card-heading"><div><p class="eyebrow">Project access</p><h2>Role overrides</h2></div></div><div class="management-list">${projectMemberships || '<p class="muted padded">No project members.</p>'}</div></section>` : ''}
@@ -700,7 +708,13 @@ function bindView() {
   }));
   $('#issue-status')?.addEventListener('change', async (event) => updateSelectedIssue({ status: event.target.value }));
   $('#issue-priority')?.addEventListener('change', async (event) => updateSelectedIssue({ priority: event.target.value }));
-  $('#issue-assignee')?.addEventListener('change', async (event) => updateSelectedIssue({ assignee_user_id: event.target.value }));
+  $('#issue-assignee')?.addEventListener('change', async (event) => {
+    const value = event.target.value;
+    if (value.startsWith('team:')) await updateSelectedIssue({ assignee_team_id: value.slice(5) });
+    else if (value.startsWith('user:')) await updateSelectedIssue({ assignee_user_id: value.slice(5) });
+    else if (state.issueDetail.issue.assignee_team_id) await updateSelectedIssue({ assignee_team_id: '' });
+    else await updateSelectedIssue({ assignee_user_id: '' });
+  });
   $$('[data-bookmark-issue]').forEach((button) => button.addEventListener('click', async () => {
     await updateSelectedIssue({ bookmarked: !state.issueDetail.issue.bookmarked });
   }));
@@ -782,6 +796,40 @@ function bindView() {
     await request(`/organizations/${encodeURIComponent(state.organizationId)}/invitations/${encodeURIComponent(button.dataset.revokeInvite)}`, { method: 'DELETE' });
     await loadManagementData();
     showToast('Invitation revoked');
+  }));
+  $('#create-team')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const input = new FormData(form);
+    await request(`/organizations/${encodeURIComponent(state.organizationId)}/teams`, { method: 'POST', body: JSON.stringify({ name: input.get('name'), slug: input.get('slug') }) });
+    form.reset();
+    await loadManagementData();
+    showToast('Team created');
+  });
+  $$('.add-team-member').forEach((form) => form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const userId = new FormData(form).get('user_id');
+    await request(`/teams/${encodeURIComponent(form.dataset.teamId)}/members/${encodeURIComponent(userId)}`, { method: 'PUT' });
+    await loadManagementData();
+    showToast('Team member added');
+  }));
+  $$('[data-remove-team-member]').forEach((button) => button.addEventListener('click', async () => {
+    await request(`/teams/${encodeURIComponent(button.dataset.removeTeamMember)}/members/${encodeURIComponent(button.dataset.userId)}`, { method: 'DELETE' });
+    await loadManagementData();
+    showToast('Team member removed');
+  }));
+  $$('[data-team-project]').forEach((select) => select.addEventListener('change', async () => {
+    const endpoint = `/teams/${encodeURIComponent(select.dataset.teamProject)}/projects/${encodeURIComponent(state.projectId)}`;
+    if (select.value) await request(endpoint, { method: 'PUT', body: JSON.stringify({ role: select.value }) });
+    else await request(endpoint, { method: 'DELETE' });
+    await loadProjects(state.projectId);
+    showToast('Team project access updated');
+  }));
+  $$('[data-delete-team]').forEach((button) => button.addEventListener('click', async () => {
+    if (!confirm('Delete this team? Existing team issue assignments will be cleared.')) return;
+    await request(`/teams/${encodeURIComponent(button.dataset.deleteTeam)}`, { method: 'DELETE' });
+    await loadManagementData();
+    showToast('Team deleted');
   }));
   $('#create-token')?.addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -1047,6 +1095,7 @@ async function loadProjectData() {
 async function loadManagementData() {
   if (!state.organizationId) {
     state.members = { members: [], invitations: [] };
+    state.teams = [];
     state.tokens = [];
     state.storage = null;
     state.alerts = [];
@@ -1060,6 +1109,7 @@ async function loadManagementData() {
   }
   const requests = [
     request(`/organizations/${encodeURIComponent(state.organizationId)}/members`),
+    request(`/organizations/${encodeURIComponent(state.organizationId)}/teams`),
     request('/api-tokens'),
     request(`/storage?organization_id=${encodeURIComponent(state.organizationId)}`),
     request(`/dashboards?organization_id=${encodeURIComponent(state.organizationId)}`),
@@ -1068,8 +1118,16 @@ async function loadManagementData() {
     requests.push(request(`/alerts?project_id=${encodeURIComponent(state.projectId)}`));
     requests.push(request(`/alert-deliveries?project_id=${encodeURIComponent(state.projectId)}`));
   }
-  const [members, tokens, storage, dashboardResponse, alerts = [], deliveries = []] = await Promise.all(requests);
+  const [members, teamResponse, tokens, storage, dashboardResponse, alerts = [], deliveries = []] = await Promise.all(requests);
   state.members = members;
+  state.teams = teamResponse.teams || [];
+  state.teams = await Promise.all(state.teams.map(async (team) => {
+    const [membersResponse, projectsResponse] = await Promise.all([
+      request(`/teams/${encodeURIComponent(team.id)}/members`),
+      request(`/teams/${encodeURIComponent(team.id)}/projects`),
+    ]);
+    return { ...team, members: membersResponse.members || [], projects: projectsResponse.projects || [] };
+  }));
   state.tokens = tokens;
   state.storage = storage;
   state.dashboards = dashboardResponse.dashboards || [];

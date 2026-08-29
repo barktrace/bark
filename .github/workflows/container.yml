@@ -66,7 +66,19 @@ jobs:
         if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: >-
-          gh api --method PATCH
-          "/orgs/${{ github.repository_owner }}/packages/container/${{ github.event.repository.name }}"
-          -f visibility=public
+          GHCR_ADMIN_TOKEN: ${{ secrets.GHCR_ADMIN_TOKEN }}
+        run: |
+          if [ -n "$GHCR_ADMIN_TOKEN" ]; then
+            GH_TOKEN="$GHCR_ADMIN_TOKEN"
+            export GH_TOKEN
+          fi
+          if gh api --method PATCH \
+            "/orgs/${{ github.repository_owner }}/packages/container/${{ github.event.repository.name }}" \
+            -f visibility=public >/dev/null; then
+            exit 0
+          fi
+          if [ -n "$GHCR_ADMIN_TOKEN" ]; then
+            echo "::error::GHCR_ADMIN_TOKEN could not make the container package public"
+            exit 1
+          fi
+          echo "::warning::The image was published, but GITHUB_TOKEN cannot change package visibility. Make the package public once in GitHub Packages settings or add a classic GHCR_ADMIN_TOKEN secret with admin:org and write:packages scopes."

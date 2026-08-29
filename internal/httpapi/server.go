@@ -76,6 +76,17 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /organizations", s.auth.Require(http.HandlerFunc(s.organizations)))
 	s.mux.Handle("POST /organizations", s.auth.Require(http.HandlerFunc(s.createOrganization)))
 	s.mux.Handle("GET /organizations/{organization_id}/members", s.auth.Require(http.HandlerFunc(s.organizationMembers)))
+	s.mux.Handle("GET /organizations/{organization_id}/teams", s.auth.Require(http.HandlerFunc(s.organizationTeams)))
+	s.mux.Handle("POST /organizations/{organization_id}/teams", s.auth.Require(http.HandlerFunc(s.organizationTeams)))
+	s.mux.Handle("GET /teams/{team_id}", s.auth.Require(http.HandlerFunc(s.teamDetail)))
+	s.mux.Handle("PATCH /teams/{team_id}", s.auth.Require(http.HandlerFunc(s.teamDetail)))
+	s.mux.Handle("DELETE /teams/{team_id}", s.auth.Require(http.HandlerFunc(s.teamDetail)))
+	s.mux.Handle("GET /teams/{team_id}/members", s.auth.Require(http.HandlerFunc(s.teamMembers)))
+	s.mux.Handle("PUT /teams/{team_id}/members/{user_id}", s.auth.Require(http.HandlerFunc(s.updateTeamMember)))
+	s.mux.Handle("DELETE /teams/{team_id}/members/{user_id}", s.auth.Require(http.HandlerFunc(s.updateTeamMember)))
+	s.mux.Handle("GET /teams/{team_id}/projects", s.auth.Require(http.HandlerFunc(s.teamProjects)))
+	s.mux.Handle("PUT /teams/{team_id}/projects/{project_id}", s.auth.Require(http.HandlerFunc(s.updateTeamProject)))
+	s.mux.Handle("DELETE /teams/{team_id}/projects/{project_id}", s.auth.Require(http.HandlerFunc(s.updateTeamProject)))
 	s.mux.Handle("POST /organizations/{organization_id}/invitations", s.auth.Require(http.HandlerFunc(s.createInvitation)))
 	s.mux.Handle("DELETE /organizations/{organization_id}/invitations/{invitation_id}", s.auth.Require(http.HandlerFunc(s.deleteInvitation)))
 	s.mux.Handle("PATCH /organizations/{organization_id}/members/{user_id}", s.auth.Require(http.HandlerFunc(s.updateMember)))
@@ -156,6 +167,7 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /uptime/monitors/{monitor_id}/check", s.auth.Require(http.HandlerFunc(s.checkUptimeMonitor)))
 	s.mux.Handle("GET /uptime/checks", s.auth.Require(http.HandlerFunc(s.uptimeChecks)))
 	s.mux.Handle("GET /api/0/", s.auth.Require(http.HandlerFunc(s.sentryAuthInfo)))
+	s.mux.Handle("GET /api/0/users/me/regions/", s.auth.Require(http.HandlerFunc(s.sentryUserRegions)))
 	s.mux.HandleFunc("GET /api/0/relays/live/", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]bool{"is_healthy": true})
 	})
@@ -167,6 +179,19 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/0/organizations/", s.auth.Require(http.HandlerFunc(s.sentryOrganizations)))
 	s.mux.Handle("GET /api/0/organizations/{org_slug}/", s.auth.Require(http.HandlerFunc(s.sentryOrganizationDetail)))
 	s.mux.Handle("GET /api/0/organizations/{org_slug}/projects/", s.auth.Require(http.HandlerFunc(s.sentryOrganizationProjects)))
+	s.mux.Handle("GET /api/0/organizations/{org_slug}/members/", s.auth.Require(http.HandlerFunc(s.sentryOrganizationMembers)))
+	s.mux.Handle("GET /api/0/organizations/{org_slug}/members/{member_id}/", s.auth.Require(http.HandlerFunc(s.sentryOrganizationMembers)))
+	s.mux.Handle("GET /api/0/organizations/{org_slug}/teams/", s.auth.Require(http.HandlerFunc(s.sentryOrganizationTeams)))
+	s.mux.Handle("POST /api/0/organizations/{org_slug}/teams/", s.auth.Require(http.HandlerFunc(s.sentryOrganizationTeams)))
+	s.mux.Handle("GET /api/0/teams/{org_slug}/{team_slug}/", s.auth.Require(http.HandlerFunc(s.sentryTeamDetail)))
+	s.mux.Handle("PUT /api/0/teams/{org_slug}/{team_slug}/", s.auth.Require(http.HandlerFunc(s.sentryTeamDetail)))
+	s.mux.Handle("DELETE /api/0/teams/{org_slug}/{team_slug}/", s.auth.Require(http.HandlerFunc(s.sentryTeamDetail)))
+	s.mux.Handle("GET /api/0/teams/{org_slug}/{team_slug}/members/", s.auth.Require(http.HandlerFunc(s.sentryTeamMembers)))
+	s.mux.Handle("GET /api/0/teams/{org_slug}/{team_slug}/projects/", s.auth.Require(http.HandlerFunc(s.sentryTeamProjects)))
+	s.mux.Handle("POST /api/0/teams/{org_slug}/{team_slug}/projects/{project_slug}/", s.auth.Require(http.HandlerFunc(s.sentryTeamProjects)))
+	s.mux.Handle("DELETE /api/0/teams/{org_slug}/{team_slug}/projects/{project_slug}/", s.auth.Require(http.HandlerFunc(s.sentryTeamProjects)))
+	s.mux.Handle("POST /api/0/organizations/{org_slug}/members/{member_id}/teams/{team_slug}/", s.auth.Require(http.HandlerFunc(s.sentryOrganizationMemberTeam)))
+	s.mux.Handle("DELETE /api/0/organizations/{org_slug}/members/{member_id}/teams/{team_slug}/", s.auth.Require(http.HandlerFunc(s.sentryOrganizationMemberTeam)))
 	s.mux.Handle("GET /api/0/organizations/{org_slug}/monitors/", s.auth.Require(http.HandlerFunc(s.sentryOrganizationMonitors)))
 	s.mux.Handle("GET /api/0/organizations/{org_slug}/repos/", s.auth.Require(http.HandlerFunc(s.sentryOrganizationRepositories)))
 	s.mux.Handle("POST /api/0/organizations/{org_slug}/code-mappings/bulk/", s.auth.Require(http.HandlerFunc(s.sentryBulkCodeMappings)))
@@ -182,6 +207,10 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/0/organizations/{org_slug}/releases/{version}/deploys/", s.auth.Require(http.HandlerFunc(s.sentryReleaseDeployList)))
 	s.mux.Handle("POST /api/0/organizations/{org_slug}/releases/{version}/deploys/", s.auth.Require(http.HandlerFunc(s.sentryReleaseDeploys)))
 	s.mux.Handle("GET /api/0/projects/{org_slug}/{project_slug}/releases/", s.auth.Require(http.HandlerFunc(s.sentryProjectReleases)))
+	s.mux.Handle("POST /api/0/projects/{org_slug}/{project_slug}/releases/", s.auth.Require(http.HandlerFunc(s.createSentryRelease)))
+	s.mux.Handle("GET /api/0/projects/{org_slug}/{project_slug}/releases/{version}/", s.auth.Require(http.HandlerFunc(s.sentryReleaseDetail)))
+	s.mux.Handle("PUT /api/0/projects/{org_slug}/{project_slug}/releases/{version}/", s.auth.Require(http.HandlerFunc(s.sentryReleaseDetail)))
+	s.mux.Handle("DELETE /api/0/projects/{org_slug}/{project_slug}/releases/{version}/", s.auth.Require(http.HandlerFunc(s.deleteSentryRelease)))
 	s.mux.Handle("GET /api/0/projects/{org_slug}/{project_slug}/", s.auth.Require(http.HandlerFunc(s.sentryProjectDetail)))
 	s.mux.Handle("GET /api/0/projects/{org_slug}/{project_slug}/keys/", s.auth.Require(http.HandlerFunc(s.sentryProjectKeys)))
 	s.mux.Handle("GET /api/0/projects/{org_slug}/{project_slug}/events/", s.auth.Require(http.HandlerFunc(s.sentryProjectEvents)))
@@ -317,7 +346,11 @@ func (s *Server) projects(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := s.store.DB.QueryContext(r.Context(), `
 		SELECT p.id, p.sentry_id, p.slug, p.name, COALESCE(p.platform, ''), p.public_key, p.created_at,
-		       CASE WHEN pm.role != '' THEN pm.role WHEN om.role IN ('owner', 'admin') THEN 'admin' ELSE om.role END
+		       CASE WHEN pm.role != '' THEN pm.role
+		            WHEN om.role IN ('owner', 'admin') THEN 'admin'
+		            WHEN EXISTS (SELECT 1 FROM team_memberships tm JOIN team_projects tp ON tp.team_id = tm.team_id WHERE tm.user_id = om.user_id AND tp.project_id = p.id AND tp.role = 'admin') THEN 'admin'
+		            WHEN om.role = 'member' OR EXISTS (SELECT 1 FROM team_memberships tm JOIN team_projects tp ON tp.team_id = tm.team_id WHERE tm.user_id = om.user_id AND tp.project_id = p.id AND tp.role = 'member') THEN 'member'
+		            ELSE 'viewer' END
 		FROM projects p
 		JOIN organization_memberships om ON om.organization_id = p.organization_id AND om.user_id = ?
 		LEFT JOIN project_memberships pm ON pm.project_id = p.id AND pm.user_id = om.user_id
@@ -400,12 +433,14 @@ func (s *Server) issues(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.store.DB.QueryContext(r.Context(), `
 		SELECT i.id, i.title, i.status, i.level, i.event_count, i.first_seen_at, i.last_seen_at,
 		       COALESCE(fr.version, ''), COALESCE(lr.version, ''), i.priority,
-		       COALESCE(i.assignee_user_id, ''), COALESCE(u.name, ''), i.bookmarked,
+		       COALESCE(i.assignee_user_id, ''), COALESCE(u.name, ''),
+		       COALESCE(i.assignee_team_id, ''), COALESCE(at.name, ''), i.bookmarked,
 		       COALESCE(i.snoozed_until, '')
 		FROM issues i
 		LEFT JOIN releases fr ON fr.id = i.first_release_id
 		LEFT JOIN releases lr ON lr.id = i.last_release_id
 		LEFT JOIN users u ON u.id = i.assignee_user_id
+		LEFT JOIN teams at ON at.id = i.assignee_team_id
 		WHERE i.project_id = ? ORDER BY i.last_seen_at DESC LIMIT 100
 	`, projectID)
 	if err != nil {
@@ -415,14 +450,14 @@ func (s *Server) issues(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	items := make([]map[string]any, 0)
 	for rows.Next() {
-		var id, title, status, level, firstSeen, lastSeen, firstRelease, lastRelease, priority, assigneeID, assigneeName, snoozedUntil string
+		var id, title, status, level, firstSeen, lastSeen, firstRelease, lastRelease, priority, assigneeID, assigneeName, assigneeTeamID, assigneeTeamName, snoozedUntil string
 		var count int64
 		var bookmarked bool
-		if err := rows.Scan(&id, &title, &status, &level, &count, &firstSeen, &lastSeen, &firstRelease, &lastRelease, &priority, &assigneeID, &assigneeName, &bookmarked, &snoozedUntil); err != nil {
+		if err := rows.Scan(&id, &title, &status, &level, &count, &firstSeen, &lastSeen, &firstRelease, &lastRelease, &priority, &assigneeID, &assigneeName, &assigneeTeamID, &assigneeTeamName, &bookmarked, &snoozedUntil); err != nil {
 			writeError(w, http.StatusInternalServerError, "could not list issues")
 			return
 		}
-		items = append(items, map[string]any{"id": id, "title": title, "status": status, "level": level, "event_count": count, "first_seen_at": firstSeen, "last_seen_at": lastSeen, "first_release": firstRelease, "last_release": lastRelease, "priority": priority, "assignee_user_id": assigneeID, "assignee_name": assigneeName, "bookmarked": bookmarked, "snoozed_until": snoozedUntil})
+		items = append(items, map[string]any{"id": id, "title": title, "status": status, "level": level, "event_count": count, "first_seen_at": firstSeen, "last_seen_at": lastSeen, "first_release": firstRelease, "last_release": lastRelease, "priority": priority, "assignee_user_id": assigneeID, "assignee_name": assigneeName, "assignee_team_id": assigneeTeamID, "assignee_team_name": assigneeTeamName, "bookmarked": bookmarked, "snoozed_until": snoozedUntil})
 	}
 	writeJSON(w, http.StatusOK, items)
 }
@@ -588,12 +623,28 @@ func (s *Server) projectRole(r *http.Request, principal *auth.Principal, project
 	if err != sql.ErrNoRows {
 		return "", false
 	}
+	role := ""
+	if err := s.store.DB.QueryRowContext(r.Context(), `
+		SELECT tp.role FROM team_memberships tm
+		JOIN team_projects tp ON tp.team_id = tm.team_id
+		WHERE tm.user_id = ? AND tp.project_id = ?
+		ORDER BY CASE tp.role WHEN 'admin' THEN 3 WHEN 'member' THEN 2 ELSE 1 END DESC
+		LIMIT 1
+	`, principal.UserID, projectID).Scan(&role); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return "", false
+	}
 	switch membership.Role {
 	case "owner", "admin":
 		return "admin", true
 	case "member":
+		if role == "admin" {
+			return role, true
+		}
 		return "member", true
 	case "viewer":
+		if role != "" {
+			return role, true
+		}
 		return "viewer", true
 	default:
 		return "", false

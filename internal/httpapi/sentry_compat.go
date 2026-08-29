@@ -17,9 +17,13 @@ import (
 func (s *Server) sentryAuthInfo(w http.ResponseWriter, r *http.Request) {
 	principal, _ := auth.PrincipalFromContext(r.Context())
 	writeJSON(w, http.StatusOK, map[string]any{
-		"auth": map[string]any{"scopes": []string{"event:read", "event:write", "org:read", "project:read", "project:write", "project:releases"}},
+		"auth": map[string]any{"scopes": []string{"event:read", "event:write", "member:read", "org:read", "project:read", "project:write", "project:releases", "team:read", "team:write"}},
 		"user": map[string]string{"id": principal.UserID, "email": principal.Email},
 	})
+}
+
+func (s *Server) sentryUserRegions(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"regions": []any{}})
 }
 
 func (s *Server) sentryOrganizations(w http.ResponseWriter, r *http.Request) {
@@ -28,7 +32,7 @@ func (s *Server) sentryOrganizations(w http.ResponseWriter, r *http.Request) {
 	for _, membership := range principal.Memberships {
 		var createdAt string
 		_ = s.store.DB.QueryRowContext(r.Context(), `SELECT created_at FROM organizations WHERE id = ?`, membership.OrganizationID).Scan(&createdAt)
-		items = append(items, map[string]any{"id": membership.OrganizationID, "slug": membership.OrganizationSlug, "name": membership.OrganizationName, "dateCreated": normalizeAPITime(createdAt), "isEarlyAdopter": false, "require2FA": false})
+		items = append(items, map[string]any{"id": membership.OrganizationID, "slug": membership.OrganizationSlug, "name": membership.OrganizationName, "dateCreated": normalizeAPITime(createdAt), "isEarlyAdopter": false, "require2FA": false, "requireEmailVerification": false, "features": []string{}})
 	}
 	writeJSON(w, http.StatusOK, items)
 }
@@ -41,7 +45,8 @@ func (s *Server) sentryOrganizationProjects(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	rows, err := s.store.DB.QueryContext(r.Context(), `
-		SELECT p.sentry_id, p.slug, p.name, COALESCE(p.platform, '')
+		SELECT p.sentry_id, p.slug, p.name, COALESCE(p.platform, ''),
+		       COALESCE((SELECT t.slug FROM team_projects tp JOIN teams t ON t.id = tp.team_id WHERE tp.project_id = p.id ORDER BY t.name LIMIT 1), '')
 		FROM projects p
 		LEFT JOIN project_memberships pm ON pm.project_id = p.id AND pm.user_id = ?
 		WHERE p.organization_id = ? AND COALESCE(pm.role, '') != 'none'
@@ -54,9 +59,9 @@ func (s *Server) sentryOrganizationProjects(w http.ResponseWriter, r *http.Reque
 	defer rows.Close()
 	items := make([]map[string]any, 0)
 	for rows.Next() {
-		var id, slug, name, platform string
-		if rows.Scan(&id, &slug, &name, &platform) == nil {
-			items = append(items, map[string]any{"id": id, "slug": slug, "name": name, "platform": platform, "team": nil})
+		var id, slug, name, platform, teamSlug string
+		if rows.Scan(&id, &slug, &name, &platform, &teamSlug) == nil {
+			items = append(items, map[string]any{"id": id, "slug": slug, "name": name, "platform": platform, "team": nullableText(teamSlug)})
 		}
 	}
 	writeJSON(w, http.StatusOK, items)

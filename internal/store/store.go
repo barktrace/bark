@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -17,7 +18,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/mattn/go-sqlite3"
 	"github.com/tursodatabase/libsql-client-go/libsql"
 )
 
@@ -87,7 +88,7 @@ func OpenWithDatabase(ctx context.Context, dataDir string, blobs blobstore.Backe
 	// local files, and prevents one replica from monopolizing a remote service.
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	if err := db.PingContext(ctx); err != nil {
+	if err := pingDatabase(ctx, db, dialect); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("ping metadata database: %w", err)
 	}
@@ -104,6 +105,39 @@ func OpenWithDatabase(ctx context.Context, dataDir string, blobs blobstore.Backe
 		return nil, err
 	}
 	return s, nil
+}
+
+// Opening a SQLite connection applies the DSN's WAL pragma. SQLite can return
+// SQLITE_BUSY immediately for that pragma even when a busy timeout is set, so
+// simultaneous first boots need a bounded retry before migrations serialize
+// through schema_migration_lock.
+func pingDatabase(ctx context.Context, db *sql.DB, dialect databaseDialect) error {
+	if dialect != dialectSQLite {
+		return db.PingContext(ctx)
+	}
+	retryContext, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	for {
+		err := db.PingContext(retryContext)
+		if err == nil || !sqliteBusy(err) {
+			return err
+		}
+		timer := time.NewTimer(25 * time.Millisecond)
+		select {
+		case <-retryContext.Done():
+			timer.Stop()
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return err
+		case <-timer.C:
+		}
+	}
+}
+
+func sqliteBusy(err error) bool {
+	var sqliteError sqlite3.Error
+	return errors.As(err, &sqliteError) && (sqliteError.Code == sqlite3.ErrBusy || sqliteError.Code == sqlite3.ErrLocked)
 }
 
 func (s *Store) Close() error { return s.DB.Close() }

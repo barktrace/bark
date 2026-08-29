@@ -20,7 +20,9 @@ func (s *Server) projectMemberships(w http.ResponseWriter, r *http.Request) {
 		       CASE WHEN pm.role = 'none' THEN 'none'
 		            WHEN pm.role != '' THEN pm.role
 		            WHEN om.role IN ('owner', 'admin') THEN 'admin'
-		            ELSE om.role END
+		            WHEN EXISTS (SELECT 1 FROM team_memberships tm JOIN team_projects tp ON tp.team_id = tm.team_id WHERE tm.user_id = u.id AND tp.project_id = p.id AND tp.role = 'admin') THEN 'admin'
+		            WHEN om.role = 'member' OR EXISTS (SELECT 1 FROM team_memberships tm JOIN team_projects tp ON tp.team_id = tm.team_id WHERE tm.user_id = u.id AND tp.project_id = p.id AND tp.role = 'member') THEN 'member'
+		            ELSE 'viewer' END
 		FROM projects p
 		JOIN organization_memberships om ON om.organization_id = p.organization_id
 		JOIN users u ON u.id = om.user_id

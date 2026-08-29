@@ -22,7 +22,7 @@ import (
 
 const (
 	protocolVersion = "2025-11-25"
-	serverVersion   = "0.28.0"
+	serverVersion   = "0.29.0"
 )
 
 var supportedProtocolVersions = map[string]bool{
@@ -299,7 +299,8 @@ func (s *Service) callTool(r *http.Request, credential *credential, raw json.Raw
 		return s.listReleases(ctx, args.ProjectID, boundedLimit(args.Limit))
 	case "query_discover", "list_dashboards", "create_dashboard", "add_dashboard_widget", "delete_dashboard":
 		return s.callDiscoverTool(ctx, credential, call.Name, call.Arguments)
-	case "list_organization_members", "list_project_permissions", "update_issue", "set_project_quota",
+	case "list_organization_members", "list_project_permissions", "list_teams", "create_team",
+		"add_team_member", "remove_team_member", "link_team_project", "unlink_team_project", "update_issue", "set_project_quota",
 		"retry_ingestion_job", "delete_ingestion_job", "update_retention", "add_issue_comment",
 		"create_alert_rule", "update_alert_rule", "delete_alert_rule", "create_uptime_monitor",
 		"delete_uptime_monitor", "create_cron_monitor", "delete_cron_monitor":
@@ -479,11 +480,18 @@ func tools() []tool {
 		{Name: "get_storage_summary", Description: "Get organization storage usage, retention, queue, and category totals.", InputSchema: objectSchema(nil), Annotations: readOnly},
 		{Name: "list_organization_members", Description: "List organization members and their organization roles.", InputSchema: objectSchema(map[string]any{"organization_id": stringProperty("Organization UUID; only needed by the legacy instance token")}), Annotations: readOnly},
 		{Name: "list_project_permissions", Description: "List organization roles, explicit project overrides, and effective roles for a project.", InputSchema: objectSchema(map[string]any{"project_id": stringProperty("Project UUID")}, "project_id"), Annotations: readOnly},
+		{Name: "list_teams", Description: "List organization teams with member and project counts.", InputSchema: objectSchema(map[string]any{"organization_id": stringProperty("Organization UUID; only needed by the legacy instance token")}), Annotations: readOnly},
+		{Name: "create_team", Description: "Create an organization team.", InputSchema: objectSchema(map[string]any{"organization_id": stringProperty("Organization UUID; only needed by the legacy instance token"), "name": stringProperty("Team name"), "slug": stringProperty("Optional URL slug")}, "name"), Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false}},
+		{Name: "add_team_member", Description: "Add an organization member to a team.", InputSchema: objectSchema(map[string]any{"team_id": stringProperty("Team UUID"), "user_id": stringProperty("Organization user UUID")}, "team_id", "user_id"), Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true}},
+		{Name: "remove_team_member", Description: "Remove a member from a team.", InputSchema: objectSchema(map[string]any{"team_id": stringProperty("Team UUID"), "user_id": stringProperty("Organization user UUID")}, "team_id", "user_id"), Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": true, "idempotentHint": false}},
+		{Name: "link_team_project", Description: "Link a team to a project with an effective role.", InputSchema: objectSchema(map[string]any{"team_id": stringProperty("Team UUID"), "project_id": stringProperty("Project UUID"), "role": map[string]any{"type": "string", "enum": []string{"admin", "member", "viewer"}}}, "team_id", "project_id"), Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true}},
+		{Name: "unlink_team_project", Description: "Remove a team's project access.", InputSchema: objectSchema(map[string]any{"team_id": stringProperty("Team UUID"), "project_id": stringProperty("Project UUID")}, "team_id", "project_id"), Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": true, "idempotentHint": false}},
 		{Name: "update_issue", Description: "Update issue status, priority, assignment, bookmark, or snooze state.", InputSchema: objectSchema(map[string]any{
 			"issue_id":         stringProperty("Issue UUID"),
 			"status":           map[string]any{"type": "string", "enum": []string{"unresolved", "resolved", "ignored"}},
 			"priority":         map[string]any{"type": "string", "enum": []string{"low", "medium", "high", "critical"}},
 			"assignee_user_id": stringProperty("Organization user UUID, or an empty string to unassign"),
+			"assignee_team_id": stringProperty("Linked team UUID, or an empty string to unassign"),
 			"bookmarked":       map[string]any{"type": "boolean"},
 			"snoozed_until":    stringProperty("Future RFC3339 timestamp, or an empty string to clear"),
 		}, "issue_id"), Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true}},

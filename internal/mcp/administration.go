@@ -43,6 +43,63 @@ func (s *Service) callAdministrationTool(ctx context.Context, credential *creden
 			return nil, err
 		}
 		return s.listProjectPermissions(ctx, args.ProjectID)
+	case "list_teams":
+		if !credential.can("read") {
+			return nil, errors.New("read scope required")
+		}
+		var args struct {
+			OrganizationID string `json:"organization_id"`
+		}
+		if err := decodeArguments(raw, &args); err != nil {
+			return nil, err
+		}
+		organizationID, err := s.discoverOrganization(ctx, credential, args.OrganizationID)
+		if err != nil {
+			return nil, err
+		}
+		return s.listTeams(ctx, organizationID)
+	case "create_team":
+		if !credential.can("write") {
+			return nil, errors.New("write scope required")
+		}
+		var args struct {
+			OrganizationID string `json:"organization_id"`
+			Name           string `json:"name"`
+			Slug           string `json:"slug"`
+		}
+		if err := decodeArguments(raw, &args); err != nil || strings.TrimSpace(args.Name) == "" {
+			return nil, errors.New("name is required")
+		}
+		organizationID, err := s.discoverOrganization(ctx, credential, args.OrganizationID)
+		if err != nil {
+			return nil, err
+		}
+		return s.createTeam(ctx, credential, organizationID, args.Name, args.Slug)
+	case "add_team_member", "remove_team_member":
+		if !credential.can("write") {
+			return nil, errors.New("write scope required")
+		}
+		var args struct {
+			TeamID string `json:"team_id"`
+			UserID string `json:"user_id"`
+		}
+		if err := decodeArguments(raw, &args); err != nil || strings.TrimSpace(args.TeamID) == "" || strings.TrimSpace(args.UserID) == "" {
+			return nil, errors.New("team_id and user_id are required")
+		}
+		return s.changeTeamMember(ctx, credential, args.TeamID, args.UserID, name == "add_team_member")
+	case "link_team_project", "unlink_team_project":
+		var args struct {
+			TeamID    string `json:"team_id"`
+			ProjectID string `json:"project_id"`
+			Role      string `json:"role"`
+		}
+		if err := decodeArguments(raw, &args); err != nil || strings.TrimSpace(args.TeamID) == "" || strings.TrimSpace(args.ProjectID) == "" {
+			return nil, errors.New("team_id and project_id are required")
+		}
+		if err := s.requireProject(ctx, credential, args.ProjectID, "write"); err != nil {
+			return nil, err
+		}
+		return s.changeTeamProject(ctx, credential, args.TeamID, args.ProjectID, args.Role, name == "link_team_project")
 	case "update_issue":
 		var args issueUpdateArgs
 		if err := decodeArguments(raw, &args); err != nil || strings.TrimSpace(args.IssueID) == "" {
@@ -125,6 +182,149 @@ func (s *Service) callAdministrationTool(ctx context.Context, credential *creden
 	}
 }
 
+func (s *Service) listTeams(ctx context.Context, organizationID string) (any, error) {
+	rows, err := s.store.DB.QueryContext(ctx, `
+		SELECT t.id, t.slug, t.name, t.created_at,
+		       (SELECT COUNT(*) FROM team_memberships tm WHERE tm.team_id = t.id),
+		       (SELECT COUNT(*) FROM team_projects tp WHERE tp.team_id = t.id)
+		FROM teams t WHERE t.organization_id = ? ORDER BY t.name, t.slug
+	`, organizationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]map[string]any, 0)
+	for rows.Next() {
+		var id, teamSlug, name, createdAt string
+		var members, projects int
+		if err := rows.Scan(&id, &teamSlug, &name, &createdAt, &members, &projects); err != nil {
+			return nil, err
+		}
+		items = append(items, map[string]any{"id": id, "slug": teamSlug, "name": name, "member_count": members, "project_count": projects, "created_at": createdAt})
+	}
+	return items, rows.Err()
+}
+
+func (s *Service) createTeam(ctx context.Context, credential *credential, organizationID, name, rawSlug string) (any, error) {
+	name = strings.TrimSpace(name)
+	teamSlug := mcpSlug(firstNonEmptyMCP(rawSlug, name))
+	if teamSlug == "" {
+		return nil, errors.New("valid team name or slug is required")
+	}
+	id := uuid.NewString()
+	tx, err := s.store.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `INSERT INTO teams(id, organization_id, slug, name) VALUES (?, ?, ?, ?)`, id, organizationID, teamSlug, name); err != nil {
+		return nil, errors.New("team slug already exists")
+	}
+	if credential.actorUserID != "" {
+		_, err = tx.ExecContext(ctx, `INSERT INTO team_memberships(team_id, user_id) SELECT ?, ? WHERE EXISTS (SELECT 1 FROM organization_memberships WHERE organization_id = ? AND user_id = ?)`, id, credential.actorUserID, organizationID, credential.actorUserID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	s.recordDiscoverMutation(ctx, credential, organizationID, "", "create_team", "team", id, map[string]any{"slug": teamSlug, "name": name})
+	return map[string]any{"id": id, "organization_id": organizationID, "slug": teamSlug, "name": name}, nil
+}
+
+func (s *Service) changeTeamMember(ctx context.Context, credential *credential, teamID, userID string, add bool) (any, error) {
+	organizationID, err := s.requireTeam(ctx, credential, teamID)
+	if err != nil {
+		return nil, err
+	}
+	if add {
+		var member int
+		if err := s.store.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM organization_memberships WHERE organization_id = ? AND user_id = ?`, organizationID, userID).Scan(&member); err != nil || member == 0 {
+			return nil, errors.New("user is not an organization member")
+		}
+		_, err = s.store.DB.ExecContext(ctx, `INSERT INTO team_memberships(team_id, user_id) VALUES (?, ?) ON CONFLICT(team_id, user_id) DO NOTHING`, teamID, userID)
+	} else {
+		var result sql.Result
+		result, err = s.store.DB.ExecContext(ctx, `DELETE FROM team_memberships WHERE team_id = ? AND user_id = ?`, teamID, userID)
+		if err == nil {
+			if affected, _ := result.RowsAffected(); affected == 0 {
+				return nil, errors.New("team membership not found")
+			}
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	action := "remove_team_member"
+	if add {
+		action = "add_team_member"
+	}
+	s.recordDiscoverMutation(ctx, credential, organizationID, "", action, "user", userID, map[string]any{"team_id": teamID})
+	return map[string]any{"team_id": teamID, "user_id": userID, "member": add}, nil
+}
+
+func (s *Service) changeTeamProject(ctx context.Context, credential *credential, teamID, projectID, role string, link bool) (any, error) {
+	organizationID, err := s.requireTeam(ctx, credential, teamID)
+	if err != nil {
+		return nil, err
+	}
+	var projectOrganizationID string
+	if err := s.store.DB.QueryRowContext(ctx, `SELECT organization_id FROM projects WHERE id = ?`, projectID).Scan(&projectOrganizationID); err != nil || projectOrganizationID != organizationID {
+		return nil, errors.New("project does not belong to team organization")
+	}
+	role = strings.ToLower(strings.TrimSpace(role))
+	if role == "" {
+		role = "member"
+	}
+	if role != "admin" && role != "member" && role != "viewer" {
+		return nil, errors.New("role must be admin, member, or viewer")
+	}
+	if link {
+		_, err = s.store.DB.ExecContext(ctx, `INSERT INTO team_projects(team_id, project_id, role) VALUES (?, ?, ?) ON CONFLICT(team_id, project_id) DO UPDATE SET role = excluded.role`, teamID, projectID, role)
+	} else {
+		var result sql.Result
+		result, err = s.store.DB.ExecContext(ctx, `DELETE FROM team_projects WHERE team_id = ? AND project_id = ?`, teamID, projectID)
+		if err == nil {
+			if affected, _ := result.RowsAffected(); affected == 0 {
+				return nil, errors.New("team project link not found")
+			}
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	action := "unlink_team_project"
+	if link {
+		action = "link_team_project"
+	}
+	s.recordDiscoverMutation(ctx, credential, organizationID, projectID, action, "team", teamID, map[string]any{"role": role})
+	return map[string]any{"team_id": teamID, "project_id": projectID, "role": role, "linked": link}, nil
+}
+
+func (s *Service) requireTeam(ctx context.Context, credential *credential, teamID string) (string, error) {
+	if !credential.can("write") {
+		return "", errors.New("write scope required")
+	}
+	var organizationID string
+	if err := s.store.DB.QueryRowContext(ctx, `SELECT organization_id FROM teams WHERE id = ?`, teamID).Scan(&organizationID); err != nil {
+		return "", errors.New("team not found")
+	}
+	if !credential.legacy && organizationID != credential.organizationID {
+		return "", errors.New("team not found or not accessible")
+	}
+	return organizationID, nil
+}
+
+func firstNonEmptyMCP(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func (s *Service) listOrganizationMembers(ctx context.Context, organizationID string) (any, error) {
 	rows, err := s.store.DB.QueryContext(ctx, `
 		SELECT u.id, u.email, u.name, COALESCE(u.avatar_url, ''), om.role, om.created_at, COALESCE(u.last_login_at, '')
@@ -152,7 +352,9 @@ func (s *Service) listProjectPermissions(ctx context.Context, projectID string) 
 		       CASE WHEN pm.role = 'none' THEN 'none'
 		            WHEN pm.role != '' THEN pm.role
 		            WHEN om.role IN ('owner', 'admin') THEN 'admin'
-		            ELSE om.role END
+		            WHEN EXISTS (SELECT 1 FROM team_memberships tm JOIN team_projects tp ON tp.team_id = tm.team_id WHERE tm.user_id = u.id AND tp.project_id = p.id AND tp.role = 'admin') THEN 'admin'
+		            WHEN om.role = 'member' OR EXISTS (SELECT 1 FROM team_memberships tm JOIN team_projects tp ON tp.team_id = tm.team_id WHERE tm.user_id = u.id AND tp.project_id = p.id AND tp.role = 'member') THEN 'member'
+		            ELSE 'viewer' END
 		FROM projects p
 		JOIN organization_memberships om ON om.organization_id = p.organization_id
 		JOIN users u ON u.id = om.user_id
@@ -183,18 +385,22 @@ type issueUpdateArgs struct {
 	Status         *string `json:"status"`
 	Priority       *string `json:"priority"`
 	AssigneeUserID *string `json:"assignee_user_id"`
+	AssigneeTeamID *string `json:"assignee_team_id"`
 	Bookmarked     *bool   `json:"bookmarked"`
 	SnoozedUntil   *string `json:"snoozed_until"`
 }
 
 func (s *Service) updateIssue(ctx context.Context, credential *credential, projectID string, args issueUpdateArgs) (any, map[string]any, error) {
-	if args.Status == nil && args.Priority == nil && args.AssigneeUserID == nil && args.Bookmarked == nil && args.SnoozedUntil == nil {
+	if args.Status == nil && args.Priority == nil && args.AssigneeUserID == nil && args.AssigneeTeamID == nil && args.Bookmarked == nil && args.SnoozedUntil == nil {
 		return nil, nil, errors.New("at least one issue field is required")
 	}
+	if args.AssigneeUserID != nil && args.AssigneeTeamID != nil {
+		return nil, nil, errors.New("set either assignee_user_id or assignee_team_id")
+	}
 	var status, priority string
-	var assignee, snoozed sql.NullString
+	var assignee, assigneeTeam, snoozed sql.NullString
 	var bookmarked bool
-	if err := s.store.DB.QueryRowContext(ctx, `SELECT status, priority, assignee_user_id, bookmarked, snoozed_until FROM issues WHERE id = ? AND project_id = ?`, args.IssueID, projectID).Scan(&status, &priority, &assignee, &bookmarked, &snoozed); err != nil {
+	if err := s.store.DB.QueryRowContext(ctx, `SELECT status, priority, assignee_user_id, assignee_team_id, bookmarked, snoozed_until FROM issues WHERE id = ? AND project_id = ?`, args.IssueID, projectID).Scan(&status, &priority, &assignee, &assigneeTeam, &bookmarked, &snoozed); err != nil {
 		return nil, nil, errors.New("issue not found")
 	}
 	changes := make(map[string]any)
@@ -236,10 +442,30 @@ func (s *Service) updateIssue(ctx context.Context, credential *credential, proje
 				return nil, nil, errors.New("assignee is not an accessible organization member")
 			}
 		}
-		if value != assignee.String {
+		if value != assignee.String || assigneeTeam.Valid {
 			assignee = sql.NullString{String: value, Valid: value != ""}
+			assigneeTeam = sql.NullString{}
 			changes["assignee_user_id"] = value
 			activities = append(activities, [2]string{"assignment", value})
+		}
+	}
+	if args.AssigneeTeamID != nil {
+		value := strings.TrimSpace(*args.AssigneeTeamID)
+		if value != "" {
+			var linked int
+			if err := s.store.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM team_projects WHERE team_id = ? AND project_id = ?`, value, projectID).Scan(&linked); err != nil || linked == 0 {
+				return nil, nil, errors.New("assignee team is not linked to the project")
+			}
+		}
+		if value != assigneeTeam.String || assignee.Valid {
+			assignee = sql.NullString{}
+			assigneeTeam = sql.NullString{String: value, Valid: value != ""}
+			changes["assignee_team_id"] = value
+			activity := ""
+			if value != "" {
+				activity = "team:" + value
+			}
+			activities = append(activities, [2]string{"assignment", activity})
 		}
 	}
 	if args.Bookmarked != nil && *args.Bookmarked != bookmarked {
@@ -271,7 +497,7 @@ func (s *Service) updateIssue(ctx context.Context, credential *credential, proje
 		return nil, nil, err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `UPDATE issues SET status = ?, priority = ?, assignee_user_id = ?, bookmarked = ?, snoozed_until = ? WHERE id = ? AND project_id = ?`, status, priority, nullableString(assignee), boolInteger(bookmarked), nullableString(snoozed), args.IssueID, projectID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE issues SET status = ?, priority = ?, assignee_user_id = ?, assignee_team_id = ?, bookmarked = ?, snoozed_until = ? WHERE id = ? AND project_id = ?`, status, priority, nullableString(assignee), nullableString(assigneeTeam), boolInteger(bookmarked), nullableString(snoozed), args.IssueID, projectID); err != nil {
 		return nil, nil, err
 	}
 	var actor any
@@ -286,7 +512,7 @@ func (s *Service) updateIssue(ctx context.Context, credential *credential, proje
 	if err := tx.Commit(); err != nil {
 		return nil, nil, err
 	}
-	return map[string]any{"id": args.IssueID, "status": status, "priority": priority, "assignee_user_id": nullableString(assignee), "bookmarked": bookmarked, "snoozed_until": nullableString(snoozed), "updated": len(changes) > 0}, changes, nil
+	return map[string]any{"id": args.IssueID, "status": status, "priority": priority, "assignee_user_id": nullableString(assignee), "assignee_team_id": nullableString(assigneeTeam), "bookmarked": bookmarked, "snoozed_until": nullableString(snoozed), "updated": len(changes) > 0}, changes, nil
 }
 
 type quotaUpdateArgs struct {
