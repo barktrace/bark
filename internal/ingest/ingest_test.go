@@ -217,7 +217,7 @@ func TestStoresCheckInsReplaysProfilesAndMetrics(t *testing.T) {
 	if err := service.StoreCheckIn(context.Background(), project, []byte(`{"check_in_id":"check-1","monitor_slug":"nightly","status":"ok","duration":2.5,"contexts":{"monitor_config":{"schedule":{"type":"interval","value":[1,"hour"]},"checkin_margin":5,"max_runtime":30,"timezone":"UTC"}}}`)); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.StoreReplayEvent(context.Background(), project, []byte(`{"replay_id":"12121212121212121212121212121212","segment_id":0,"timestamp":"2026-08-29T10:05:00Z","replay_start_timestamp":"2026-08-29T10:00:00Z","error_ids":["one"]}`)); err != nil {
+	if err := service.StoreReplayEvent(context.Background(), project, []byte(`{"replay_id":"12121212121212121212121212121212","segment_id":0,"timestamp":"2026-08-29T10:05:00Z","replay_start_timestamp":"2026-08-29T10:00:00Z","error_ids":["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA","bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","invalid"]}`)); err != nil {
 		t.Fatal(err)
 	}
 	if err := service.StoreProfile(context.Background(), project, []byte(`{"profile_id":"profile-one","platform":"python","timestamp":"2026-08-29T10:00:00Z","duration_ns":250000000}`)); err != nil {
@@ -227,7 +227,7 @@ func TestStoresCheckInsReplaysProfilesAndMetrics(t *testing.T) {
 	if err != nil || count != 1 {
 		t.Fatalf("metrics = %d, %v", count, err)
 	}
-	for table, want := range map[string]int{"cron_monitors": 1, "cron_checkins": 1, "replays": 1, "profiles": 1, "metric_points": 1} {
+	for table, want := range map[string]int{"cron_monitors": 1, "cron_checkins": 1, "replays": 1, "replay_error_links": 2, "profiles": 1, "metric_points": 1} {
 		var got int
 		if err := st.DB.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&got); err != nil || got != want {
 			t.Fatalf("%s count = %d, %v", table, got, err)

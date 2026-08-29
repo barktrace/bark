@@ -462,7 +462,12 @@ func tools() []tool {
 		{Name: "list_cron_monitors", Description: "List cron/check-in monitors and current status.", InputSchema: projectLimitSchema(stringProperty, limitProperty), Annotations: readOnly},
 		{Name: "list_cron_checkins", Description: "List recent cron check-ins, optionally for one monitor.", InputSchema: objectSchema(map[string]any{"project_id": stringProperty("Project UUID"), "monitor_id": stringProperty("Optional cron monitor UUID"), "limit": limitProperty}, "project_id"), Annotations: readOnly},
 		{Name: "list_feedback", Description: "List user feedback associated with project events.", InputSchema: projectLimitSchema(stringProperty, limitProperty), Annotations: readOnly},
-		{Name: "list_replays", Description: "List replay segments and correlated errors.", InputSchema: projectLimitSchema(stringProperty, limitProperty), Annotations: readOnly},
+		{Name: "list_replays", Description: "Search replay segments and correlated errors by URL, user, environment, release, issue, or error presence.", InputSchema: objectSchema(map[string]any{
+			"project_id": stringProperty("Project UUID"), "query": stringProperty("Optional URL, user, or replay ID search"),
+			"environment": stringProperty("Optional environment"), "release": stringProperty("Optional release"),
+			"user_id": stringProperty("Optional replay user ID"), "issue_id": stringProperty("Optional correlated issue UUID"),
+			"has_error": map[string]any{"type": "boolean", "default": false}, "limit": limitProperty,
+		}, "project_id"), Annotations: readOnly},
 		{Name: "analyze_replay", Description: "Decode a replay segment into navigation, interaction, mutation, and breadcrumb timelines without exposing form input values.", InputSchema: objectSchema(map[string]any{"project_id": stringProperty("Project UUID"), "replay_id": stringProperty("Internal replay segment UUID")}, "project_id", "replay_id"), Annotations: readOnly},
 		{Name: "list_profiles", Description: "List profiles and transaction linkage.", InputSchema: projectLimitSchema(stringProperty, limitProperty), Annotations: readOnly},
 		{Name: "analyze_profile", Description: "Analyze a sampled profile into thread totals, hotspots, and a flamegraph tree.", InputSchema: objectSchema(map[string]any{"project_id": stringProperty("Project UUID"), "profile_id": stringProperty("Internal profile UUID")}, "project_id", "profile_id"), Annotations: readOnly},

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/barktrace/bark/internal/store"
@@ -115,12 +116,133 @@ func (s *Service) cleanupAll(ctx context.Context) {
 	_ = rows.Close()
 	for _, policy := range policies {
 		cutoff := time.Now().UTC().Add(-time.Duration(policy.days) * 24 * time.Hour)
-		if result, err := CleanupOrganization(ctx, s.store.DB, policy.id, cutoff, nil, false); err != nil {
+		if result, err := CleanupStore(ctx, s.store, policy.id, cutoff, nil, false); err != nil {
 			slog.Error("run retention cleanup", "organization_id", policy.id, "error", err)
 		} else {
 			slog.Info("retention cleanup", "organization_id", policy.id, "deleted", result.Deleted)
 		}
 	}
+}
+
+func CleanupStore(ctx context.Context, st *store.Store, organizationID string, cutoff time.Time, dataTypes []string, dryRun bool) (CleanupResult, error) {
+	result, err := CleanupOrganization(ctx, st.DB, organizationID, cutoff, dataTypes, dryRun)
+	if err != nil || dryRun {
+		return result, err
+	}
+	deleted, err := RemoveOrphanedBlobs(ctx, st, organizationID)
+	if err != nil {
+		return result, err
+	}
+	result.Deleted["blobs"] = deleted
+	return result, nil
+}
+
+// RemoveOrphanedBlobs removes metadata and backing objects only after every
+// known blob-owning table has released the blob. Storage keys are content
+// addressed and may be shared by several metadata rows, so the backing object
+// is retained until all rows using that key are orphaned.
+func RemoveOrphanedBlobs(ctx context.Context, st *store.Store, organizationID string) (int, error) {
+	if st.Blobs == nil {
+		return 0, nil
+	}
+	const orphanPredicate = `
+		NOT EXISTS (SELECT 1 FROM project_artifacts x WHERE x.blob_id = b.id) AND
+		NOT EXISTS (SELECT 1 FROM event_attachments x WHERE x.blob_id = b.id) AND
+		NOT EXISTS (SELECT 1 FROM replays x WHERE x.event_blob_id = b.id OR x.recording_blob_id = b.id) AND
+		NOT EXISTS (SELECT 1 FROM profiles x WHERE x.blob_id = b.id) AND
+		NOT EXISTS (SELECT 1 FROM ingestion_jobs x WHERE x.blob_id = b.id) AND
+		NOT EXISTS (SELECT 1 FROM upload_chunks x WHERE x.blob_id = b.id) AND
+		NOT EXISTS (SELECT 1 FROM preprod_builds x WHERE x.blob_id = b.id) AND
+		NOT EXISTS (SELECT 1 FROM snapshot_objects x WHERE x.blob_id = b.id)`
+	removed := 0
+	for {
+		rows, err := st.DB.QueryContext(ctx, `SELECT b.id, b.storage_key FROM blobs b WHERE b.organization_id = ? AND `+orphanPredicate+` ORDER BY b.created_at LIMIT 500`, organizationID)
+		if err != nil {
+			return removed, err
+		}
+		type orphan struct{ id, key string }
+		items := make([]orphan, 0, 500)
+		keyCounts := make(map[string]int)
+		for rows.Next() {
+			var item orphan
+			if err := rows.Scan(&item.id, &item.key); err != nil {
+				_ = rows.Close()
+				return removed, err
+			}
+			items = append(items, item)
+			keyCounts[item.key]++
+		}
+		if err := rows.Close(); err != nil {
+			return removed, err
+		}
+		if len(items) == 0 {
+			return removed, drainBlobDeletionQueue(ctx, st)
+		}
+		tx, err := st.DB.BeginTx(ctx, nil)
+		if err != nil {
+			return removed, err
+		}
+		for _, item := range items {
+			result, err := tx.ExecContext(ctx, `DELETE FROM blobs WHERE id = ? AND `+strings.ReplaceAll(orphanPredicate, "b.", "blobs."), item.id)
+			if err != nil {
+				_ = tx.Rollback()
+				return removed, err
+			}
+			count, _ := result.RowsAffected()
+			removed += int(count)
+		}
+		for key := range keyCounts {
+			var remaining int
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM blobs WHERE storage_key = ?`, key).Scan(&remaining); err != nil {
+				_ = tx.Rollback()
+				return removed, err
+			}
+			if remaining == 0 {
+				if _, err := tx.ExecContext(ctx, `INSERT INTO blob_deletion_queue(storage_key) VALUES (?) ON CONFLICT(storage_key) DO NOTHING`, key); err != nil {
+					_ = tx.Rollback()
+					return removed, err
+				}
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return removed, err
+		}
+	}
+}
+
+func drainBlobDeletionQueue(ctx context.Context, st *store.Store) error {
+	rows, err := st.DB.QueryContext(ctx, `SELECT storage_key FROM blob_deletion_queue ORDER BY created_at LIMIT 500`)
+	if err != nil {
+		return err
+	}
+	keys := make([]string, 0, 500)
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		keys = append(keys, key)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, key := range keys {
+		var references int
+		if err := st.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM blobs WHERE storage_key = ?`, key).Scan(&references); err != nil {
+			return err
+		}
+		if references == 0 {
+			if err := st.Blobs.Remove(key); err != nil {
+				_, _ = st.DB.ExecContext(ctx, `UPDATE blob_deletion_queue SET attempts = attempts + 1, last_error = ? WHERE storage_key = ?`, err.Error(), key)
+				return fmt.Errorf("remove orphaned blob %q: %w", key, err)
+			}
+		}
+		if _, err := st.DB.ExecContext(ctx, `DELETE FROM blob_deletion_queue WHERE storage_key = ?`, key); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func CleanupOrganization(ctx context.Context, db *sql.DB, organizationID string, cutoff time.Time, dataTypes []string, dryRun bool) (CleanupResult, error) {
@@ -159,6 +281,11 @@ func CleanupOrganization(ctx context.Context, db *sql.DB, organizationID string,
 		}
 		count, _ := execution.RowsAffected()
 		result.Deleted[target.name] = int(count)
+	}
+	if _, includesReplays := result.Deleted["replays"]; includesReplays {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM replay_error_links WHERE project_id IN (SELECT id FROM projects WHERE organization_id = ?) AND NOT EXISTS (SELECT 1 FROM replays rp WHERE rp.project_id = replay_error_links.project_id AND rp.replay_id = replay_error_links.replay_id)`, organizationID); err != nil {
+			return result, err
+		}
 	}
 	if _, includesEvents := result.Deleted["events"]; includesEvents {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM issues WHERE project_id IN (SELECT id FROM projects WHERE organization_id = ?) AND NOT EXISTS (SELECT 1 FROM events e WHERE e.issue_id = issues.id)`, organizationID); err != nil {

@@ -195,12 +195,37 @@ func (s *Service) StoreReplayEvent(ctx context.Context, project Project, raw []b
 		urlValue = replay.URLs[0]
 	}
 	userID := firstNonEmpty(replay.User.ID, replay.User.Email)
-	_, err = s.store.DB.ExecContext(ctx, `
+	tx, err := s.store.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, `
 		INSERT INTO replays(id, replay_id, project_id, event_blob_id, segment_id, environment, release, user_id, started_at, finished_at, error_count, url)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(project_id, replay_id, segment_id) DO UPDATE SET event_blob_id = excluded.event_blob_id, environment = excluded.environment, release = excluded.release, user_id = excluded.user_id, started_at = excluded.started_at, finished_at = excluded.finished_at, error_count = excluded.error_count, url = excluded.url
 	`, uuid.NewString(), replay.ReplayID, project.ID, blobID, replay.SegmentID, replay.Environment, replay.Release, userID, started.Format(time.RFC3339Nano), finished.Format(time.RFC3339Nano), len(replay.ErrorIDs), urlValue)
-	return err
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM replay_error_links WHERE project_id = ? AND replay_id = ? AND segment_id = ?`, project.ID, replay.ReplayID, replay.SegmentID); err != nil {
+		return err
+	}
+	seen := make(map[string]struct{}, len(replay.ErrorIDs))
+	for _, rawEventID := range replay.ErrorIDs {
+		eventID := normalizeEventID(rawEventID)
+		if eventID == "" {
+			continue
+		}
+		if _, exists := seen[eventID]; exists {
+			continue
+		}
+		seen[eventID] = struct{}{}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO replay_error_links(project_id, replay_id, segment_id, event_id) VALUES (?, ?, ?, ?)`, project.ID, replay.ReplayID, replay.SegmentID, eventID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Service) StoreReplayRecording(ctx context.Context, project Project, envelopeReplayID string, raw []byte) error {

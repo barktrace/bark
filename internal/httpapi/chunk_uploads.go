@@ -433,7 +433,7 @@ func (s *Server) removeBlobIfUnreferenced(ctx context.Context, storageKey string
 
 func (s *Server) authorizedOrganizationSlug(r *http.Request, principal *auth.Principal, slug string) (string, bool) {
 	var organizationID string
-	if err := s.store.DB.QueryRowContext(r.Context(), `SELECT id FROM organizations WHERE slug = ?`, slug).Scan(&organizationID); err != nil {
+	if err := s.store.DB.QueryRowContext(r.Context(), `SELECT id FROM organizations WHERE slug = ? OR id = ? LIMIT 1`, slug, slug).Scan(&organizationID); err != nil {
 		return "", false
 	}
 	_, ok := principal.Membership(organizationID)

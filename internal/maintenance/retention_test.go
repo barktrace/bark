@@ -2,6 +2,7 @@ package maintenance
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,5 +41,48 @@ func TestCleanupOrganizationDryRunAndDelete(t *testing.T) {
 	_ = st.DB.QueryRow(`SELECT COUNT(*) FROM issues`).Scan(&count)
 	if count != 0 {
 		t.Fatal("orphaned issue was retained")
+	}
+}
+
+func TestCleanupStoreRemovesReplayBlobAndMetadata(t *testing.T) {
+	st, err := store.Open(context.Background(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if _, err := st.DB.Exec(`
+		INSERT INTO organizations(id, slug, name) VALUES ('org', 'org', 'Org');
+		INSERT INTO projects(id, sentry_id, organization_id, slug, name, public_key) VALUES ('project', '1', 'org', 'app', 'App', 'key');
+	`); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := st.Blobs.Put(strings.NewReader("recording"), 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB.Exec(`
+		INSERT INTO blobs(id, organization_id, project_id, kind, storage_key, checksum, size) VALUES ('blob', 'org', 'project', 'replay_recording', ?, ?, ?);
+		INSERT INTO replays(id, replay_id, project_id, recording_blob_id, started_at, finished_at) VALUES ('replay', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'project', 'blob', '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z');
+		INSERT INTO replay_error_links(project_id, replay_id, segment_id, event_id) VALUES ('project', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 0, 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+	`, stored.Key, stored.Checksum, stored.Size); err != nil {
+		t.Fatal(err)
+	}
+	result, err := CleanupStore(context.Background(), st, "org", time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC), []string{"replays"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Deleted["replays"] != 1 || result.Deleted["blobs"] != 1 {
+		t.Fatalf("cleanup result = %#v", result)
+	}
+	var blobs, queued, links int
+	_ = st.DB.QueryRow(`SELECT COUNT(*) FROM blobs`).Scan(&blobs)
+	_ = st.DB.QueryRow(`SELECT COUNT(*) FROM blob_deletion_queue`).Scan(&queued)
+	_ = st.DB.QueryRow(`SELECT COUNT(*) FROM replay_error_links`).Scan(&links)
+	if blobs != 0 || queued != 0 || links != 0 {
+		t.Fatalf("blobs=%d queued=%d links=%d", blobs, queued, links)
+	}
+	if file, err := st.Blobs.Open(stored.Key); err == nil {
+		_ = file.Close()
+		t.Fatal("orphaned replay blob remains in backing storage")
 	}
 }

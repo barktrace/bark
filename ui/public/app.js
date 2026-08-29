@@ -37,6 +37,7 @@ const state = {
   cronCheckins: [],
   feedback: [],
   replays: [],
+  replayFilters: { q: '', environment: '', release: '', hasError: false },
   replayId: '',
   replayAnalysis: null,
   replayAnalysisStatus: 'idle',
@@ -508,8 +509,8 @@ function renderTelemetry() {
     const rows = state.feedback.map((item) => `<div class="management-row"><span class="avatar small-avatar">${escapeHTML((item.name || item.email || '?')[0].toUpperCase())}</span><span><strong>${escapeHTML(item.comments)}</strong><small>${escapeHTML(item.name || 'Anonymous')} · ${escapeHTML(item.email || 'no email')} · event ${escapeHTML(item.event_id || 'unlinked')}</small></span><small>${escapeHTML(relative(item.created_at))}</small></div>`).join('');
     content = `<section class="card settings-card"><p class="eyebrow">User reports</p><h2>Feedback</h2><div class="management-list compact-management">${rows || '<p class="muted padded">No user feedback received.</p>'}</div></section>`;
   } else if (state.telemetryTab === 'replays') {
-    const rows = state.replays.map((item) => `<div class="management-row ${state.replayId === item.id ? 'selected' : ''}"><span class="platform-icon">R${item.segment_id}</span><span><strong>${escapeHTML(item.url || item.replay_id)}</strong><small class="mono">${escapeHTML(item.replay_id)} · ${escapeHTML(item.environment || 'default')} · ${item.error_count} errors</small></span><button class="button small" data-analyze-replay="${escapeHTML(item.id)}">Analyze</button>${item.has_event ? `<a class="button secondary small" href="/replays/${encodeURIComponent(item.id)}/event">Event</a>` : ''}${item.has_recording ? `<a class="button secondary small" href="/replays/${encodeURIComponent(item.id)}/recording">Recording</a>` : ''}</div>`).join('');
-    content = `<div class="telemetry-analysis-grid"><section class="card settings-card"><p class="eyebrow">Session replay</p><h2>Replay segments</h2><div class="management-list compact-management">${rows || '<p class="muted padded">No replay segments received.</p>'}</div></section>${replayAnalysisPanel()}</div>`;
+    const rows = state.replays.map((item, index) => `<div class="management-row ${state.replayId === item.id ? 'selected' : ''}"><span class="platform-icon">R${item.segment_id}</span><span><strong>${escapeHTML(item.url || item.replay_id)}</strong><small class="mono">${escapeHTML(item.replay_id)} · ${escapeHTML(item.environment || 'default')} · ${item.error_count} errors</small></span><button class="button small" data-analyze-replay="${escapeHTML(item.id)}">Analyze</button>${item.has_event ? `<a class="button secondary small" href="/replays/${encodeURIComponent(item.id)}/event">Event</a>` : ''}${item.has_recording ? `<a class="button secondary small" href="/replays/${encodeURIComponent(item.id)}/recording">Recording</a>` : ''}${canAdministerProject() && state.replays.findIndex((candidate) => candidate.replay_id === item.replay_id) === index ? `<button class="icon-text-button danger-text" data-delete-replay="${escapeHTML(item.replay_id)}">Delete session</button>` : ''}</div>`).join('');
+    content = `<div class="telemetry-analysis-grid"><section class="card settings-card"><p class="eyebrow">Session replay</p><h2>Replay segments</h2><form id="replay-search" class="inline-form telemetry-form"><input name="q" value="${escapeHTML(state.replayFilters.q)}" placeholder="URL, user, or replay ID" /><input name="environment" value="${escapeHTML(state.replayFilters.environment)}" placeholder="environment" /><input name="release" value="${escapeHTML(state.replayFilters.release)}" placeholder="release" /><label><input name="has_error" type="checkbox" ${state.replayFilters.hasError ? 'checked' : ''} /> Has errors</label><button class="button small">Search</button></form><div class="management-list compact-management">${rows || '<p class="muted padded">No matching replay segments.</p>'}</div></section>${replayAnalysisPanel()}</div>`;
   } else if (state.telemetryTab === 'profiles') {
     const rows = state.profiles.map((item) => `<div class="management-row ${state.profileId === item.id ? 'selected' : ''}"><span class="platform-icon">CPU</span><span><strong class="mono">${escapeHTML(item.profile_id)}</strong><small>${escapeHTML(item.platform || 'generic')} · ${formatMS(item.duration_ms)} · ${Number(item.size).toLocaleString()} bytes${item.profiler_id ? ` · continuous ${escapeHTML(item.profiler_id)}` : ''}</small></span><button class="button small" data-analyze-profile="${escapeHTML(item.id)}">Analyze</button><a class="button secondary small" href="/profiles/${encodeURIComponent(item.id)}">Download</a></div>`).join('');
     content = `<div class="telemetry-analysis-grid"><section class="card settings-card"><p class="eyebrow">Profiling</p><h2>Profiles</h2><div class="management-list compact-management">${rows || '<p class="muted padded">No profiles received.</p>'}</div></section>${profileAnalysisPanel()}</div>`;
@@ -603,6 +604,23 @@ function bindView() {
       state.replayPlaybackStatus = 'error';
     }
     render();
+  }));
+  $('#replay-search')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const input = new FormData(event.currentTarget);
+    state.replayFilters = { q: input.get('q'), environment: input.get('environment'), release: input.get('release'), hasError: input.get('has_error') === 'on' };
+    await loadProductData();
+  });
+  $$('[data-delete-replay]').forEach((button) => button.addEventListener('click', async () => {
+    if (!confirm('Delete this replay session and all of its recording segments?')) return;
+    const organization = currentOrganization();
+    const project = currentProject();
+    await request(`/api/0/projects/${encodeURIComponent(organization.organization_slug)}/${encodeURIComponent(project.slug)}/replays/${encodeURIComponent(button.dataset.deleteReplay)}/`, { method: 'DELETE' });
+    state.replayId = '';
+    state.replayAnalysis = null;
+    state.replayPlayback = null;
+    await loadProductData();
+    showToast('Replay session deleted');
   }));
   $$('[data-analyze-profile]').forEach((button) => button.addEventListener('click', async () => {
     const id = button.dataset.analyzeProfile;
@@ -1200,10 +1218,15 @@ async function loadAttachments() {
 
 async function loadProductData() {
   if (!state.projectId) return;
+  const replayParameters = new URLSearchParams({ project_id: state.projectId });
+  if (state.replayFilters.q) replayParameters.set('q', state.replayFilters.q);
+  if (state.replayFilters.environment) replayParameters.set('environment', state.replayFilters.environment);
+  if (state.replayFilters.release) replayParameters.set('release', state.replayFilters.release);
+  if (state.replayFilters.hasError) replayParameters.set('has_error', 'true');
   [state.cronMonitors, state.feedback, state.replays, state.profiles, state.metrics, state.artifacts, state.quotas, state.ingestionJobs] = await Promise.all([
     request(`/cron/monitors?project_id=${encodeURIComponent(state.projectId)}`),
     request(`/feedback?project_id=${encodeURIComponent(state.projectId)}`),
-    request(`/replays?project_id=${encodeURIComponent(state.projectId)}`),
+    request(`/replays?${replayParameters.toString()}`),
     request(`/profiles?project_id=${encodeURIComponent(state.projectId)}`),
     request(`/metrics?project_id=${encodeURIComponent(state.projectId)}&period=24h`),
     request(`/artifacts?project_id=${encodeURIComponent(state.projectId)}`),

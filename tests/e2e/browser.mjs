@@ -120,6 +120,7 @@ try {
     environment: 'e2e',
     release: 'checkout@1.0.0',
     urls: ['https://shop.example/checkout'],
+    error_ids: [eventID],
   }));
   await ingestEnvelope({ replay_id: replayID }, 'replay_recording', JSON.stringify([
     { type: 4, timestamp: 1787997600000, data: { href: 'https://shop.example/checkout', width: 800, height: 600 } },
@@ -200,6 +201,14 @@ try {
   if (!latestEvent.ok() || (await latestEvent.json()).eventID !== eventID) throw new Error('Sentry latest issue event endpoint failed');
   const eventDetail = await page.request.get(`/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/events/${eventID}/`);
   if (!eventDetail.ok() || (await eventDetail.json()).groupID !== sentryIssues[0].id) throw new Error('Sentry event detail endpoint failed');
+  const replaySearch = await page.request.get(`/api/0/organizations/e2e/replays/?project=${encodeURIComponent(sentryProject.id)}&query=${encodeURIComponent(`environment:e2e issue:${sentryIssues[0].id}`)}`);
+  const replaySearchBody = await replaySearch.json();
+  if (!replaySearch.ok() || replaySearchBody.data?.[0]?.replayId !== replayID || replaySearchBody.data[0].issues?.[0]?.id !== sentryIssues[0].id) throw new Error(`Sentry replay search/correlation failed: ${JSON.stringify(replaySearchBody)}`);
+	const replaySegments = await page.request.get(`/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/replays/${replayID}/recording-segments/`);
+	const replaySegmentBody = await replaySegments.json();
+	if (!replaySegments.ok() || replaySegmentBody?.[0]?.[0]?.type !== 4) throw new Error(`Sentry replay segment listing failed: ${JSON.stringify(replaySegmentBody)}`);
+	const replaySegment = await page.request.get(`/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/replays/${replayID}/recording-segments/0/`);
+	if (!replaySegment.ok() || (await replaySegment.json()).data?.segmentId !== 0) throw new Error('Sentry replay segment detail failed');
 
   await page.getByRole('link', { name: 'Discover' }).click();
   await page.locator('#discover-form input[name="query"]').fill('environment:e2e');
@@ -221,6 +230,11 @@ try {
   await page.getByRole('link', { name: 'Telemetry' }).click();
   await page.getByRole('heading', { name: 'Cron monitors' }).waitFor();
   await page.getByRole('button', { name: 'Replays' }).click();
+  await page.locator('#replay-search input[name="q"]').fill('checkout');
+  await page.locator('#replay-search input[name="environment"]').fill('e2e');
+  await page.locator('#replay-search input[name="release"]').fill('checkout@1.0.0');
+  await page.locator('#replay-search input[name="has_error"]').check();
+  await page.locator('#replay-search').getByRole('button', { name: 'Search' }).click();
   const replayRow = page.locator('.management-row', { hasText: replayID });
   await replayRow.getByRole('button', { name: 'Analyze' }).click();
   await page.getByRole('heading', { name: 'https://shop.example/checkout' }).waitFor();
@@ -266,6 +280,8 @@ try {
   if (!mcpPermissions.some((permission) => permission.email === 'e2e@barktrace.test' && permission.effective_role === 'admin')) throw new Error('MCP project permission listing failed');
   const mcpIssue = await mcpCall(3, 'update_issue', { issue_id: nativeIssues[0].id, priority: 'critical', bookmarked: true });
   if (mcpIssue.priority !== 'critical' || !mcpIssue.bookmarked) throw new Error('MCP advanced issue update failed');
+  const mcpReplays = await mcpCall(18, 'list_replays', { project_id: nativeProject.id, query: 'checkout', environment: 'e2e', release: 'checkout@1.0.0', issue_id: nativeIssues[0].id, has_error: true });
+  if (!mcpReplays.some((replay) => replay.replay_id === replayID)) throw new Error('MCP replay filtering failed');
   const mcpQuota = await mcpCall(4, 'set_project_quota', { project_id: nativeProject.id, category: 'error', per_minute: 120, per_day: 5000, max_item_bytes: 1048576 });
   if (!mcpQuota.configured || mcpQuota.per_minute !== 120) throw new Error('MCP quota update failed');
   const mcpRetention = await mcpCall(5, 'update_retention', { organization_id: nativeOrganization.organization_id, days: 45 });

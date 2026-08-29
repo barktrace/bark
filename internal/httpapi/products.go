@@ -204,7 +204,53 @@ func (s *Server) replays(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "project access required")
 		return
 	}
-	rows, err := s.store.DB.QueryContext(r.Context(), `SELECT id, replay_id, segment_id, environment, release, user_id, started_at, finished_at, error_count, url, event_blob_id IS NOT NULL, recording_blob_id IS NOT NULL FROM replays WHERE project_id = ? ORDER BY finished_at DESC LIMIT 200`, projectID)
+	clauses := []string{"rp.project_id = ?"}
+	arguments := []any{projectID}
+	for _, filter := range []struct {
+		parameter string
+		column    string
+	}{{"environment", "rp.environment"}, {"release", "rp.release"}, {"user_id", "rp.user_id"}} {
+		if value := strings.TrimSpace(r.URL.Query().Get(filter.parameter)); value != "" {
+			clauses = append(clauses, filter.column+" = ?")
+			arguments = append(arguments, value)
+		}
+	}
+	if query := strings.TrimSpace(r.URL.Query().Get("q")); query != "" {
+		like := "%" + query + "%"
+		clauses = append(clauses, "(rp.url LIKE ? OR rp.user_id LIKE ? OR rp.replay_id LIKE ?)")
+		arguments = append(arguments, like, like, like)
+	}
+	if value := strings.TrimSpace(r.URL.Query().Get("has_error")); value == "true" || value == "1" {
+		clauses = append(clauses, "rp.error_count > 0")
+	}
+	for _, boundary := range []struct {
+		parameter string
+		clause    string
+	}{{"start", "rp.finished_at >= ?"}, {"end", "rp.started_at <= ?"}} {
+		if value := strings.TrimSpace(r.URL.Query().Get(boundary.parameter)); value != "" {
+			if _, err := time.Parse(time.RFC3339, value); err != nil {
+				writeError(w, http.StatusBadRequest, boundary.parameter+" must be RFC3339")
+				return
+			}
+			clauses = append(clauses, boundary.clause)
+			arguments = append(arguments, value)
+		}
+	}
+	if issue := strings.TrimSpace(r.URL.Query().Get("issue_id")); issue != "" {
+		var issueID string
+		err := s.store.DB.QueryRowContext(r.Context(), `SELECT id FROM issues WHERE project_id = ? AND (id = ? OR CAST(rowid AS TEXT) = ?)`, projectID, issue, issue).Scan(&issueID)
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSON(w, http.StatusOK, []any{})
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "could not resolve replay issue")
+			return
+		}
+		clauses = append(clauses, `EXISTS (SELECT 1 FROM replay_error_links rel JOIN events e ON e.project_id = rel.project_id AND e.event_id = rel.event_id WHERE rel.project_id = rp.project_id AND rel.replay_id = rp.replay_id AND e.issue_id = ?)`)
+		arguments = append(arguments, issueID)
+	}
+	rows, err := s.store.DB.QueryContext(r.Context(), `SELECT rp.id, rp.replay_id, rp.segment_id, rp.environment, rp.release, rp.user_id, rp.started_at, rp.finished_at, rp.error_count, rp.url, rp.event_blob_id IS NOT NULL, rp.recording_blob_id IS NOT NULL FROM replays rp WHERE `+strings.Join(clauses, " AND ")+` ORDER BY rp.finished_at DESC LIMIT 200`, arguments...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not list replays")
 		return

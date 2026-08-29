@@ -359,7 +359,7 @@ func (s *Server) reprocessProject(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) projectBySlugs(r *http.Request, organizationSlug, projectSlug string) (string, string, bool) {
 	var projectID, organizationID string
-	err := s.store.DB.QueryRowContext(r.Context(), `SELECT p.id, p.organization_id FROM projects p JOIN organizations o ON o.id = p.organization_id WHERE o.slug = ? AND p.slug = ?`, organizationSlug, projectSlug).Scan(&projectID, &organizationID)
+	err := s.store.DB.QueryRowContext(r.Context(), `SELECT p.id, p.organization_id FROM projects p JOIN organizations o ON o.id = p.organization_id WHERE (o.slug = ? OR o.id = ?) AND (p.slug = ? OR p.id = ? OR p.sentry_id = ?) LIMIT 1`, organizationSlug, organizationSlug, projectSlug, projectSlug, projectSlug).Scan(&projectID, &organizationID)
 	return projectID, organizationID, err == nil
 }
 

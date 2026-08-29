@@ -57,5 +57,7 @@ fingerprint tombstone directly from the database.
 
 Each organization has a retention period from 1 to 3650 days, defaulting to 30.
 The process runs cleanup six-hourly for events, transactions, spans, logs,
-sessions, and uptime checks. Organization administrators can preview or run the
-same cleanup from the dashboard. Backups remain the operator's responsibility.
+sessions, uptime checks, replays, profiles, and metrics. Unreferenced payloads
+are removed from local or S3 blob storage through a durable deletion queue.
+Organization administrators can preview or run the same cleanup from the
+dashboard. Backups remain the operator's responsibility.

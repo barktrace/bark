@@ -96,9 +96,10 @@ creates a project, sends a Sentry event, opens the resulting issue and telemetry
 views, uploads and applies a distribution-specific indexed source map by debug
 ID, verifies Sentry-compatible organization/project/key/issue/event detail
 routes, runs a Discover query, creates a saved dashboard widget, renders an
-interactive rrweb replay, analyzes a sampled profile, exercises team ownership
-and assignment plus MCP triage, quota, retention, alert, uptime, and cron
-operations, and signs out.
+interactive rrweb replay, verifies Sentry-compatible replay search, issue
+correlation, segment discovery, and dashboard/MCP filters, analyzes a sampled
+profile, exercises team ownership and assignment plus MCP triage, quota,
+retention, alert, uptime, and cron operations, and signs out.
 
 ```sh
 npm ci --prefix tests/e2e

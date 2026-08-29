@@ -35,16 +35,20 @@ func (s *Service) callObservabilityTool(ctx context.Context, credential *credent
 		return s.storageSummary(ctx, credential)
 	}
 	var args struct {
-		ProjectID string `json:"project_id"`
-		MonitorID string `json:"monitor_id"`
-		Level     string `json:"level"`
-		Query     string `json:"query"`
-		Name      string `json:"name"`
-		Status    string `json:"status"`
-		IssueID   string `json:"issue_id"`
-		ReplayID  string `json:"replay_id"`
-		ProfileID string `json:"profile_id"`
-		Limit     int    `json:"limit"`
+		ProjectID   string `json:"project_id"`
+		MonitorID   string `json:"monitor_id"`
+		Level       string `json:"level"`
+		Query       string `json:"query"`
+		Name        string `json:"name"`
+		Status      string `json:"status"`
+		IssueID     string `json:"issue_id"`
+		ReplayID    string `json:"replay_id"`
+		ProfileID   string `json:"profile_id"`
+		Environment string `json:"environment"`
+		Release     string `json:"release"`
+		UserID      string `json:"user_id"`
+		HasError    bool   `json:"has_error"`
+		Limit       int    `json:"limit"`
 	}
 	if err := decodeArguments(raw, &args); err != nil || strings.TrimSpace(args.ProjectID) == "" {
 		return nil, errors.New("project_id is required")
@@ -72,7 +76,7 @@ func (s *Service) callObservabilityTool(ctx context.Context, credential *credent
 	case "list_feedback":
 		return s.listFeedback(ctx, args.ProjectID, limit)
 	case "list_replays":
-		return s.listReplays(ctx, args.ProjectID, limit)
+		return s.listReplays(ctx, args.ProjectID, args.Query, args.Environment, args.Release, args.UserID, args.IssueID, args.HasError, limit)
 	case "analyze_replay":
 		if args.ReplayID == "" {
 			return nil, errors.New("replay_id is required")
@@ -273,8 +277,29 @@ func (s *Service) listFeedback(ctx context.Context, projectID string, limit int)
 	return items, rows.Err()
 }
 
-func (s *Service) listReplays(ctx context.Context, projectID string, limit int) (any, error) {
-	rows, err := s.store.DB.QueryContext(ctx, `SELECT replay_id, segment_id, environment, release, user_id, started_at, finished_at, error_count, url, created_at FROM replays WHERE project_id = ? ORDER BY finished_at DESC LIMIT ?`, projectID, limit)
+func (s *Service) listReplays(ctx context.Context, projectID, query, environment, release, userID, issueID string, hasError bool, limit int) (any, error) {
+	clauses := []string{"rp.project_id = ?"}
+	arguments := []any{projectID}
+	for _, filter := range []struct{ column, value string }{{"rp.environment", environment}, {"rp.release", release}, {"rp.user_id", userID}} {
+		if value := strings.TrimSpace(filter.value); value != "" {
+			clauses = append(clauses, filter.column+" = ?")
+			arguments = append(arguments, value)
+		}
+	}
+	if query = strings.TrimSpace(query); query != "" {
+		like := "%" + query + "%"
+		clauses = append(clauses, "(rp.url LIKE ? OR rp.user_id LIKE ? OR rp.replay_id LIKE ?)")
+		arguments = append(arguments, like, like, like)
+	}
+	if hasError {
+		clauses = append(clauses, "rp.error_count > 0")
+	}
+	if issueID = strings.TrimSpace(issueID); issueID != "" {
+		clauses = append(clauses, `EXISTS (SELECT 1 FROM replay_error_links rel JOIN events e ON e.project_id = rel.project_id AND e.event_id = rel.event_id WHERE rel.project_id = rp.project_id AND rel.replay_id = rp.replay_id AND e.issue_id = ?)`)
+		arguments = append(arguments, issueID)
+	}
+	arguments = append(arguments, limit)
+	rows, err := s.store.DB.QueryContext(ctx, `SELECT rp.replay_id, rp.segment_id, rp.environment, rp.release, rp.user_id, rp.started_at, rp.finished_at, rp.error_count, rp.url, rp.created_at FROM replays rp WHERE `+strings.Join(clauses, " AND ")+` ORDER BY rp.finished_at DESC LIMIT ?`, arguments...)
 	if err != nil {
 		return nil, err
 	}

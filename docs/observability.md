@@ -46,7 +46,9 @@ Each item requires `body` or `message`; batches are capped at 1,000 entries and
 ## Session replay
 
 Sentry `replay_event` and `replay_recording` envelope items are linked by replay
-and segment ID. Select a segment under **Telemetry → Replays** to watch the
+and segment ID. Replay error IDs are indexed against retained events and issues.
+**Telemetry → Replays** can search by URL, user or replay ID and filter by
+environment, release, and error presence. Select a segment to watch the
 session in the official rrweb player and inspect its visited URLs, error and
 trace correlation, event-category counts, and ordered navigation, interaction,
 console, lifecycle, and DOM-mutation timeline. Form input changes are counted,
@@ -65,8 +67,27 @@ returns at most 20,000 rrweb events or 8 MiB of serialized events. A recording
 must contain a full rrweb snapshot. Playback never starts automatically. The
 native endpoints are:
 
+- `GET /replays?project_id={project_uuid}&q={text}&environment={environment}&release={release}&user_id={user}&has_error=true&issue_id={issue}`
 - `GET /replays/{internal_segment_id}/analysis`
 - `GET /replays/{internal_segment_id}/playback`
+
+Sentry-compatible clients can use:
+
+- `GET /api/0/organizations/{organization}/replays/`
+- `GET /api/0/organizations/{organization}/replays/{replay_id}/`
+- `GET /api/0/organizations/{organization}/replay-count/?data_source=events`
+- `GET /api/0/organizations/{organization}/replay-selectors/`
+- `DELETE /api/0/projects/{organization}/{project}/replays/{replay_id}/`
+- `GET /api/0/projects/{organization}/{project}/replays/{replay_id}/clicks/`
+- `GET /api/0/projects/{organization}/{project}/replays/{replay_id}/recording-segments/`
+- `GET /api/0/projects/{organization}/{project}/replays/{replay_id}/recording-segments/{segment_id}/`
+- `GET /api/0/projects/{organization}/{project}/replays/{replay_id}/viewed-by/`
+
+The organization list accepts Sentry project, environment, release, time-range,
+free-text, `has:error`, and `issue:{id}` filters. Deleting a session requires
+project administrator access, removes all segments and correlations, records an
+audit event, and queues unreferenced backing objects for durable deletion. The
+selector endpoint remains empty until dead/rage-click classification is enabled.
 
 ## Profiling
 

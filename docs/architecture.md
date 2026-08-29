@@ -10,7 +10,7 @@ The public route layout is:
 
 - `/ui/*` — Astro dashboard
 - `/auth/*` — OIDC and session endpoints
-- `/api/0/*` — Sentry-compatible management endpoints
+- `/api/0/*` — Sentry-compatible management endpoints, including organization Replay search and segment retrieval
 - `/api/0/relays/*` — managed Relay registration and project configuration
 - `/api/{project_id}/envelope/` — SDK envelopes
 - `/api/{project_id}/store/` — legacy SDK events

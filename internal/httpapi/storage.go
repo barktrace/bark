@@ -128,7 +128,7 @@ func (s *Server) cleanupStorage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	result, err := maintenance.CleanupOrganization(r.Context(), s.store.DB, input.OrganizationID, time.Now().UTC().Add(-time.Duration(input.OlderThanDays)*24*time.Hour), input.DataTypes, input.DryRun)
+	result, err := maintenance.CleanupStore(r.Context(), s.store, input.OrganizationID, time.Now().UTC().Add(-time.Duration(input.OlderThanDays)*24*time.Hour), input.DataTypes, input.DryRun)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not clean storage")
 		return

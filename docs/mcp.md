@@ -86,7 +86,7 @@ curl --fail-with-body https://errors.example.com/mcp \
 | `list_uptime_monitors`, `list_uptime_checks` | Inspects uptime status and history. |
 | `list_cron_monitors`, `list_cron_checkins` | Inspects scheduled-job health. |
 | `list_feedback`, `list_attachments` | Inspects user reports and event attachments. |
-| `list_replays`, `analyze_replay` | Lists replay segments and decodes bounded navigation, interaction, mutation, console, and breadcrumb timelines without returning form input values. |
+| `list_replays`, `analyze_replay` | Searches replay segments by URL/user, environment, release, issue, or error presence and decodes bounded navigation, interaction, mutation, console, and breadcrumb timelines without returning form input values. |
 | `list_profiles`, `analyze_profile` | Lists profiles and builds bounded thread, hotspot, and flamegraph analysis from a stored sampled profile. |
 | `list_metrics` | Inspects metric points and tags. |
 | `list_alert_rules`, `list_alert_deliveries` | Inspects alert configuration and delivery. |
