@@ -45,11 +45,20 @@ BARKTRACE_MINIDUMP_SYMBOL_FIXTURE=/path/to/module.sym \
   go test -count=1 -run TestRealMinidumpFixture -v ./internal/symbolicate
 ```
 
-An ELF or thin Mach-O executable can exercise its real `.eh_frame` table:
+An ELF or Mach-O executable can exercise its real `.eh_frame` table:
 
 ```sh
 BARKTRACE_DWARF_CFI_FIXTURE=/path/to/executable \
   go test -count=1 -run TestRealDwarfCFIFixture -v ./internal/symbolicate
+```
+
+A thin or universal Mach-O executable can exercise its real compact-unwind
+table. Set the architecture when selecting a slice from a universal binary:
+
+```sh
+BARKTRACE_COMPACT_UNWIND_FIXTURE=/path/to/executable \
+BARKTRACE_COMPACT_UNWIND_ARCH=arm64 \
+  go test -count=1 -run TestRealMachOCompactUnwindFixture -v ./internal/symbolicate
 ```
 
 The replicated SQLite integration test downloads a checksum-verified, pinned

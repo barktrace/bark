@@ -68,6 +68,10 @@ type dwarfReader struct {
 }
 
 func loadDwarfCFI(reader io.ReaderAt) *dwarfCFI {
+	return loadDwarfCFIForArch(reader, "")
+}
+
+func loadDwarfCFIForArch(reader io.ReaderAt, architecture string) *dwarfCFI {
 	if file, err := elf.NewFile(reader); err == nil {
 		defer file.Close()
 		section := file.Section(".eh_frame")
@@ -86,25 +90,41 @@ func loadDwarfCFI(reader io.ReaderAt) *dwarfCFI {
 	}
 	if file, err := macho.NewFile(reader); err == nil {
 		defer file.Close()
-		section := file.Section("__eh_frame")
-		if section == nil || section.Size == 0 || section.Size > maxDWARFBytes {
-			return nil
+		return loadMachODwarfCFI(file)
+	}
+	fat, err := macho.NewFatFile(reader)
+	if err != nil {
+		return nil
+	}
+	defer fat.Close()
+	for _, candidate := range fat.Arches {
+		if architecture == "" || machoArchMatches(architecture, candidate.Cpu.String()) {
+			if parsed := loadMachODwarfCFI(candidate.File); parsed != nil {
+				return parsed
+			}
 		}
-		data, err := section.Data()
-		if err != nil {
-			return nil
-		}
-		pointerSize := 4
-		if file.Magic == macho.Magic64 {
-			pointerSize = 8
-		}
-		base := uint64(0)
-		if text := file.Segment("__TEXT"); text != nil {
-			base = text.Addr
-		}
-		return parseDwarfCFI(data, file.ByteOrder, pointerSize, section.Addr, base)
 	}
 	return nil
+}
+
+func loadMachODwarfCFI(file *macho.File) *dwarfCFI {
+	section := file.Section("__eh_frame")
+	if section == nil || section.Size == 0 || section.Size > maxDWARFBytes {
+		return nil
+	}
+	data, err := section.Data()
+	if err != nil {
+		return nil
+	}
+	pointerSize := 4
+	if file.Magic == macho.Magic64 {
+		pointerSize = 8
+	}
+	base := uint64(0)
+	if text := file.Segment("__TEXT"); text != nil {
+		base = text.Addr
+	}
+	return parseDwarfCFI(data, file.ByteOrder, pointerSize, section.Addr, base)
 }
 
 func parseDwarfCFI(data []byte, order binary.ByteOrder, pointerSize int, sectionAddress, imageBase uint64) *dwarfCFI {

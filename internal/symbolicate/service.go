@@ -741,17 +741,19 @@ func machoArchMatches(expected, actual string) bool {
 	normalize := func(value string) string {
 		value = strings.ToLower(value)
 		value = strings.TrimPrefix(value, "cpu")
-		return strings.NewReplacer("_", "", "-", "", " ", "").Replace(value)
+		value = strings.NewReplacer("_", "", "-", "", " ", "").Replace(value)
+		switch value {
+		case "x8664":
+			return "amd64"
+		case "aarch64":
+			return "arm64"
+		default:
+			return value
+		}
 	}
 	expected, actual = normalize(expected), normalize(actual)
 	if expected == "" {
 		return true
-	}
-	if expected == "x8664" {
-		expected = "amd64"
-	}
-	if expected == "aarch64" {
-		expected = "arm64"
 	}
 	return expected == actual
 }

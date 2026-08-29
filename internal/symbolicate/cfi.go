@@ -22,6 +22,7 @@ type breakpadCFI struct {
 	changes []breakpadCFIChange
 	windows []breakpadWIN
 	dwarf   *dwarfCFI
+	compact *machoCompactUnwind
 }
 
 type breakpadWIN struct {
@@ -56,7 +57,7 @@ func unwindMinidump(ctx context.Context, st *store.Store, projectID string, dump
 	if dump == nil {
 		return nil
 	}
-	unwinders := loadBreakpadUnwinders(ctx, st, projectID, dump.modules)
+	unwinders := loadBreakpadUnwinders(ctx, st, projectID, dump.modules, dump.architecture)
 	return unwindMinidumpThread(dump, minidumpThread{
 		id: dump.threadID, registers: dump.registers, stackAddress: dump.stackAddress, stack: dump.stack,
 	}, unwinders)
@@ -92,6 +93,9 @@ func unwindMinidumpThread(dump *minidump, thread minidumpThread, unwinders map[s
 				}
 				if next == nil && unwinder.dwarf != nil {
 					next = unwinder.dwarf.unwind(ip-module.base, registers, memory, dump.architecture)
+				}
+				if next == nil && unwinder.compact != nil {
+					next = unwinder.compact.unwind(ip-module.base, registers, memory, dump.architecture)
 				}
 			}
 		}
@@ -148,7 +152,7 @@ func (m minidumpMemory) readPointer(address uint64) (uint64, bool) {
 	return binary.LittleEndian.Uint64(m.data[offset : offset+8]), true
 }
 
-func loadBreakpadUnwinders(ctx context.Context, st *store.Store, projectID string, modules []minidumpModule) map[string]*breakpadCFI {
+func loadBreakpadUnwinders(ctx context.Context, st *store.Store, projectID string, modules []minidumpModule, architecture string) map[string]*breakpadCFI {
 	wanted := make(map[string]bool)
 	for _, module := range modules {
 		if id := normalizeDebugID(module.debugID); id != "" {
@@ -176,9 +180,11 @@ func loadBreakpadUnwinders(ctx context.Context, st *store.Store, projectID strin
 		}
 		unwinder := parseBreakpadCFI(file)
 		_, _ = file.Seek(0, io.SeekStart)
-		unwinder.dwarf = loadDwarfCFI(file)
+		unwinder.dwarf = loadDwarfCFIForArch(file, architecture)
+		_, _ = file.Seek(0, io.SeekStart)
+		unwinder.compact = loadMachOCompactUnwind(file, architecture)
 		_ = file.Close()
-		if len(unwinder.inits) > 0 || len(unwinder.windows) > 0 || unwinder.dwarf != nil {
+		if len(unwinder.inits) > 0 || len(unwinder.windows) > 0 || unwinder.dwarf != nil || unwinder.compact != nil {
 			result[normalized] = unwinder
 		}
 	}

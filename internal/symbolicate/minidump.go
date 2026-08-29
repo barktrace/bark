@@ -68,7 +68,7 @@ func MinidumpEvent(ctx context.Context, st *store.Store, projectID string, raw, 
 	if payload == nil {
 		payload = make(map[string]any)
 	}
-	unwinders := loadBreakpadUnwinders(ctx, st, projectID, parsed.modules)
+	unwinders := loadBreakpadUnwinders(ctx, st, projectID, parsed.modules, parsed.architecture)
 	frames := unwindMinidumpThread(parsed, minidumpThread{
 		id: parsed.threadID, registers: parsed.registers, stackAddress: parsed.stackAddress, stack: parsed.stack,
 	}, unwinders)
