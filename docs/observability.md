@@ -88,6 +88,20 @@ name, type, unit, timestamp, value, and tags. **Telemetry → Metrics** shows
 bounded count, minimum, average, and maximum summaries; the same dataset is
 available through Discover and MCP.
 
+## Source maps and native debug files
+
+JavaScript events are rewritten with uploaded Source Map v3 artifacts. Barktrace
+supports regular and indexed source maps, nullable embedded sources, canonical
+URL-style `sourceRoot` values such as `webpack:///`, release and distribution
+selection, and modern debug IDs from artifact bundles. Original generated frame
+fields are retained with an `original_` prefix when a frame is rewritten.
+
+Native frames can use uploaded ELF or Breakpad debug files selected by image
+debug ID. ELF artifacts resolve bounded function symbols. Breakpad files resolve
+bounded `FUNC` records before falling back to the nearest `PUBLIC` symbol and
+add `FILE` and source-line information when present. DWARF file/line lookup,
+inline-frame expansion, and CFI stack unwinding are not currently implemented.
+
 ## Uptime
 
 Organization owners and administrators can create GET or HEAD monitors from the

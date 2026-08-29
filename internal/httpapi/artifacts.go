@@ -195,7 +195,8 @@ func (s *Server) uploadArtifact(w http.ResponseWriter, r *http.Request, projectI
 	err = tx.QueryRowContext(r.Context(), `
 		INSERT INTO project_artifacts(id, project_id, release_id, blob_id, name, artifact_type, debug_id, dist)
 		VALUES (?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?)
-		ON CONFLICT DO UPDATE SET blob_id = excluded.blob_id, artifact_type = excluded.artifact_type, debug_id = excluded.debug_id, created_at = CURRENT_TIMESTAMP
+		ON CONFLICT (project_id, (COALESCE(release_id, '')), name, dist)
+		DO UPDATE SET blob_id = excluded.blob_id, artifact_type = excluded.artifact_type, debug_id = excluded.debug_id, created_at = CURRENT_TIMESTAMP
 		RETURNING id
 	`, artifactID, projectID, releaseID, blobID, name, kind, strings.TrimSpace(r.FormValue("debug_id")), strings.TrimSpace(r.FormValue("dist"))).Scan(&artifactID)
 	if err != nil {

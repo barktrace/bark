@@ -389,7 +389,7 @@ func (s *Server) storeArtifactBytes(ctx context.Context, organizationID, project
 		return map[string]any{"id": artifactID, "name": name, "artifact_type": kind, "sha1": stored.Checksum, "size": stored.Size, "dist": dist}, nil
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO blobs(id, organization_id, project_id, kind, storage_key, checksum, size, content_type) VALUES (?, ?, ?, 'artifact', ?, ?, ?, ?)`, blobID, organizationID, projectID, stored.Key, stored.Checksum, stored.Size, contentType); err == nil {
-		err = tx.QueryRowContext(ctx, `INSERT INTO project_artifacts(id, project_id, release_id, blob_id, name, artifact_type, debug_id, dist) VALUES (?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?) ON CONFLICT DO UPDATE SET blob_id = excluded.blob_id, artifact_type = excluded.artifact_type, debug_id = excluded.debug_id, created_at = CURRENT_TIMESTAMP RETURNING id`, artifactID, projectID, releaseID, blobID, name, kind, strings.TrimSpace(debugID), strings.TrimSpace(dist)).Scan(&artifactID)
+		err = tx.QueryRowContext(ctx, `INSERT INTO project_artifacts(id, project_id, release_id, blob_id, name, artifact_type, debug_id, dist) VALUES (?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?) ON CONFLICT (project_id, (COALESCE(release_id, '')), name, dist) DO UPDATE SET blob_id = excluded.blob_id, artifact_type = excluded.artifact_type, debug_id = excluded.debug_id, created_at = CURRENT_TIMESTAMP RETURNING id`, artifactID, projectID, releaseID, blobID, name, kind, strings.TrimSpace(debugID), strings.TrimSpace(dist)).Scan(&artifactID)
 	}
 	if err == nil && oldBlobID.Valid {
 		_, err = tx.ExecContext(ctx, `DELETE FROM blobs WHERE id = ?`, oldBlobID.String)

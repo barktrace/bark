@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/url"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -16,7 +17,12 @@ import (
 )
 
 type artifact struct {
-	name, kind, debugID, storageKey string
+	name, kind, debugID, dist, releaseID, storageKey string
+}
+
+type cachedSourceMap struct {
+	value *SourceMap
+	err   error
 }
 
 func ProcessEvent(ctx context.Context, st *store.Store, projectID, releaseID string, raw []byte) ([]byte, bool, error) {
@@ -32,8 +38,10 @@ func ProcessEvent(ctx context.Context, st *store.Store, projectID, releaseID str
 		return raw, false, nil
 	}
 	changed := false
+	sourceMaps := make(map[string]cachedSourceMap)
+	dist := stringValue(payload["dist"])
 	for _, frame := range eventFrames(payload) {
-		if symbolicateJavaScriptFrame(st, artifacts, frame) || symbolicateNativeFrame(st, artifacts, payload, frame) {
+		if symbolicateJavaScriptFrame(st, artifacts, payload, dist, frame, sourceMaps) || symbolicateNativeFrame(st, artifacts, payload, frame) {
 			changed = true
 		}
 	}
@@ -46,7 +54,7 @@ func ProcessEvent(ctx context.Context, st *store.Store, projectID, releaseID str
 
 func loadArtifacts(ctx context.Context, st *store.Store, projectID, releaseID string) ([]artifact, error) {
 	rows, err := st.DB.QueryContext(ctx, `
-		SELECT a.name, a.artifact_type, a.debug_id, b.storage_key
+		SELECT a.name, a.artifact_type, a.debug_id, a.dist, COALESCE(a.release_id, ''), b.storage_key
 		FROM project_artifacts a JOIN blobs b ON b.id = a.blob_id
 		WHERE a.project_id = ? AND (a.release_id = ? OR a.release_id IS NULL)
 	`, projectID, releaseID)
@@ -57,7 +65,7 @@ func loadArtifacts(ctx context.Context, st *store.Store, projectID, releaseID st
 	items := make([]artifact, 0)
 	for rows.Next() {
 		var item artifact
-		if err := rows.Scan(&item.name, &item.kind, &item.debugID, &item.storageKey); err != nil {
+		if err := rows.Scan(&item.name, &item.kind, &item.debugID, &item.dist, &item.releaseID, &item.storageKey); err != nil {
 			return nil, err
 		}
 		items = append(items, item)
@@ -97,7 +105,7 @@ func eventFrames(payload map[string]any) []map[string]any {
 	return frames
 }
 
-func symbolicateJavaScriptFrame(st *store.Store, artifacts []artifact, frame map[string]any) bool {
+func symbolicateJavaScriptFrame(st *store.Store, artifacts []artifact, payload map[string]any, eventDist string, frame map[string]any, cache map[string]cachedSourceMap) bool {
 	generated := stringValue(frame["abs_path"])
 	if generated == "" {
 		generated = stringValue(frame["filename"])
@@ -106,24 +114,41 @@ func symbolicateJavaScriptFrame(st *store.Store, artifacts []artifact, frame map
 	if generated == "" || line < 1 {
 		return false
 	}
+	debugID := javascriptDebugID(payload, frame, generated)
+	candidates := make([]artifact, 0)
+	scores := make(map[string]int)
 	for _, item := range artifacts {
-		if item.kind != "sourcemap" || !artifactMatches(item.name, generated) {
+		score := javascriptArtifactScore(item, generated, debugID, eventDist)
+		if score < 0 {
 			continue
 		}
-		file, err := st.Blobs.Open(item.storageKey)
-		if err != nil {
+		candidates = append(candidates, item)
+		scores[item.storageKey] = score
+	}
+	sort.SliceStable(candidates, func(left, right int) bool {
+		return scores[candidates[left].storageKey] > scores[candidates[right].storageKey]
+	})
+	for _, item := range candidates {
+		cached, found := cache[item.storageKey]
+		if !found {
+			file, err := st.Blobs.Open(item.storageKey)
+			if err != nil {
+				cache[item.storageKey] = cachedSourceMap{err: err}
+				continue
+			}
+			raw, readErr := io.ReadAll(io.LimitReader(file, 20<<20))
+			_ = file.Close()
+			if readErr != nil {
+				cache[item.storageKey] = cachedSourceMap{err: readErr}
+				continue
+			}
+			cached.value, cached.err = ParseSourceMap(raw)
+			cache[item.storageKey] = cached
+		}
+		if cached.err != nil || cached.value == nil {
 			continue
 		}
-		raw, readErr := io.ReadAll(io.LimitReader(file, 20<<20))
-		_ = file.Close()
-		if readErr != nil {
-			continue
-		}
-		sourceMap, err := ParseSourceMap(raw)
-		if err != nil {
-			continue
-		}
-		position, ok := sourceMap.Lookup(line, column)
+		position, ok := cached.value.Lookup(line, column)
 		if !ok {
 			continue
 		}
@@ -142,10 +167,67 @@ func symbolicateJavaScriptFrame(st *store.Store, artifacts []artifact, frame map
 	return false
 }
 
-func artifactMatches(artifactName, generated string) bool {
+func javascriptArtifactScore(item artifact, generated, debugID, eventDist string) int {
+	if item.kind != "sourcemap" {
+		return -1
+	}
+	if eventDist == "" && item.dist != "" {
+		return -1
+	}
+	if eventDist != "" && item.dist != "" && item.dist != eventDist {
+		return -1
+	}
+	score := 0
+	if debugID != "" && item.debugID != "" {
+		if normalizeDebugID(item.debugID) != debugID {
+			return -1
+		}
+		score += 100
+	}
+	nameScore := artifactMatchScore(item.name, generated)
+	if score == 0 && nameScore == 0 {
+		return -1
+	}
+	score += nameScore
+	if item.releaseID != "" {
+		score += 4
+	}
+	if eventDist != "" && item.dist == eventDist {
+		score += 2
+	}
+	return score
+}
+
+func javascriptDebugID(payload, frame map[string]any, generated string) string {
+	if value := normalizeDebugID(firstString(frame, "debug_id", "debugId")); value != "" {
+		return value
+	}
+	debugMeta, _ := payload["debug_meta"].(map[string]any)
+	images, _ := debugMeta["images"].([]any)
+	for _, raw := range images {
+		image, _ := raw.(map[string]any)
+		codeFile := firstString(image, "code_file", "name")
+		imageType := strings.ToLower(firstString(image, "type"))
+		matchesCodeFile := codeFile != "" && (cleanArtifactName(codeFile) == cleanArtifactName(generated) || path.Base(cleanArtifactName(codeFile)) == path.Base(cleanArtifactName(generated)))
+		if matchesCodeFile || (codeFile == "" && imageType == "sourcemap") {
+			if value := normalizeDebugID(firstString(image, "debug_id", "debugId")); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+func artifactMatchScore(artifactName, generated string) int {
 	cleanArtifact := cleanArtifactName(artifactName)
 	cleanGenerated := cleanArtifactName(generated)
-	return cleanArtifact == cleanGenerated+".map" || path.Base(cleanArtifact) == path.Base(cleanGenerated)+".map" || strings.TrimSuffix(cleanArtifact, ".map") == cleanGenerated
+	if cleanArtifact == cleanGenerated+".map" || strings.TrimSuffix(cleanArtifact, ".map") == cleanGenerated {
+		return 20
+	}
+	if path.Base(cleanArtifact) == path.Base(cleanGenerated)+".map" {
+		return 10
+	}
+	return 0
 }
 
 func cleanArtifactName(value string) string {
@@ -181,9 +263,12 @@ func symbolicateNativeFrame(st *store.Store, artifacts []artifact, payload map[s
 			continue
 		}
 		function, symbolAddress := lookupELFSymbol(file, address, imageBase)
+		sourceFile, sourceLine := "", 0
 		if function == "" {
 			_, _ = file.Seek(0, io.SeekStart)
-			function, symbolAddress = lookupBreakpadSymbol(file, address-imageBase)
+			matched := lookupBreakpadSymbol(file, address-imageBase)
+			function, symbolAddress = matched.function, matched.address
+			sourceFile, sourceLine = matched.filename, matched.line
 		}
 		_ = file.Close()
 		if function == "" {
@@ -192,6 +277,12 @@ func symbolicateNativeFrame(st *store.Store, artifacts []artifact, payload map[s
 		preserveOriginal(frame)
 		frame["function"] = function
 		frame["symbol_addr"] = fmt.Sprintf("0x%x", symbolAddress+imageBase)
+		if sourceFile != "" {
+			frame["filename"], frame["abs_path"] = sourceFile, sourceFile
+		}
+		if sourceLine > 0 {
+			frame["lineno"] = sourceLine
+		}
 		frame["symbolicated"] = true
 		return true
 	}
@@ -234,41 +325,109 @@ func lookupELFSymbol(reader io.ReaderAt, address, imageBase uint64) (string, uin
 	return "", 0
 }
 
-func lookupBreakpadSymbol(reader io.Reader, relative uint64) (string, uint64) {
+type breakpadSymbol struct {
+	function string
+	address  uint64
+	filename string
+	line     int
+}
+
+func lookupBreakpadSymbol(reader io.Reader, relative uint64) breakpadSymbol {
 	scanner := bufio.NewScanner(io.LimitReader(reader, 100<<20))
 	buffer := make([]byte, 64<<10)
 	scanner.Buffer(buffer, 1<<20)
-	bestName, bestAddress := "", uint64(0)
+	files := make(map[int]string)
+	bestFunction := breakpadSymbol{}
+	bestPublic := breakpadSymbol{}
+	currentFunctionMatches := false
 	for scanner.Scan() {
 		line := scanner.Text()
-		if !strings.HasPrefix(line, "FUNC ") && !strings.HasPrefix(line, "PUBLIC ") {
+		if strings.HasPrefix(line, "FILE ") {
+			fields := strings.SplitN(strings.TrimSpace(strings.TrimPrefix(line, "FILE ")), " ", 2)
+			if len(fields) == 2 {
+				if id, err := strconv.Atoi(fields[0]); err == nil && id >= 0 {
+					files[id] = strings.TrimSpace(fields[1])
+				}
+			}
+			currentFunctionMatches = false
 			continue
 		}
-		fields := strings.Fields(line)
-		if len(fields) < 4 {
-			continue
-		}
-		index := 1
-		if fields[index] == "m" {
-			index++
-		}
-		if len(fields) <= index+2 {
-			continue
-		}
-		address, err := strconv.ParseUint(fields[index], 16, 64)
-		if err != nil || address > relative || address < bestAddress {
-			continue
-		}
-		nameIndex := index + 2
 		if strings.HasPrefix(line, "FUNC ") {
-			nameIndex = index + 3
-		}
-		if nameIndex >= len(fields) {
+			address, size, name, ok := parseBreakpadFunction(line)
+			currentFunctionMatches = ok && size > 0 && relative >= address && relative-address < size
+			if currentFunctionMatches && (bestFunction.function == "" || address >= bestFunction.address) {
+				bestFunction = breakpadSymbol{function: name, address: address}
+			}
 			continue
 		}
-		bestAddress, bestName = address, strings.Join(fields[nameIndex:], " ")
+		if strings.HasPrefix(line, "PUBLIC ") {
+			currentFunctionMatches = false
+			address, name, ok := parseBreakpadPublic(line)
+			if ok && address <= relative && (bestPublic.function == "" || address >= bestPublic.address) {
+				bestPublic = breakpadSymbol{function: name, address: address}
+			}
+			continue
+		}
+		if !currentFunctionMatches {
+			continue
+		}
+		address, size, sourceLine, fileID, ok := parseBreakpadLine(line)
+		if !ok || size == 0 || relative < address || relative-address >= size {
+			continue
+		}
+		if sourceLine > 0 && address >= bestFunction.address {
+			bestFunction.line = sourceLine
+			bestFunction.filename = files[fileID]
+		}
 	}
-	return bestName, bestAddress
+	if bestFunction.function != "" {
+		return bestFunction
+	}
+	return bestPublic
+}
+
+func parseBreakpadFunction(line string) (uint64, uint64, string, bool) {
+	fields := strings.Fields(line)
+	index := 1
+	if len(fields) > index && fields[index] == "m" {
+		index++
+	}
+	if len(fields) <= index+3 {
+		return 0, 0, "", false
+	}
+	address, addressErr := strconv.ParseUint(fields[index], 16, 64)
+	size, sizeErr := strconv.ParseUint(fields[index+1], 16, 64)
+	name := strings.Join(fields[index+3:], " ")
+	return address, size, name, addressErr == nil && sizeErr == nil && name != ""
+}
+
+func parseBreakpadPublic(line string) (uint64, string, bool) {
+	fields := strings.Fields(line)
+	index := 1
+	if len(fields) > index && fields[index] == "m" {
+		index++
+	}
+	if len(fields) <= index+2 {
+		return 0, "", false
+	}
+	address, err := strconv.ParseUint(fields[index], 16, 64)
+	name := strings.Join(fields[index+2:], " ")
+	return address, name, err == nil && name != ""
+}
+
+func parseBreakpadLine(line string) (uint64, uint64, int, int, bool) {
+	fields := strings.Fields(line)
+	if len(fields) != 4 {
+		return 0, 0, 0, 0, false
+	}
+	address, addressErr := strconv.ParseUint(fields[0], 16, 64)
+	size, sizeErr := strconv.ParseUint(fields[1], 16, 64)
+	sourceLine, lineErr := strconv.Atoi(fields[2])
+	fileID, fileErr := strconv.Atoi(fields[3])
+	if addressErr != nil || sizeErr != nil || lineErr != nil || fileErr != nil || sourceLine < 0 || fileID < 0 {
+		return 0, 0, 0, 0, false
+	}
+	return address, size, sourceLine, fileID, true
 }
 
 func parseAddress(value any) (uint64, bool) {

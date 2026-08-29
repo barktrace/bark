@@ -46,6 +46,44 @@ try {
 
   const parsed = new URL(dsn);
   const projectID = parsed.pathname.slice(1);
+  const organizationsResponse = await page.request.get('/organizations');
+  const organizations = await organizationsResponse.json();
+  const nativeOrganization = organizations.find((item) => item.organization_slug === 'e2e');
+  if (!organizationsResponse.ok() || !nativeOrganization) throw new Error('native organization discovery failed');
+  const nativeProjectsResponse = await page.request.get(`/projects?organization_id=${encodeURIComponent(nativeOrganization.organization_id)}`);
+  const nativeProjects = await nativeProjectsResponse.json();
+  const nativeProject = nativeProjects.find((item) => item.sentry_id === projectID);
+  if (!nativeProjectsResponse.ok() || !nativeProject) throw new Error('native project discovery failed');
+
+  const sourceMapDebugID = '12345678-1234-1234-1234-123456789abc';
+  const sourceMapUpload = await page.request.post(`/artifacts?project_id=${encodeURIComponent(nativeProject.id)}&release=${encodeURIComponent('checkout@1.0.0')}`, {
+    multipart: {
+      name: '~/unrelated-checkout-bundle.js.map',
+      artifact_type: 'sourcemap',
+      debug_id: sourceMapDebugID,
+      dist: 'e2e-web',
+      file: {
+        name: 'checkout.js.map',
+        mimeType: 'application/json',
+        buffer: Buffer.from(JSON.stringify({
+          version: 3,
+          sections: [{
+            offset: { line: 0, column: 10 },
+            map: {
+              version: 3,
+              sourceRoot: 'webpack:///',
+              sources: ['src/checkout.ts'],
+              sourcesContent: ['export function submitOrder() {}'],
+              names: ['submitOrder'],
+              mappings: 'AAAAA',
+            },
+          }],
+        })),
+      },
+    },
+  });
+  if (!sourceMapUpload.ok()) throw new Error(`source-map upload failed: ${sourceMapUpload.status()} ${await sourceMapUpload.text()}`);
+
   const ingestEnvelope = async (header, type, payload) => {
     const body = `${JSON.stringify(header)}\n${JSON.stringify({ type, length: Buffer.byteLength(payload) })}\n${payload}\n`;
     const envelopeResponse = await fetch(`${baseURL}/api/${projectID}/envelope/?sentry_key=${encodeURIComponent(parsed.username)}&sentry_version=7`, {
@@ -65,8 +103,10 @@ try {
       platform: 'javascript',
       environment: 'e2e',
       release: 'checkout@1.0.0',
+      dist: 'e2e-web',
       level: 'error',
-      exception: { values: [{ type: 'E2EError', value: 'Browser workflow failed', stacktrace: { frames: [{ filename: 'checkout.js', function: 'submitOrder', lineno: 42, in_app: true }] } }] },
+      debug_meta: { images: [{ type: 'sourcemap', code_file: 'https://cdn.example/assets/checkout.js', debug_id: sourceMapDebugID }] },
+      exception: { values: [{ type: 'E2EError', value: 'Browser workflow failed', stacktrace: { frames: [{ filename: 'https://cdn.example/assets/checkout.js', abs_path: 'https://cdn.example/assets/checkout.js', function: 'a', lineno: 1, colno: 10, in_app: true }] } }] },
     }),
   });
   if (!response.ok) throw new Error(`Sentry ingestion returned ${response.status}: ${await response.text()}`);
@@ -195,17 +235,16 @@ try {
   await page.getByRole('button', { name: 'Artifacts' }).click();
   await page.getByRole('heading', { name: 'Source maps and debug files' }).waitFor();
 
-  const organizationsResponse = await page.request.get('/organizations');
-  const organizations = await organizationsResponse.json();
-  const nativeOrganization = organizations.find((item) => item.organization_slug === 'e2e');
-  if (!organizationsResponse.ok() || !nativeOrganization) throw new Error('native organization discovery failed');
-  const nativeProjectsResponse = await page.request.get(`/projects?organization_id=${encodeURIComponent(nativeOrganization.organization_id)}`);
-  const nativeProjects = await nativeProjectsResponse.json();
-  const nativeProject = nativeProjects.find((item) => item.slug === sentryProject.slug);
-  if (!nativeProjectsResponse.ok() || !nativeProject) throw new Error('native project discovery failed');
   const nativeIssuesResponse = await page.request.get(`/issues?project_id=${encodeURIComponent(nativeProject.id)}`);
   const nativeIssues = await nativeIssuesResponse.json();
   if (!nativeIssuesResponse.ok() || !nativeIssues[0]?.id) throw new Error('native issue discovery failed');
+  const nativeIssueDetailResponse = await page.request.get(`/issues/${encodeURIComponent(nativeIssues[0].id)}`);
+  const nativeIssueDetail = await nativeIssueDetailResponse.json();
+  const symbolicatedEvent = nativeIssueDetail.events?.find((item) => item.event_id === eventID);
+  const symbolicatedFrame = symbolicatedEvent?.payload?.exception?.values?.[0]?.stacktrace?.frames?.[0];
+  if (!nativeIssueDetailResponse.ok() || symbolicatedFrame?.filename !== 'webpack:///src/checkout.ts' || symbolicatedFrame?.function !== 'submitOrder' || symbolicatedFrame?.lineno !== 1 || symbolicatedFrame?.original_function !== 'a') {
+    throw new Error(`production source-map symbolication failed: ${JSON.stringify(symbolicatedFrame)}`);
+  }
 
   const mcpCall = async (id, name, args) => {
     const result = await fetch(`${baseURL}/mcp`, {
@@ -275,7 +314,7 @@ try {
   if (me.status() !== 401) throw new Error(`logout left session active: /auth/me returned ${me.status()}`);
 
   if (browserErrors.length) throw new Error(browserErrors.join('\n'));
-  console.log('browser E2E passed: OIDC, ingestion, Sentry API details, Discover, dashboards, interactive replay, profile analysis, telemetry, MCP operations, and logout');
+  console.log('browser E2E passed: OIDC, ingestion, debug-ID/indexed source-map symbolication, Sentry API details, Discover, dashboards, interactive replay, profile analysis, telemetry, MCP operations, and logout');
 } finally {
   await browser.close();
 }

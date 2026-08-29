@@ -42,7 +42,7 @@ func TestSourceMapUploadAndEventSymbolication(t *testing.T) {
 	if err := server.store.DB.QueryRow(`SELECT processed_payload FROM events WHERE event_id = '34343434343434343434343434343434'`).Scan(&processed); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(processed, "webpack:/src/app.js") || !strings.Contains(processed, `"symbolicated":true`) {
+	if !strings.Contains(processed, "webpack:///src/app.js") || !strings.Contains(processed, `"symbolicated":true`) {
 		t.Fatalf("processed payload = %s", processed)
 	}
 }
