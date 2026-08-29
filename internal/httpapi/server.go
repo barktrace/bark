@@ -221,6 +221,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("OPTIONS /api/{project_id}/store/", ingestionPreflight)
 	s.mux.HandleFunc("OPTIONS /api/{project_id}/logs/", ingestionPreflight)
 	s.mux.HandleFunc("OPTIONS /api/{project_id}/user-report/", ingestionPreflight)
+	s.mux.HandleFunc("OPTIONS /api/{project_id}/minidump/", ingestionPreflight)
 	s.mux.HandleFunc("POST /api/{project_id}/envelope/", func(w http.ResponseWriter, r *http.Request) {
 		ingestionHeaders(w)
 		s.ingest.Envelope(w, r, r.PathValue("project_id"))
@@ -236,6 +237,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/{project_id}/user-report/", func(w http.ResponseWriter, r *http.Request) {
 		ingestionHeaders(w)
 		s.ingest.Feedback(w, r, r.PathValue("project_id"))
+	})
+	s.mux.HandleFunc("POST /api/{project_id}/minidump/", func(w http.ResponseWriter, r *http.Request) {
+		ingestionHeaders(w)
+		s.ingest.Minidump(w, r, r.PathValue("project_id"))
 	})
 	s.mux.HandleFunc("POST /api/{project_id}/cron/{monitor_slug}/{checkin_id}/", func(w http.ResponseWriter, r *http.Request) {
 		ingestionHeaders(w)

@@ -14,6 +14,7 @@ The public route layout is:
 - `/api/0/relays/*` — managed Relay registration and project configuration
 - `/api/{project_id}/envelope/` — SDK envelopes
 - `/api/{project_id}/store/` — legacy SDK events
+- `/api/{project_id}/minidump/` — native crash minidumps and multipart attachments
 - `/api/{project_id}/logs/` — lightweight structured log ingestion
 - `/mcp` — authenticated, organization-scoped Streamable HTTP MCP endpoint
 - `/organizations`, `/projects`, `/issues`, `/releases`, `/discover`, `/dashboards`, `/performance`, `/logs`, `/uptime/*`, `/cron/*`, `/replays`, `/profiles`, `/metrics`, and `/artifacts` — native JSON API

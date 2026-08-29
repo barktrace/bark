@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/barktrace/bark/internal/auth"
@@ -20,6 +21,25 @@ func TestRouteRegistrationAndRootRedirect(t *testing.T) {
 	server.Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusTemporaryRedirect || response.Header().Get("Location") != "/ui/" {
 		t.Fatalf("root response = %d Location %q", response.Code, response.Header().Get("Location"))
+	}
+}
+
+func TestMinidumpIngestionRouteIsRegistered(t *testing.T) {
+	t.Parallel()
+	st := openTestStore(t)
+	if _, err := st.DB.Exec(`
+		INSERT INTO organizations(id, slug, name) VALUES ('org', 'org', 'Organization');
+		INSERT INTO projects(id, sentry_id, organization_id, slug, name, public_key) VALUES ('project', '1', 'org', 'app', 'App', 'key');
+	`); err != nil {
+		t.Fatal(err)
+	}
+	server := New(configForTest(), st, &auth.Service{})
+	request := httptest.NewRequest(http.MethodPost, "/api/1/minidump/?sentry_key=key", strings.NewReader("not a minidump"))
+	request.Header.Set("Content-Type", "application/octet-stream")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("minidump route status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 

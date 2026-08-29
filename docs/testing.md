@@ -35,6 +35,15 @@ BARKTRACE_PDB_INLINE_FILES_FIXTURE=/path/to/inline-file-changes.pdb \
   go test -count=1 -run 'TestRealPDBInline' -v ./internal/symbolicate
 ```
 
+The minidump parser can also be checked against a real dump and an optional
+matching Breakpad symbol file containing `STACK CFI` records:
+
+```sh
+BARKTRACE_MINIDUMP_FIXTURE=/path/to/crash.dmp \
+BARKTRACE_MINIDUMP_SYMBOL_FIXTURE=/path/to/module.sym \
+  go test -count=1 -run TestRealMinidumpFixture -v ./internal/symbolicate
+```
+
 The replicated SQLite integration test downloads a checksum-verified, pinned
 libSQL server and proves concurrent Barktrace replicas can migrate and share
 metadata:
