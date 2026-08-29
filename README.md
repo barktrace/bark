@@ -26,7 +26,7 @@ The current foundation includes:
 - scheduled HTTP uptime monitors with check and incident history;
 - webhook and Slack alert rules for new issues, regressions, and downtime;
 - SMTP email delivery, cron/metric/feedback triggers, conditions, and cooldowns;
-- cron check-ins, attachments, user feedback, replay timelines, sampled-profile flamegraphs, and metric ingestion;
+- cron check-ins, attachments, user feedback, interactive session replays, sampled-profile flamegraphs, and metric ingestion;
 - source maps, JavaScript rewriting, ELF/Breakpad debug files, and reprocessing;
 - release commits, deploy metadata, code mappings, and suspect commits;
 - `sentry-cli` build and snapshot upload/download workflows;
@@ -34,6 +34,7 @@ The current foundation includes:
 - organization and project roles plus a queryable mutation audit log;
 - configurable retention, manual cleanup previews, and storage reporting;
 - an organization-scoped Streamable HTTP MCP server with 37 investigation and dashboard tools;
+- optional managed Sentry Relay registration and project-configuration support;
 - optional S3-compatible shared blob storage and leased background workers;
 - one final Docker image containing the API and compiled Astro dashboard.
 
@@ -58,6 +59,7 @@ Detailed guides:
 - [Testing and load gates](docs/testing.md)
 - [MCP server and client setup](docs/mcp.md)
 - [Sentry SDK compatibility](docs/sentry-compatibility.md)
+- [Optional Sentry Relay](docs/relay.md)
 - [Performance, logs, and uptime](docs/observability.md)
 - [Discover queries and dashboards](docs/discover.md)
 - [Members, tokens, alerts, and retention](docs/administration.md)
@@ -113,6 +115,6 @@ not complete Sentry parity.
 
 The common SDK and `sentry-cli` self-hosted workflows are implemented, but this
 is not a drop-in implementation of every Sentry SaaS endpoint. Barktrace now
-has a bounded Discover language and custom dashboards; Sentry's complete query
-grammar, interactive rrweb playback, the complete Sentry profiling surface, and
-Relay remain outside the current boundary.
+has a bounded Discover language, custom dashboards, and bounded rrweb playback;
+Sentry's complete query grammar, complete profiling surface, and broader
+integration marketplace remain outside the current boundary.

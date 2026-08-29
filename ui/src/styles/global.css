@@ -264,6 +264,15 @@ pre button { position: absolute; top: .55rem; right: .55rem; color: #cbd4c6; bac
 .timeline-list strong { font-size: .7rem; text-transform: capitalize; }
 .timeline-list small { overflow: hidden; color: var(--muted); font-size: .65rem; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
 .analysis-note { margin: 0; padding: .6rem 1rem; color: var(--muted); font-size: .64rem; }
+.replay-player-section { padding: 1rem; overflow: hidden; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--surface-raised) 55%, var(--surface)); }
+.replay-player-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: .65rem; }
+.replay-player-heading > div { display: flex; align-items: center; justify-content: space-between; width: 100%; gap: 1rem; }
+.replay-player-heading span { color: var(--muted); font-size: .6rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.replay-player-heading b { color: var(--muted); font-size: .65rem; }
+.replay-player-mount { width: 100%; min-height: 260px; overflow: auto; border: 1px solid var(--border); border-radius: .5rem; background: #111; }
+.replay-player-mount .rr-player { margin: 0 auto; box-shadow: none; }
+.replay-player-state { display: grid; min-height: 180px; place-items: center; padding: 1rem; border: 1px dashed var(--border); border-radius: .5rem; color: var(--muted); text-align: center; }
+.replay-player-state p { margin: 0; font-size: .72rem; line-height: 1.6; }
 .profile-section { padding: 1rem; border-top: 1px solid var(--border); }
 .profile-section > h3 { font-size: .78rem; }
 .thread-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .4rem; }

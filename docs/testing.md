@@ -35,7 +35,8 @@ metadata:
 The browser test builds the production image and launches a disposable OIDC
 provider. A real Chromium browser signs in, proves automatic account creation,
 creates a project, sends a Sentry event, opens the resulting issue and telemetry
-views, runs a Discover query, creates a saved dashboard widget, and signs out.
+views, runs a Discover query, creates a saved dashboard widget, renders an
+interactive rrweb replay, analyzes a sampled profile, and signs out.
 
 ```sh
 npm ci --prefix tests/e2e
@@ -47,8 +48,23 @@ against PostgreSQL instead of local SQLite.
 
 The default browser image is `mcr.microsoft.com/playwright:v1.56.1-noble`.
 Override `BARKTRACE_E2E_BROWSER_IMAGE` to use another image containing Chromium.
-The harness uses host networking and ports `18080` and `19090`, so it currently
-targets Linux development machines and GitHub-hosted Linux runners.
+The harness uses host networking and ports `18080` and `19090`, overridable with
+`BARKTRACE_E2E_APP_PORT` and `BARKTRACE_E2E_OIDC_PORT`; it currently targets
+Linux development machines and GitHub-hosted Linux runners.
+
+## Sentry Relay compatibility
+
+Run the opt-in compatibility check against the pinned stock Sentry Relay
+26.8.0 image with:
+
+```sh
+./scripts/test-relay.sh
+```
+
+This starts Relay in managed mode, exercises its real registration and project
+configuration clients, sends an envelope through Relay, and verifies that the
+event reaches Barktrace. It uses host ports `18180`, `18182`, and `19190` and
+requires Docker, `curl`, and `sqlite3`.
 
 ## Sustained ingestion and memory gate
 

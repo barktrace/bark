@@ -56,7 +56,7 @@ The DSN shown in the project setup page should always be copied verbatim.
 | Unknown envelope item acknowledgement/outcome recording | Supported |
 | Cron/check-in envelope items | Supported |
 | Attachments and user reports | Supported |
-| Replay event/recording payloads | Storage, retrieval, metadata, bounded statistics, and event timeline |
+| Replay event/recording payloads | Storage, retrieval, metadata, bounded statistics, event timeline, and interactive rrweb playback |
 | Profile and metric payloads | Storage, summaries, sampled-profile hotspots, threads, and flamegraph |
 | Source maps and release files | Supported |
 | ELF and Breakpad debug files | Supported |
@@ -66,6 +66,7 @@ The DSN shown in the project setup page should always be copied verbatim.
 | Snapshot image upload, latest-base lookup, and ZIP download | Supported |
 | Durable queue, retry, and dead-letter handling | Supported |
 | Organization events/Discover endpoint | Errors, transactions, spans, logs, metrics, bounded filters and aggregates |
+| Managed Sentry Relay | Registration, Ed25519 request authentication, v3 project configs, public-key lookup, and liveness |
 
 The compatibility checks currently exercise real `sentry-sdk` 2.21.0 and
 `sentry-go` 0.43.0 clients against the production Docker image. An opt-in test
@@ -81,7 +82,11 @@ The bounded Discover subset supports selected fields, equality/negation/wildcard
 filters, free-text search, project/environment/release/level/status filters,
 ordering, and `count`, `count_unique`, `sum`, `avg`, `min`, `max`, and percentile
 aggregates. It does not implement every SnQL function or Sentry query operator.
-Relay registration, interactive rrweb playback, every Sentry profile format and
-comparison workflow, and the full integration marketplace remain outside the
-current compatibility boundary. Unknown envelope categories receive a successful
-response and an ingestion outcome so clients do not retry forever.
+Every Sentry profile format and comparison workflow and the full integration
+marketplace remain outside the current compatibility boundary. Replay playback
+supports standard rrweb recordings and bounded session-wide segment assembly;
+Sentry-specific replay search, issue detection, and retention controls are not
+yet complete. Relay support covers the managed forwarding path, not every Relay
+processing-mode service or private Sentry endpoint. Unknown envelope categories
+receive a successful response and an ingestion outcome so clients do not retry
+forever.

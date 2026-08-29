@@ -46,17 +46,27 @@ Each item requires `body` or `message`; batches are capped at 1,000 entries and
 ## Session replay
 
 Sentry `replay_event` and `replay_recording` envelope items are linked by replay
-and segment ID. Select a segment under **Telemetry → Replays** to inspect its
-visited URLs, error and trace correlation, event-category counts, and ordered
-navigation, interaction, console, lifecycle, and DOM-mutation timeline. Form
-input changes are counted, but their captured text is deliberately excluded
-from analysis results.
+and segment ID. Select a segment under **Telemetry → Replays** to watch the
+session in the official rrweb player and inspect its visited URLs, error and
+trace correlation, event-category counts, and ordered navigation, interaction,
+console, lifecycle, and DOM-mutation timeline. Form input changes are counted,
+but their captured text is deliberately excluded from analysis results. The
+player reflects the recording received from the SDK, so configure the SDK's
+masking and blocking options before collecting sessions that may contain
+sensitive content.
 
 Analysis accepts uncompressed, gzip, zlib, Zstandard, and Brotli payloads. It reads
-at most 16 MiB of stored compressed data, expands at most 24 MiB, scans at most
-100,000 recording events, and returns at most 2,000 timeline entries. The UI
-renders at most 500 entries at once; the native endpoint is
-`GET /replays/{internal_segment_id}/analysis`.
+at most 16 MiB of stored compressed data per segment, expands at most 24 MiB,
+scans at most 100,000 recording events, and returns at most 2,000 timeline
+entries. The UI renders at most 500 timeline entries at once.
+
+Interactive playback combines up to 100 segments from the selected session and
+returns at most 20,000 rrweb events or 8 MiB of serialized events. A recording
+must contain a full rrweb snapshot. Playback never starts automatically. The
+native endpoints are:
+
+- `GET /replays/{internal_segment_id}/analysis`
+- `GET /replays/{internal_segment_id}/playback`
 
 ## Profiling
 

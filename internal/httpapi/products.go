@@ -287,6 +287,82 @@ func (s *Server) replayAnalysis(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) replayPlayback(w http.ResponseWriter, r *http.Request) {
+	principal, _ := auth.PrincipalFromContext(r.Context())
+	var projectID, replayID string
+	err := s.store.DB.QueryRowContext(r.Context(), `SELECT project_id, replay_id FROM replays WHERE id = ?`, r.PathValue("replay_id")).Scan(&projectID, &replayID)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "replay not found")
+		return
+	}
+	if err != nil || !s.canAccessProject(r, principal, projectID) {
+		writeError(w, http.StatusForbidden, "replay access required")
+		return
+	}
+	rows, err := s.store.DB.QueryContext(r.Context(), `
+		SELECT b.storage_key
+		FROM replays rp
+		JOIN blobs b ON b.id = rp.recording_blob_id
+		WHERE rp.project_id = ? AND rp.replay_id = ?
+		ORDER BY rp.segment_id
+		LIMIT 101
+	`, projectID, replayID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load replay segments")
+		return
+	}
+	keys := make([]string, 0, 100)
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			_ = rows.Close()
+			writeError(w, http.StatusInternalServerError, "could not load replay segments")
+			return
+		}
+		keys = append(keys, key)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		writeError(w, http.StatusInternalServerError, "could not load replay segments")
+		return
+	}
+	if err := rows.Close(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load replay segments")
+		return
+	}
+	playback := telemetryanalysis.NewReplayPlayback()
+	segmentsTruncated := len(keys) > 100
+	if segmentsTruncated {
+		keys = keys[:100]
+	}
+	for _, key := range keys {
+		payload, err := s.readAnalysisBlob(key)
+		if err != nil {
+			writeError(w, http.StatusUnprocessableEntity, err.Error())
+			return
+		}
+		if err := playback.AddRecording(payload); err != nil {
+			writeError(w, http.StatusUnprocessableEntity, err.Error())
+			return
+		}
+		if playback.Truncated {
+			break
+		}
+	}
+	if len(playback.Events) == 0 {
+		writeError(w, http.StatusNotFound, "replay recording not found")
+		return
+	}
+	if !playback.HasSnapshot {
+		writeError(w, http.StatusUnprocessableEntity, "replay does not contain a full snapshot")
+		return
+	}
+	playback.Truncated = playback.Truncated || segmentsTruncated
+	writeJSON(w, http.StatusOK, map[string]any{
+		"replay_id": replayID, "project_id": projectID, "segment_count": len(keys), "playback": playback,
+	})
+}
+
 func (s *Server) profiles(w http.ResponseWriter, r *http.Request) {
 	principal, _ := auth.PrincipalFromContext(r.Context())
 	projectID := r.URL.Query().Get("project_id")

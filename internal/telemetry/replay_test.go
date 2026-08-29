@@ -3,6 +3,7 @@ package telemetry
 import (
 	"bytes"
 	"compress/gzip"
+	"encoding/json"
 	"testing"
 )
 
@@ -49,5 +50,31 @@ func TestAnalyzeReplaySupportsEnvelopeHeader(t *testing.T) {
 	}
 	if result.Stats["lifecycle"] != 1 || len(result.Timeline) != 1 {
 		t.Fatalf("unexpected header recording: %#v", result)
+	}
+}
+
+func TestReplayPlaybackCombinesSegments(t *testing.T) {
+	playback := NewReplayPlayback()
+	first := []byte(`{"events":[{"type":4,"timestamp":1787997600000,"data":{"href":"https://example.com","width":800,"height":600}},{"type":2,"timestamp":1787997600010,"data":{"node":{"type":0,"id":1,"childNodes":[]},"initialOffset":{"top":0,"left":0}}}]}`)
+	second := []byte(`[{"type":3,"timestamp":1787997600250,"data":{"source":2,"type":2,"id":4}}]`)
+	if err := playback.AddRecording(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := playback.AddRecording(second); err != nil {
+		t.Fatal(err)
+	}
+	if playback.EventCount != 3 || len(playback.Events) != 3 || !playback.HasSnapshot || playback.DurationMS != 250 || playback.Truncated {
+		t.Fatalf("unexpected playback: %#v", playback)
+	}
+	var event replayEvent
+	if err := json.Unmarshal(playback.Events[2], &event); err != nil || event.Type != 3 {
+		t.Fatalf("unexpected retained event: type=%d err=%v", event.Type, err)
+	}
+}
+
+func TestReplayPlaybackRejectsMalformedEvent(t *testing.T) {
+	playback := NewReplayPlayback()
+	if err := playback.AddRecording([]byte(`[{"type":"snapshot","timestamp":1000}]`)); err == nil {
+		t.Fatal("expected malformed rrweb event to fail")
 	}
 }

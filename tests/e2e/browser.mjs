@@ -81,8 +81,41 @@ try {
     urls: ['https://shop.example/checkout'],
   }));
   await ingestEnvelope({ replay_id: replayID }, 'replay_recording', JSON.stringify([
-    { type: 4, timestamp: 1787997600000, data: { href: 'https://shop.example/checkout' } },
-    { type: 3, timestamp: 1787997600200, data: { source: 2, type: 2 } },
+    { type: 4, timestamp: 1787997600000, data: { href: 'https://shop.example/checkout', width: 800, height: 600 } },
+    {
+      type: 2,
+      timestamp: 1787997600010,
+      data: {
+        node: {
+          type: 0,
+          id: 1,
+          childNodes: [{
+            type: 2,
+            id: 2,
+            tagName: 'html',
+            attributes: {},
+            childNodes: [
+              { type: 2, id: 3, tagName: 'head', attributes: {}, childNodes: [] },
+              {
+                type: 2,
+                id: 4,
+                tagName: 'body',
+                attributes: { style: 'font-family: sans-serif; padding: 32px' },
+                childNodes: [{
+                  type: 2,
+                  id: 5,
+                  tagName: 'button',
+                  attributes: { type: 'button' },
+                  childNodes: [{ type: 3, id: 6, textContent: 'Place order' }],
+                }],
+              },
+            ],
+          }],
+        },
+        initialOffset: { top: 0, left: 0 },
+      },
+    },
+    { type: 3, timestamp: 1787997600200, data: { source: 2, type: 2, id: 5, x: 20, y: 12 } },
   ]));
   await ingestEnvelope({}, 'profile', JSON.stringify({
     profile_id: 'profile-e2e',
@@ -129,6 +162,8 @@ try {
   const replayRow = page.locator('.management-row', { hasText: replayID });
   await replayRow.getByRole('button', { name: 'Analyze' }).click();
   await page.getByRole('heading', { name: 'https://shop.example/checkout' }).waitFor();
+  await page.locator('#replay-player[data-mounted="true"] .rr-controller').waitFor();
+  await page.locator('#replay-player iframe').waitFor();
   await page.locator('.timeline-list strong').getByText('click', { exact: true }).waitFor();
   await page.getByRole('button', { name: 'Profiles' }).click();
   const profileRow = page.locator('.management-row', { hasText: 'profile-e2e' });
@@ -145,7 +180,7 @@ try {
   if (me.status() !== 401) throw new Error(`logout left session active: /auth/me returned ${me.status()}`);
 
   if (browserErrors.length) throw new Error(browserErrors.join('\n'));
-  console.log('browser E2E passed: OIDC, ingestion, issue detail, Discover, dashboards, replay/profile analysis, telemetry, and logout');
+  console.log('browser E2E passed: OIDC, ingestion, issue detail, Discover, dashboards, interactive replay, profile analysis, telemetry, and logout');
 } finally {
   await browser.close();
 }

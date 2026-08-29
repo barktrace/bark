@@ -22,6 +22,14 @@ func TestReplayAndProfileAnalysisEndpoints(t *testing.T) {
 		t.Fatalf("replay analysis status=%d body=%s", response.Code, response.Body.String())
 	}
 
+	playbackRequest := principalRequest(t, principal, http.MethodGet, "/replays/"+replayID+"/playback", "")
+	playbackRequest.SetPathValue("replay_id", replayID)
+	response = httptest.NewRecorder()
+	server.replayPlayback(response, playbackRequest)
+	if response.Code != http.StatusOK || !containsAll(response.Body.String(), `"event_count":3`, `"has_snapshot":true`, `"segment_count":1`) {
+		t.Fatalf("replay playback status=%d body=%s", response.Code, response.Body.String())
+	}
+
 	profileRequest := principalRequest(t, principal, http.MethodGet, "/profiles/"+profileID+"/analysis", "")
 	profileRequest.SetPathValue("profile_id", profileID)
 	response = httptest.NewRecorder()
@@ -65,7 +73,7 @@ func telemetryAnalysisFixture(t *testing.T) (*Server, *auth.Principal, string, s
 			t.Fatal(err)
 		}
 	}
-	recording := []byte("{\"replay_id\":\"12121212121212121212121212121212\",\"segment_id\":1}\n[{\"type\":4,\"timestamp\":1787997600000,\"data\":{\"href\":\"https://example.com\"}},{\"type\":3,\"timestamp\":1787997600200,\"data\":{\"source\":2,\"type\":2}}]")
+	recording := []byte("{\"replay_id\":\"12121212121212121212121212121212\",\"segment_id\":1}\n[{\"type\":4,\"timestamp\":1787997600000,\"data\":{\"href\":\"https://example.com\",\"width\":800,\"height\":600}},{\"type\":2,\"timestamp\":1787997600100,\"data\":{\"node\":{\"type\":0,\"id\":1,\"childNodes\":[]},\"initialOffset\":{\"top\":0,\"left\":0}}},{\"type\":3,\"timestamp\":1787997600200,\"data\":{\"source\":2,\"type\":2}}]")
 	if err := service.StoreReplayRecording(context.Background(), project, "12121212121212121212121212121212", recording); err != nil {
 		t.Fatal(err)
 	}

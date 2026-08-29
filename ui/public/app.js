@@ -40,6 +40,9 @@ const state = {
   replayAnalysis: null,
   replayAnalysisStatus: 'idle',
   replayAnalysisError: '',
+  replayPlayback: null,
+  replayPlaybackStatus: 'idle',
+  replayPlaybackError: '',
   profiles: [],
   profileId: '',
   profileAnalysis: null,
@@ -418,19 +421,40 @@ function renderUptime() {
 }
 
 function replayAnalysisPanel() {
-  if (!state.replayId) return `<section class="card telemetry-analysis-empty"><div class="empty-state"><h3>Select a replay segment</h3><p>Inspect navigation, interactions, console activity, DOM mutations, and correlated errors without exposing captured form values.</p></div></section>`;
-  if (state.replayAnalysisStatus === 'loading') return `<section class="card telemetry-analysis-empty"><div class="empty-state"><span class="spinner"></span><p>Decoding replay segment…</p></div></section>`;
-  if (state.replayAnalysisStatus === 'error') return `<section class="card telemetry-analysis-empty"><div class="empty-state"><h3>Replay analysis unavailable</h3><p>${escapeHTML(state.replayAnalysisError)}</p></div></section>`;
+  if (!state.replayId) return `<section class="card telemetry-analysis-empty"><div class="empty-state"><h3>Select a replay segment</h3><p>Watch the captured session and inspect navigation, interactions, console activity, DOM mutations, and correlated errors.</p></div></section>`;
+  if (state.replayAnalysisStatus === 'loading' && state.replayPlaybackStatus === 'loading') return `<section class="card telemetry-analysis-empty"><div class="empty-state"><span class="spinner"></span><p>Preparing replay session…</p></div></section>`;
   const item = state.replayAnalysis;
   const analysis = item?.analysis;
-  if (!analysis) return '';
-  const stats = Object.entries(analysis.stats || {}).sort((left, right) => right[1] - left[1]);
-  const timeline = (analysis.timeline || []).slice(0, 500);
+  const selected = state.replays.find((replay) => replay.id === state.replayId) || {};
+  const playback = state.replayPlayback?.playback;
+  const stats = Object.entries(analysis?.stats || {}).sort((left, right) => right[1] - left[1]);
+  const timeline = (analysis?.timeline || []).slice(0, 500);
   const metadata = [
-    ['Environment', item.environment || 'default'], ['Release', item.release || '—'],
-    ['User', item.user_id || 'anonymous'], ['Errors', item.error_count || 0],
+    ['Environment', item?.environment || selected.environment || 'default'], ['Release', item?.release || selected.release || '—'],
+    ['User', item?.user_id || selected.user_id || 'anonymous'], ['Errors', item?.error_count || selected.error_count || 0],
   ];
-  return `<section class="card telemetry-analysis"><div class="card-heading"><div><p class="eyebrow">Replay analysis · segment ${Number(item.segment_id)}</p><h2>${escapeHTML(item.url || item.replay_id)}</h2></div><span class="status ${analysis.truncated ? 'unresolved' : 'resolved'}">${analysis.truncated ? 'bounded result' : 'complete'}</span></div><div class="analysis-summary"><div><span>Duration</span><strong>${formatMS(analysis.duration_ms)}</strong></div><div><span>Timeline</span><strong>${Number(analysis.timeline?.length || 0).toLocaleString()}</strong></div><div><span>URLs</span><strong>${Number(analysis.urls?.length || 0).toLocaleString()}</strong></div><div><span>Traces</span><strong>${Number(analysis.trace_ids?.length || 0).toLocaleString()}</strong></div></div><div class="analysis-meta">${metadata.map(([label, value]) => `<div><span>${label}</span><b>${escapeHTML(value)}</b></div>`).join('')}</div><div class="analysis-stat-list">${stats.map(([name, count]) => `<span><b>${Number(count).toLocaleString()}</b> ${escapeHTML(name.replaceAll('_', ' '))}</span>`).join('')}</div>${analysis.urls?.length ? `<div class="analysis-links"><span>Visited</span>${analysis.urls.slice(0, 10).map((url) => `<code>${escapeHTML(url)}</code>`).join('')}</div>` : ''}<div class="timeline-list">${timeline.map((entry) => `<div><time>${escapeHTML(formatRelativeMS(entry.relative_ms))}</time><span class="timeline-category">${escapeHTML(entry.category)}</span><p><strong>${escapeHTML(entry.type.replaceAll('_', ' '))}</strong><small>${escapeHTML(entry.summary)}</small></p></div>`).join('') || '<p class="muted padded">No timeline events were decoded.</p>'}</div>${analysis.timeline?.length > timeline.length ? `<p class="analysis-note">Showing the first ${timeline.length.toLocaleString()} of ${analysis.timeline.length.toLocaleString()} timeline entries.</p>` : ''}</section>`;
+  const player = state.replayPlaybackStatus === 'loading'
+    ? '<div class="replay-player-state"><span class="spinner"></span><p>Loading recording…</p></div>'
+    : state.replayPlaybackStatus === 'error'
+      ? `<div class="replay-player-state"><p><strong>Playback unavailable</strong><br />${escapeHTML(state.replayPlaybackError)}</p></div>`
+      : playback?.events?.length
+        ? `<div id="replay-player" class="replay-player-mount" aria-label="Interactive session replay"></div><p class="analysis-note">${Number(playback.event_count).toLocaleString()} rrweb events · ${formatMS(playback.duration_ms)}${playback.truncated ? ' · bounded recording' : ''}</p>`
+        : '<div class="replay-player-state"><p>No playable recording was found.</p></div>';
+  const analysisBody = state.replayAnalysisStatus === 'loading'
+    ? '<div class="replay-player-state"><span class="spinner"></span><p>Analyzing replay events…</p></div>'
+    : state.replayAnalysisStatus === 'error'
+      ? `<div class="replay-player-state"><p><strong>Timeline analysis unavailable</strong><br />${escapeHTML(state.replayAnalysisError)}</p></div>`
+      : analysis
+        ? `<div class="analysis-summary"><div><span>Duration</span><strong>${formatMS(analysis.duration_ms)}</strong></div><div><span>Timeline</span><strong>${Number(analysis.timeline?.length || 0).toLocaleString()}</strong></div><div><span>URLs</span><strong>${Number(analysis.urls?.length || 0).toLocaleString()}</strong></div><div><span>Traces</span><strong>${Number(analysis.trace_ids?.length || 0).toLocaleString()}</strong></div></div><div class="analysis-meta">${metadata.map(([label, value]) => `<div><span>${label}</span><b>${escapeHTML(value)}</b></div>`).join('')}</div><div class="analysis-stat-list">${stats.map(([name, count]) => `<span><b>${Number(count).toLocaleString()}</b> ${escapeHTML(name.replaceAll('_', ' '))}</span>`).join('')}</div>${analysis.urls?.length ? `<div class="analysis-links"><span>Visited</span>${analysis.urls.slice(0, 10).map((url) => `<code>${escapeHTML(url)}</code>`).join('')}</div>` : ''}<div class="timeline-list">${timeline.map((entry) => `<div><time>${escapeHTML(formatRelativeMS(entry.relative_ms))}</time><span class="timeline-category">${escapeHTML(entry.category)}</span><p><strong>${escapeHTML(entry.type.replaceAll('_', ' '))}</strong><small>${escapeHTML(entry.summary)}</small></p></div>`).join('') || '<p class="muted padded">No timeline events were decoded.</p>'}</div>${analysis.timeline?.length > timeline.length ? `<p class="analysis-note">Showing the first ${timeline.length.toLocaleString()} of ${analysis.timeline.length.toLocaleString()} timeline entries.</p>` : ''}`
+        : '';
+  return `<section class="card telemetry-analysis replay-analysis"><div class="card-heading"><div><p class="eyebrow">Session replay · segment ${Number(item?.segment_id ?? selected.segment_id ?? 0)}</p><h2>${escapeHTML(item?.url || selected.url || item?.replay_id || selected.replay_id || 'Replay')}</h2></div><span class="status ${analysis?.truncated || playback?.truncated ? 'unresolved' : 'resolved'}">${analysis?.truncated || playback?.truncated ? 'bounded result' : 'ready'}</span></div><div class="replay-player-section"><div class="replay-player-heading"><div><span>Interactive playback</span><b>${Number(state.replayPlayback?.segment_count || 0).toLocaleString()} segment${Number(state.replayPlayback?.segment_count || 0) === 1 ? '' : 's'}</b></div></div>${player}</div>${analysisBody}</section>`;
+}
+
+function mountReplayPlayback() {
+  const target = $('#replay-player');
+  const events = state.replayPlayback?.playback?.events;
+  if (!target || !events?.length || !window.BarktraceReplayPlayer) return;
+  window.BarktraceReplayPlayer.mount(target, events);
 }
 
 function flamegraphFrames(nodes, sampleCount, depth = 0, left = 0, width = 100, output = []) {
@@ -496,6 +520,7 @@ function renderTelemetry() {
 }
 
 function render() {
+  window.BarktraceReplayPlayer?.destroy();
   $('#page-actions').innerHTML = '';
   const renderers = {
     overview: renderOverview,
@@ -520,6 +545,7 @@ function render() {
     }
   }
   bindView();
+  mountReplayPlayback();
 }
 
 function bindView() {
@@ -545,16 +571,28 @@ function bindView() {
     state.replayAnalysis = null;
     state.replayAnalysisError = '';
     state.replayAnalysisStatus = 'loading';
+    state.replayPlayback = null;
+    state.replayPlaybackError = '';
+    state.replayPlaybackStatus = 'loading';
     render();
-    try {
-      const analysis = await request(`/replays/${encodeURIComponent(id)}/analysis`);
-      if (state.replayId !== id) return;
-      state.replayAnalysis = analysis;
+    const [analysis, playback] = await Promise.allSettled([
+      request(`/replays/${encodeURIComponent(id)}/analysis`),
+      request(`/replays/${encodeURIComponent(id)}/playback`),
+    ]);
+    if (state.replayId !== id) return;
+    if (analysis.status === 'fulfilled') {
+      state.replayAnalysis = analysis.value;
       state.replayAnalysisStatus = 'ready';
-    } catch (error) {
-      if (state.replayId !== id) return;
-      state.replayAnalysisError = error.message;
+    } else {
+      state.replayAnalysisError = analysis.reason.message;
       state.replayAnalysisStatus = 'error';
+    }
+    if (playback.status === 'fulfilled') {
+      state.replayPlayback = playback.value;
+      state.replayPlaybackStatus = 'ready';
+    } else {
+      state.replayPlaybackError = playback.reason.message;
+      state.replayPlaybackStatus = 'error';
     }
     render();
   }));
@@ -965,6 +1003,9 @@ async function loadProjectData() {
   state.replayAnalysis = null;
   state.replayAnalysisStatus = 'idle';
   state.replayAnalysisError = '';
+  state.replayPlayback = null;
+  state.replayPlaybackStatus = 'idle';
+  state.replayPlaybackError = '';
   state.profileId = '';
   state.profileAnalysis = null;
   state.profileAnalysisStatus = 'idle';
@@ -1288,5 +1329,6 @@ $('#create-monitor').addEventListener('submit', async (event) => {
   }
 });
 addEventListener('popstate', () => setRoute(routeFromPath()));
+addEventListener('barktrace:replay-player-ready', mountReplayPlayback);
 
 boot();

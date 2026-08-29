@@ -7,6 +7,7 @@
     "dev": "astro dev"
   },
   "dependencies": {
-    "astro": "6.4.6"
+    "astro": "6.4.6",
+    "rrweb-player": "^2.1.1"
   }
 }

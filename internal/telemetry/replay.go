@@ -12,8 +12,10 @@ import (
 )
 
 const (
-	maxReplayEvents   = 100000
-	maxReplayTimeline = 2000
+	maxReplayEvents         = 100000
+	maxReplayTimeline       = 2000
+	maxReplayPlaybackEvents = 20000
+	maxReplayPlaybackBytes  = 8 << 20
 )
 
 type ReplayAnalysis struct {
@@ -32,6 +34,17 @@ type ReplayTimeline struct {
 	Category   string `json:"category"`
 	Type       string `json:"type"`
 	Summary    string `json:"summary"`
+}
+
+type ReplayPlayback struct {
+	Events      []json.RawMessage `json:"events"`
+	EventCount  int               `json:"event_count"`
+	DurationMS  int64             `json:"duration_ms"`
+	HasSnapshot bool              `json:"has_snapshot"`
+	Truncated   bool              `json:"truncated"`
+	bytes       int
+	first       int64
+	last        int64
 }
 
 type replayEvent struct {
@@ -119,6 +132,58 @@ func AnalyzeReplay(eventPayload, recordingPayload []byte) (ReplayAnalysis, error
 	return result, nil
 }
 
+func NewReplayPlayback() ReplayPlayback {
+	return ReplayPlayback{Events: make([]json.RawMessage, 0)}
+}
+
+// AddRecording appends one rrweb recording segment while enforcing aggregate
+// response limits. Callers can add successive segments to build a session-wide
+// playback without retaining every stored payload in memory at once.
+func (result *ReplayPlayback) AddRecording(recordingPayload []byte) error {
+	if result.Truncated || len(recordingPayload) == 0 {
+		return nil
+	}
+	recording, err := replayRecordingBody(recordingPayload)
+	if err != nil {
+		return fmt.Errorf("decode replay recording: %w", err)
+	}
+	err = scanReplayRawEvents(recording, func(raw json.RawMessage) error {
+		var event replayEvent
+		if err := json.Unmarshal(raw, &event); err != nil {
+			return err
+		}
+		if len(result.Events) >= maxReplayPlaybackEvents || result.bytes+len(raw) > maxReplayPlaybackBytes {
+			result.Truncated = true
+			return errReplayLimit
+		}
+		copyOfEvent := append(json.RawMessage(nil), raw...)
+		result.Events = append(result.Events, copyOfEvent)
+		result.bytes += len(copyOfEvent)
+		result.EventCount++
+		if event.Type == 2 {
+			result.HasSnapshot = true
+		}
+		timestamp := replayTimestampMS(event.Timestamp)
+		if timestamp > 0 {
+			if result.first == 0 || timestamp < result.first {
+				result.first = timestamp
+			}
+			if timestamp > result.last {
+				result.last = timestamp
+			}
+			result.DurationMS = maxInt64(0, result.last-result.first)
+		}
+		return nil
+	})
+	if errors.Is(err, errReplayLimit) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("parse replay recording: %w", err)
+	}
+	return nil
+}
+
 var errReplayLimit = errors.New("replay event limit reached")
 
 func (result *ReplayAnalysis) addReplayItem(item ReplayTimeline) {
@@ -144,6 +209,16 @@ func replayRecordingBody(raw []byte) ([]byte, error) {
 }
 
 func scanReplayEvents(raw []byte, visit func(replayEvent) error) error {
+	return scanReplayRawEvents(raw, func(encoded json.RawMessage) error {
+		var event replayEvent
+		if err := json.Unmarshal(encoded, &event); err != nil {
+			return err
+		}
+		return visit(event)
+	})
+}
+
+func scanReplayRawEvents(raw []byte, visit func(json.RawMessage) error) error {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
 	first, err := decoder.Token()
@@ -156,7 +231,7 @@ func scanReplayEvents(raw []byte, visit func(replayEvent) error) error {
 	}
 	if delimiter == '[' {
 		for decoder.More() {
-			var event replayEvent
+			var event json.RawMessage
 			if err := decoder.Decode(&event); err != nil {
 				return err
 			}
@@ -175,14 +250,9 @@ func scanReplayEvents(raw []byte, visit func(replayEvent) error) error {
 		return err
 	}
 	if events := single["events"]; len(events) > 0 {
-		return scanReplayEvents(events, visit)
+		return scanReplayRawEvents(events, visit)
 	}
-	encoded, _ := json.Marshal(single)
-	var event replayEvent
-	if err := json.Unmarshal(encoded, &event); err != nil {
-		return err
-	}
-	return visit(event)
+	return visit(append(json.RawMessage(nil), raw...))
 }
 
 func describeReplayEvent(event replayEvent) ReplayTimeline {
