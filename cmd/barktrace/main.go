@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -115,6 +116,9 @@ func run() error {
 	database := cfg.DataDir
 	if cfg.DatabaseURL != "" {
 		database = "remote libSQL"
+		if strings.HasPrefix(strings.ToLower(cfg.DatabaseURL), "postgres") {
+			database = "PostgreSQL"
+		}
 	}
 	slog.Info("barktrace listening", "address", cfg.Addr, "ui", "/ui/", "database", database)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

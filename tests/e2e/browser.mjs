@@ -21,7 +21,12 @@ try {
   await page.goto('/ui/login/');
   await page.getByRole('link', { name: 'Continue with Test SSO' }).click();
   await page.waitForURL(`${baseURL}/ui/`);
-  await page.locator('#page:not([hidden])').waitFor();
+  try {
+    await page.locator('#page:not([hidden])').waitFor();
+  } catch (error) {
+    const loading = await page.locator('#loading-state').textContent().catch(() => '');
+    throw new Error(`${error.message}; loading state: ${loading || 'none'}; ${browserErrors.join('; ')}`);
+  }
   const accountEmail = await page.locator('#account-email').textContent();
   if (accountEmail !== 'e2e@barktrace.test') throw new Error(`unexpected auto-provisioned account: ${accountEmail}`);
 
@@ -29,7 +34,12 @@ try {
   await page.locator('#create-project input[name="name"]').fill('Checkout E2E');
   await page.locator('#create-project select[name="platform"]').selectOption('javascript');
   await page.locator('#create-project').getByRole('button', { name: 'Create project' }).click();
-  await page.waitForURL(`${baseURL}/ui/setup/`);
+  try {
+    await page.waitForURL(`${baseURL}/ui/setup/`);
+  } catch (error) {
+    const formError = await page.locator('#project-error').textContent().catch(() => '');
+    throw new Error(`${error.message}; current URL: ${page.url()}; project error: ${formError || 'none'}; ${browserErrors.join('; ')}`);
+  }
   const dsn = await page.locator('.setup-main .copy-field code').textContent();
   if (!dsn) throw new Error('project setup did not expose a DSN');
 

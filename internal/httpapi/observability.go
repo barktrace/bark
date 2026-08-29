@@ -50,7 +50,7 @@ func (s *Server) performance(w http.ResponseWriter, r *http.Request) {
 		       MAX(t.finished_at),
 		       (SELECT latest.id FROM transactions latest WHERE latest.project_id = t.project_id AND latest.name = t.name AND latest.operation = t.operation ORDER BY latest.finished_at DESC LIMIT 1)
 		FROM transactions t WHERE t.project_id = ? AND t.finished_at >= ?
-		GROUP BY t.name, t.operation ORDER BY COUNT(*) DESC, AVG(t.duration_ms) DESC LIMIT 100
+		GROUP BY t.project_id, t.name, t.operation ORDER BY COUNT(*) DESC, AVG(t.duration_ms) DESC LIMIT 100
 	`, projectID, since)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not list transactions")

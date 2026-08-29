@@ -12,7 +12,7 @@ required value is absent or unsafe.
 | `BARKTRACE_ADDR` | no | `:8080` | HTTP listen address inside the container. |
 | `BARKTRACE_HEALTHCHECK_URL` | no | `http://127.0.0.1:8080/readyz` | URL used only by the binary's `healthcheck` subcommand. Set it if changing the container listen port. |
 | `BARKTRACE_DATA_DIR` | no | `./data` (`/data` in the image) | Directory containing `barktrace.db` and its WAL files. Persist the whole directory. |
-| `BARKTRACE_DATABASE_URL` | no | empty | Remote SQLite-compatible libSQL URL. Leave empty for local SQLite. Set this together with S3 blobs to run multiple Barktrace replicas. |
+| `BARKTRACE_DATABASE_URL` | no | empty | PostgreSQL or remote SQLite-compatible libSQL URL. Leave empty for local SQLite. Use a shared database together with S3 blobs for multiple replicas. |
 | `BARKTRACE_DATABASE_AUTH_TOKEN` | with authenticated libSQL | empty | Authentication token for the remote metadata database. It is deliberately separate from the URL to avoid leaking it in logs. |
 | `BARKTRACE_DEFAULT_ORG_NAME` | no | `Default` | Display name of the organization created during first login. |
 | `BARKTRACE_DEFAULT_ORG_SLUG` | no | `default` | URL-safe slug of the default organization. Keep it stable after first deployment. |
@@ -22,13 +22,13 @@ required value is absent or unsafe.
 | `GOMEMLIMIT` | no | `96MiB` in the image | Go soft memory limit. Keep it below the container memory limit. |
 | `BARKTRACE_MCP_TOKEN` | no | empty | Optional legacy instance-wide MCP credential. It must contain at least 32 characters; organization-scoped credentials can instead be created in the UI. |
 | `BARKTRACE_UPTIME_ALLOW_PRIVATE_TARGETS` | no | `false` | Allows uptime monitors to contact loopback and private-network IPs. Keep disabled unless Barktrace is intentionally monitoring trusted internal services. |
-| `BARKTRACE_BLOB_BACKEND` | no | `local` | Blob backend: `local` or `s3`. Use `s3` whenever several Barktrace replicas share remote libSQL metadata. |
+| `BARKTRACE_BLOB_BACKEND` | no | `local` | Blob backend: `local` or `s3`. Use `s3` whenever several Barktrace replicas share PostgreSQL or remote libSQL metadata. |
 
-`BARKTRACE_DATABASE_URL` accepts `libsql://`, `https://`, or `wss://` URLs.
-Plain HTTP/WebSocket URLs are accepted only on loopback for development. URL
-credentials and query parameters are rejected; pass the token separately. The
-remote service remains SQLite-compatible—PostgreSQL is neither required nor
-supported.
+`BARKTRACE_DATABASE_URL` accepts `postgres://`, `postgresql://`, `libsql://`,
+`https://`, or `wss://` URLs. PostgreSQL URLs may contain standard credentials
+and connection options such as `sslmode`. Plain HTTP/WebSocket libSQL URLs are
+accepted only on loopback for development; credentials and query parameters are
+rejected for libSQL, whose token must be passed separately.
 
 ## Email alerts
 

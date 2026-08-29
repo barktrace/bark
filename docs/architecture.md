@@ -21,8 +21,8 @@ The public route layout is:
 ## Memory policy
 
 - Standard-library `net/http`; no reflection-heavy web framework.
-- SQLite WAL mode with a single open connection by default; remote libSQL is
-  available when a replicated metadata plane is required.
+- SQLite WAL mode with a single open connection by default; PostgreSQL and
+  remote libSQL are available when an external metadata plane is required.
 - Streaming envelope parsing with hard per-item and request limits.
 - Raw event JSON is not duplicated after normalization.
 - Payloads are persisted before processing and consumed through leased,

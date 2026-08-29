@@ -12,22 +12,22 @@ docker pull ghcr.io/barktrace/bark:latest
 ```
 
 Barktrace ships as one image. The final image contains the Go server, embedded
-dashboard, SQLite support, and a built-in healthcheck; Node is used only by the
-build stage.
+dashboard, SQLite, PostgreSQL and libSQL clients, and a built-in healthcheck;
+Node is used only by the build stage.
 
 ## Requirements
 
 - one application replica when using the default local SQLite database, or a
-  replicated libSQL database plus S3 blob storage for multiple replicas;
+  shared PostgreSQL/libSQL database plus S3 blob storage for multiple replicas;
 - one persistent volume mounted at `/data`;
 - TCP port `8080` behind an HTTPS reverse proxy;
 - an OpenID Connect provider;
 - a proxy request-body limit of at least 20 MiB for Sentry envelopes.
 
-SQLite is intentionally the only database engine. Do not scale several
-application replicas over one filesystem database. Vertical scaling with local
-SQLite is the simplest topology; multi-node deployments use a shared replicated
-libSQL service for metadata and S3-compatible object storage for payloads.
+Do not scale several application replicas over one filesystem SQLite database.
+Vertical scaling with local SQLite is the simplest topology; PostgreSQL or
+replicated libSQL can provide shared metadata while S3-compatible storage holds
+payloads for multi-node deployments.
 
 ## Docker Compose
 
@@ -51,8 +51,8 @@ and route the public hostname to port `8080`.
    `compose.yml`, or create a Dockerfile application using `Dockerfile`.
 2. Configure the domain (for example `errors.example.com`) with HTTPS and route
    it to container port `8080`.
-3. Attach persistent storage to `/data`. Keep exactly one replica unless the
-   remote-libSQL and S3 multi-node topology below is configured.
+3. Attach persistent storage to `/data`. Keep exactly one replica unless a
+   shared PostgreSQL/libSQL database and S3 multi-node topology is configured.
 4. Import the variables in `deploy/dokploy.env.example` into the Environment
    panel. Enter OIDC and MCP values as secrets rather than committing them.
 5. Use `GET /readyz` as the health check. A successful response is HTTP 200.
@@ -114,11 +114,23 @@ To restore a local SQLite deployment, stop Barktrace, preserve the current volum
 files, ensure UID/GID `65532` can write the directory, and start the one replica.
 Confirm `/readyz` before accepting traffic.
 
+## PostgreSQL
+
+Set a standard PostgreSQL connection URL. Use TLS outside a private application
+network and manage backups with the PostgreSQL service:
+
+```env
+BARKTRACE_DATABASE_URL=postgresql://barktrace:replace-me@postgres.example.com:5432/barktrace?sslmode=require
+```
+
+The Dokploy PostgreSQL template uses an isolated Compose network and therefore
+sets `sslmode=disable` only for the container-to-container connection.
+
 ## Multi-node deployment
 
-For API redundancy without PostgreSQL, provision a replicated libSQL service
-(self-hosted or managed) and an S3-compatible bucket. Configure every Barktrace
-replica with the same values:
+For API redundancy, provision PostgreSQL or a replicated libSQL service plus an
+S3-compatible bucket. Configure every Barktrace replica with the same values.
+For libSQL, use:
 
 ```env
 BARKTRACE_DATABASE_URL=libsql://barktrace.example.turso.io
@@ -142,7 +154,7 @@ and point-in-time recovery separately.
 
 ## Operational limits
 
-This release is a deployable single-node or remote-libSQL multi-node
+This release is a deployable SQLite single-node or PostgreSQL/libSQL multi-node
 observability service, not complete Sentry parity. It includes durable ingestion, symbolication artifacts,
 check-ins, feedback, attachments, replays, profiles, metrics, release metadata,
 SMTP/webhook/Slack delivery, RBAC, audit logs, quotas, and scoped MCP access.
@@ -151,4 +163,4 @@ For high-durability payload storage, set `BARKTRACE_BLOB_BACKEND=s3` and provide
 the S3 variables documented in [configuration.md](configuration.md). Background
 workers coordinate through database leases. Never run multiple replicas against
 independent local SQLite databases or place one SQLite file on an unsafe network
-filesystem; use the remote-libSQL topology above for active-active API service.
+filesystem; use a shared PostgreSQL/libSQL database and S3 for active-active API service.

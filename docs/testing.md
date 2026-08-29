@@ -42,6 +42,9 @@ npm ci --prefix tests/e2e
 ./scripts/test-e2e.sh
 ```
 
+Set `BARKTRACE_E2E_DATABASE_URL` to run the same production-image workflow
+against PostgreSQL instead of local SQLite.
+
 The default browser image is `mcr.microsoft.com/playwright:v1.56.1-noble`.
 Override `BARKTRACE_E2E_BROWSER_IMAGE` to use another image containing Chromium.
 The harness uses host networking and ports `18080` and `19090`, so it currently

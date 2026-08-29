@@ -142,9 +142,14 @@ func (c Config) validate() error {
 	if c.DatabaseURL != "" {
 		databaseURL, err := url.Parse(c.DatabaseURL)
 		if err != nil || databaseURL.Host == "" {
-			return errors.New("BARKTRACE_DATABASE_URL must be a valid absolute libSQL URL")
+			return errors.New("BARKTRACE_DATABASE_URL must be a valid absolute database URL")
 		}
+		postgres := false
 		switch strings.ToLower(databaseURL.Scheme) {
+		case "postgres", "postgresql":
+			// PostgreSQL connection URLs conventionally carry credentials and
+			// TLS options. The URL is never included in application errors.
+			postgres = true
 		case "libsql", "https", "wss":
 		case "http", "ws":
 			loopback := strings.EqualFold(databaseURL.Hostname(), "localhost")
@@ -155,9 +160,9 @@ func (c Config) validate() error {
 				return errors.New("BARKTRACE_DATABASE_URL must use TLS (loopback HTTP is allowed for development)")
 			}
 		default:
-			return errors.New("BARKTRACE_DATABASE_URL must use libsql, https, wss, or loopback http/ws")
+			return errors.New("BARKTRACE_DATABASE_URL must use postgres, postgresql, libsql, https, wss, or loopback http/ws")
 		}
-		if databaseURL.User != nil || databaseURL.RawQuery != "" {
+		if !postgres && (databaseURL.User != nil || databaseURL.RawQuery != "") {
 			return errors.New("BARKTRACE_DATABASE_URL must not contain credentials or query parameters; use BARKTRACE_DATABASE_AUTH_TOKEN")
 		}
 	}

@@ -73,14 +73,14 @@ func TestValidateRemoteSQLiteConfiguration(t *testing.T) {
 		PublicURL: "https://errors.example", DefaultOrgSlug: "default",
 		OIDC: OIDC{IssuerURL: "https://id.example", ClientID: "client", ClientSecret: "secret", RedirectURL: "https://errors.example/auth/oidc/callback"},
 	}
-	for _, databaseURL := range []string{"libsql://database.example", "https://database.example", "wss://database.example", "http://127.0.0.1:8080", "ws://localhost:8080"} {
+	for _, databaseURL := range []string{"libsql://database.example", "https://database.example", "wss://database.example", "http://127.0.0.1:8080", "ws://localhost:8080", "postgres://barktrace:secret@database.example/barktrace?sslmode=require", "postgresql://database.example/barktrace"} {
 		cfg := base
 		cfg.DatabaseURL = databaseURL
 		if err := cfg.validate(); err != nil {
 			t.Errorf("validate database URL %q: %v", databaseURL, err)
 		}
 	}
-	for _, databaseURL := range []string{"postgres://database.example/db", "http://database.example", "libsql://token@database.example", "libsql://database.example?authToken=secret", "not-a-url"} {
+	for _, databaseURL := range []string{"mysql://database.example/db", "http://database.example", "libsql://token@database.example", "libsql://database.example?authToken=secret", "not-a-url"} {
 		cfg := base
 		cfg.DatabaseURL = databaseURL
 		if err := cfg.validate(); err == nil {

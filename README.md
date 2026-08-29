@@ -10,8 +10,8 @@ dashboard at `/ui`.
 
 The current foundation includes:
 
-- SQLite with WAL mode and one bounded connection, plus optional replicated
-  libSQL metadata for multi-node deployments;
+- SQLite with WAL mode by default, plus PostgreSQL or replicated libSQL for
+  external and multi-node metadata deployments;
 - generic OpenID Connect login with PKCE, state, nonce, verified-email account
   linking, and automatic organization provisioning;
 - organization memberships and project-scoped access;
@@ -93,12 +93,12 @@ Version tags such as `v1.2.3` additionally publish `1.2.3` and `1.2`.
 The image needs one persistent mount at `/data` and listens on port `8080`.
 For Dokploy, deploy this repository with its Dockerfile, attach a persistent
 volume to `/data`, configure an HTTP health check on `/readyz`, and add the
-variables from `.env.example`. No PostgreSQL or second container is required.
+variables from `.env.example`. The default SQLite mode needs no second container.
 
 An importable production parameter template is available at
 `deploy/dokploy.env.example`. Keep one replica with the default local database.
-For multiple replicas, use one shared replicated libSQL database and S3 blob
-storage; Barktrace remains SQLite-based and does not require PostgreSQL.
+For multiple replicas, use PostgreSQL or shared replicated libSQL together with
+S3 blob storage.
 
 The default runtime budget is `128 MiB`, with Go's soft memory limit set to
 `96 MiB`. A local production-binary probe measured roughly `13.3 MiB` idle RSS.
@@ -108,8 +108,8 @@ copying the live WAL file by itself.
 ## Production-readiness boundary
 
 The current version is functional and deployable with either local SQLite on
-one node or replicated libSQL and S3 across multiple nodes. It is not complete
-Sentry parity.
+one node, PostgreSQL, or replicated libSQL and S3 across multiple nodes. It is
+not complete Sentry parity.
 
 The common SDK and `sentry-cli` self-hosted workflows are implemented, but this
 is not a drop-in implementation of every Sentry SaaS endpoint. Barktrace now

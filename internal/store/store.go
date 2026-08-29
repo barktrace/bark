@@ -15,6 +15,8 @@ import (
 
 	"github.com/barktrace/bark/internal/blobstore"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/tursodatabase/libsql-client-go/libsql"
 )
@@ -26,7 +28,15 @@ type Store struct {
 	DB      *sql.DB
 	DataDir string
 	Blobs   blobstore.Backend
+	dialect databaseDialect
 }
+
+type databaseDialect uint8
+
+const (
+	dialectSQLite databaseDialect = iota
+	dialectPostgres
+)
 
 func Open(ctx context.Context, dataDir string) (*Store, error) {
 	return OpenWithBlobs(ctx, dataDir, nil)
@@ -36,19 +46,29 @@ func OpenWithBlobs(ctx context.Context, dataDir string, blobs blobstore.Backend)
 	return OpenWithDatabase(ctx, dataDir, blobs, "", "")
 }
 
-// OpenWithDatabase opens the local SQLite database by default. When databaseURL
-// is set it connects to a remote libSQL service, allowing multiple Barktrace
-// replicas to share the same SQLite-compatible metadata plane.
+// OpenWithDatabase opens local SQLite by default. Remote libSQL provides a
+// SQLite-compatible shared metadata plane; PostgreSQL is also supported for a
+// conventional external database deployment.
 func OpenWithDatabase(ctx context.Context, dataDir string, blobs blobstore.Backend, databaseURL, authToken string) (*Store, error) {
 	if err := os.MkdirAll(dataDir, 0o750); err != nil {
 		return nil, fmt.Errorf("create data directory: %w", err)
 	}
 	var db *sql.DB
 	var err error
+	dialect := dialectSQLite
 	if strings.TrimSpace(databaseURL) == "" {
 		path := filepath.Join(dataDir, "barktrace.db")
 		dsn := fmt.Sprintf("file:%s?_foreign_keys=on&_journal_mode=WAL&_synchronous=NORMAL&_busy_timeout=5000", path)
 		db, err = sql.Open("sqlite3", dsn)
+	} else if isPostgresURL(databaseURL) {
+		dialect = dialectPostgres
+		var config *pgx.ConnConfig
+		config, err = pgx.ParseConfig(databaseURL)
+		if err != nil {
+			return nil, fmt.Errorf("open metadata database: invalid PostgreSQL configuration")
+		}
+		config.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+		db = sql.OpenDB(newPostgresConnector(stdlib.GetConnector(*config)))
 	} else {
 		options := make([]libsql.Option, 0, 1)
 		if authToken != "" {
@@ -61,7 +81,7 @@ func OpenWithDatabase(ctx context.Context, dataDir string, blobs blobstore.Backe
 		}
 	}
 	if err != nil {
-		return nil, fmt.Errorf("open sqlite metadata: %w", err)
+		return nil, fmt.Errorf("open metadata database: %w", err)
 	}
 	// One connection keeps the footprint low, avoids SQLITE_BUSY surprises for
 	// local files, and prevents one replica from monopolizing a remote service.
@@ -69,7 +89,7 @@ func OpenWithDatabase(ctx context.Context, dataDir string, blobs blobstore.Backe
 	db.SetMaxIdleConns(1)
 	if err := db.PingContext(ctx); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("ping sqlite: %w", err)
+		return nil, fmt.Errorf("ping metadata database: %w", err)
 	}
 	if blobs == nil {
 		blobs, err = blobstore.New(dataDir)
@@ -78,7 +98,7 @@ func OpenWithDatabase(ctx context.Context, dataDir string, blobs blobstore.Backe
 			return nil, fmt.Errorf("open blob store: %w", err)
 		}
 	}
-	s := &Store{DB: db, DataDir: dataDir, Blobs: blobs}
+	s := &Store{DB: db, DataDir: dataDir, Blobs: blobs, dialect: dialect}
 	if err := s.migrate(ctx); err != nil {
 		db.Close()
 		return nil, err
@@ -95,7 +115,11 @@ func (s *Store) migrate(ctx context.Context) error {
 	if _, err := s.DB.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migration_lock (id INTEGER PRIMARY KEY CHECK (id = 1), holder TEXT NOT NULL, expires_at TEXT NOT NULL)`); err != nil {
 		return fmt.Errorf("create migration lock: %w", err)
 	}
-	if _, err := s.DB.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migration_lock(id, holder, expires_at) VALUES (1, '', '1970-01-01T00:00:00Z')`); err != nil {
+	initializeLock := `INSERT OR IGNORE INTO schema_migration_lock(id, holder, expires_at) VALUES (1, '', '1970-01-01T00:00:00Z')`
+	if s.dialect == dialectPostgres {
+		initializeLock = `INSERT INTO schema_migration_lock(id, holder, expires_at) VALUES (1, '', '1970-01-01T00:00:00Z') ON CONFLICT DO NOTHING`
+	}
+	if _, err := s.DB.ExecContext(ctx, initializeLock); err != nil {
 		return fmt.Errorf("initialize migration lock: %w", err)
 	}
 	holder := uuid.NewString()
@@ -141,7 +165,11 @@ func (s *Store) migrate(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("begin migration %s: %w", entry.Name(), err)
 		}
-		if _, err = tx.ExecContext(ctx, string(body)); err == nil {
+		migration := string(body)
+		if s.dialect == dialectPostgres {
+			migration = postgresMigration(migration)
+		}
+		if _, err = tx.ExecContext(ctx, migration); err == nil {
 			_, err = tx.ExecContext(ctx, `INSERT INTO schema_migrations(version) VALUES (?)`, entry.Name())
 		}
 		if err != nil {
