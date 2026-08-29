@@ -20,6 +20,19 @@ const (
 type breakpadCFI struct {
 	inits   []breakpadCFIInit
 	changes []breakpadCFIChange
+	windows []breakpadWIN
+}
+
+type breakpadWIN struct {
+	typeID, address, size, prolog, epilog uint64
+	params, saved, locals, maxStack       uint64
+	allocatesBasePointer                  bool
+	program                               []breakpadWINAssignment
+}
+
+type breakpadWINAssignment struct {
+	target     string
+	expression []string
 }
 
 type breakpadCFIInit struct {
@@ -69,12 +82,15 @@ func unwindMinidumpThread(dump *minidump, thread minidumpThread, unwinders map[s
 		module, moduleOK := dump.module(ip)
 		framesNewestFirst = append(framesNewestFirst, minidumpFrame(ip, module, trust))
 		var next map[string]uint64
+		nextTrust := "cfi"
 		if moduleOK {
 			if unwinder := unwinders[normalizeDebugID(module.debugID)]; unwinder != nil {
 				next = unwinder.unwind(ip-module.base, registers, memory, ipName, spName)
+				if next == nil && dump.architecture == "x86" {
+					next = unwinder.unwindWindows(ip-module.base, registers, memory, dump)
+				}
 			}
 		}
-		nextTrust := "cfi"
 		if next == nil {
 			next = framePointerUnwind(registers, memory, ipName, spName, fpName)
 			nextTrust = "fp"
@@ -156,7 +172,7 @@ func loadBreakpadUnwinders(ctx context.Context, st *store.Store, projectID strin
 		}
 		unwinder := parseBreakpadCFI(file)
 		_ = file.Close()
-		if len(unwinder.inits) > 0 {
+		if len(unwinder.inits) > 0 || len(unwinder.windows) > 0 {
 			result[normalized] = unwinder
 		}
 	}
@@ -192,11 +208,174 @@ func parseBreakpadCFI(reader io.Reader) *breakpadCFI {
 			if addressErr == nil && rulesOK {
 				result.changes = append(result.changes, breakpadCFIChange{address: address, rules: rules})
 			}
+			continue
+		}
+		if strings.HasPrefix(line, "STACK WIN ") {
+			if record, ok := parseBreakpadWIN(line); ok {
+				result.windows = append(result.windows, record)
+			}
 		}
 	}
 	sort.Slice(result.inits, func(left, right int) bool { return result.inits[left].address < result.inits[right].address })
 	sort.Slice(result.changes, func(left, right int) bool { return result.changes[left].address < result.changes[right].address })
+	sort.Slice(result.windows, func(left, right int) bool { return result.windows[left].address < result.windows[right].address })
 	return result
+}
+
+func parseBreakpadWIN(line string) (breakpadWIN, bool) {
+	fields := strings.Fields(strings.ReplaceAll(line, "=", " = "))
+	if len(fields) < 13 || fields[0] != "STACK" || fields[1] != "WIN" {
+		return breakpadWIN{}, false
+	}
+	values := make([]uint64, 10)
+	for index := range values {
+		value, err := strconv.ParseUint(fields[index+2], 16, 64)
+		if err != nil {
+			return breakpadWIN{}, false
+		}
+		values[index] = value
+	}
+	if (values[0] != 0 && values[0] != 4) || values[2] == 0 || values[1]+values[2] < values[1] ||
+		values[5] > maxMinidumpBytes || values[6] > maxMinidumpBytes || values[7] > maxMinidumpBytes || values[8] > maxMinidumpBytes || values[9] > 1 {
+		return breakpadWIN{}, false
+	}
+	record := breakpadWIN{
+		typeID: values[0], address: values[1], size: values[2], prolog: values[3], epilog: values[4],
+		params: values[5], saved: values[6], locals: values[7], maxStack: values[8],
+	}
+	if values[9] == 0 {
+		if fields[12] != "0" && fields[12] != "1" {
+			return breakpadWIN{}, false
+		}
+		record.allocatesBasePointer = fields[12] == "1"
+		return record, true
+	}
+	assignment := make([]string, 0, 16)
+	for _, token := range fields[12:] {
+		if token != "=" {
+			assignment = append(assignment, token)
+			if len(assignment) > 256 {
+				return breakpadWIN{}, false
+			}
+			continue
+		}
+		if len(assignment) < 2 || !strings.HasPrefix(assignment[0], "$") || len(record.program) >= maxBreakpadCFIRules {
+			return breakpadWIN{}, false
+		}
+		record.program = append(record.program, breakpadWINAssignment{target: assignment[0], expression: append([]string(nil), assignment[1:]...)})
+		assignment = assignment[:0]
+	}
+	return record, len(assignment) == 0 && len(record.program) > 0
+}
+
+func (c *breakpadCFI) unwindWindows(relative uint64, registers map[string]uint64, memory minidumpMemory, dump *minidump) map[string]uint64 {
+	if c == nil || memory.pointerSize != 4 {
+		return nil
+	}
+	index := -1
+	for candidate := range c.windows {
+		record := &c.windows[candidate]
+		if relative < record.address || relative-record.address >= record.size {
+			continue
+		}
+		if index < 0 || record.typeID == 4 && c.windows[index].typeID != 4 || record.typeID == c.windows[index].typeID && record.address >= c.windows[index].address {
+			index = candidate
+		}
+	}
+	if index < 0 {
+		return nil
+	}
+	record := &c.windows[index]
+	next := cloneRegisters(registers)
+	calleeParams := registers["__callee_params"]
+	returnAddressLocation := registers["esp"] + calleeParams + record.locals + record.saved
+	if breakpadWINUsesAlignment(record.program) && registers["ebp"] != 0 {
+		returnAddressLocation = registers["ebp"] + 4
+	}
+	returnAddressLocation = scanWindowsReturnAddress(dump, memory, returnAddressLocation)
+	if len(record.program) == 0 {
+		if record.allocatesBasePointer {
+			returnAddress, returnOK := memory.readPointer(returnAddressLocation)
+			basePointerLocation := registers["esp"] + calleeParams + record.saved
+			if basePointerLocation < 8 {
+				return nil
+			}
+			basePointer, baseOK := memory.readPointer(basePointerLocation - 8)
+			if !returnOK || !baseOK {
+				return nil
+			}
+			next["eip"], next["esp"], next["ebp"] = returnAddress, returnAddressLocation+4, basePointer
+		} else {
+			returnAddress, ok := memory.readPointer(returnAddressLocation)
+			if !ok {
+				return nil
+			}
+			next["eip"], next["esp"] = returnAddress, returnAddressLocation+4
+		}
+		next["__callee_params"] = record.params
+		return next
+	}
+	variables := make(map[string]uint64, len(registers)+12)
+	for name, value := range registers {
+		variables["$"+name] = value
+		variables[name] = value
+	}
+	variables[".cbParams"] = record.params
+	variables[".cbSavedRegs"] = record.saved
+	variables[".cbLocals"] = record.locals
+	variables[".cbMaxStack"] = record.maxStack
+	variables[".cbCalleeParams"] = calleeParams
+	variables[".raSearchStart"] = returnAddressLocation
+	variables[".raSearch"] = returnAddressLocation
+	assigned := make(map[string]bool, len(record.program))
+	for _, assignment := range record.program {
+		value, ok := evaluateBreakpadCFI(assignment.expression, variables, memory)
+		if !ok {
+			return nil
+		}
+		variables[assignment.target] = value
+		assigned[assignment.target] = true
+		name := strings.TrimPrefix(assignment.target, "$")
+		if _, exists := registers[name]; exists {
+			next[name] = value
+		}
+	}
+	if !assigned["$eip"] || !assigned["$esp"] || next["eip"] == registers["eip"] || next["esp"] <= registers["esp"] {
+		return nil
+	}
+	next["__callee_params"] = record.params
+	return next
+}
+
+func breakpadWINUsesAlignment(program []breakpadWINAssignment) bool {
+	for _, assignment := range program {
+		for _, token := range assignment.expression {
+			if token == "@" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func scanWindowsReturnAddress(dump *minidump, memory minidumpMemory, start uint64) uint64 {
+	if dump == nil {
+		return start
+	}
+	for offset := uint64(0); offset <= 3*uint64(memory.pointerSize); offset += uint64(memory.pointerSize) {
+		candidate, ok := memory.readPointer(start + offset)
+		if !ok || candidate == 0 {
+			continue
+		}
+		lookup := candidate
+		if lookup > 0 {
+			lookup--
+		}
+		if _, ok := dump.module(lookup); ok {
+			return start + offset
+		}
+	}
+	return start
 }
 
 func parseBreakpadCFIRules(value string) (map[string][]string, bool) {

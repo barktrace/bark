@@ -109,12 +109,13 @@ records before falling back to the nearest `PUBLIC` symbol, add `FILE` and
 source-line information, and expand up to 512 nested `INLINE`/`INLINE_ORIGIN`
 call frames.
 ELF, Mach-O/dSYM, and DWARF-enabled PE files likewise expand bounded
-`DW_TAG_inlined_subroutine` chains with call-site locations. CFI stack unwinding
-for uploaded minidumps uses matching Breakpad `STACK CFI` records, with a
-frame-pointer fallback. Minidump parsing accepts bounded x86, x86-64, and ARM64
-contexts, unwinds up to 256 threads and 2,048 total event frames, retains the
-original dump as an event attachment, and limits each walk to 256 frames.
-Windows `STACK WIN` and DWARF `.eh_frame` unwinding are not yet implemented.
+`DW_TAG_inlined_subroutine` chains with call-site locations. Stack unwinding for
+uploaded minidumps uses matching Breakpad `STACK CFI` records and Windows x86
+`STACK WIN` program/FPO metadata, with a frame-pointer fallback. Minidump parsing
+accepts bounded x86, x86-64, and ARM64 contexts, unwinds up to 256 threads and
+2,048 total event frames, retains the original dump as an event attachment, and
+limits each walk to 256 frames. DWARF `.eh_frame` and architecture-specific
+compact-unwind formats are not yet implemented.
 
 Java and Android frames can use ProGuard/R8 mapping files selected by the
 event's ProGuard UUID. Barktrace restores class, method, source filename, and

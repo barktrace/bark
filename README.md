@@ -28,7 +28,7 @@ The current foundation includes:
 - SMTP email delivery, cron/metric/feedback triggers, conditions, and cooldowns;
 - cron check-ins, attachments, user feedback, interactive session replays, sampled-profile flamegraphs, and metric ingestion;
 - source maps, JavaScript rewriting, ProGuard/R8 mappings, ELF/Mach-O/PE/PDB/Breakpad debug files, and reprocessing;
-- native minidump ingestion with bounded multi-thread x86/x86-64/ARM64 context parsing, Breakpad CFI unwinding, and dump retention as an event attachment;
+- native minidump ingestion with bounded multi-thread x86/x86-64/ARM64 context parsing, Breakpad CFI and Windows `STACK WIN` unwinding, and dump retention as an event attachment;
 - release commits, deploy metadata, code mappings, and suspect commits;
 - `sentry-cli` build and snapshot upload/download workflows;
 - a durable leased ingestion queue with retries, dead letters, and category quotas;

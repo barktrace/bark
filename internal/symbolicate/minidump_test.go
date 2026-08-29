@@ -180,6 +180,49 @@ func TestBreakpadCFIExpressions(t *testing.T) {
 	}
 }
 
+func TestBreakpadWindowsProgramUnwindsX86(t *testing.T) {
+	st := symbolicationStore(t)
+	putDebugArtifactBytes(t, st, minidumpFixtureDebugID, []byte(`MODULE windows x86 123456781234567890ABCDEF012345671 app.pdb
+FUNC 1000 100 0 crash_handler
+FUNC 1100 100 0 caller
+STACK WIN 4 1000 100 0 0 8 4 8 0 1 $T0 .raSearchStart = $eip $T0 ^ = $esp $T0 4 + =
+`))
+	const stackAddress = 0x70000000
+	stack := make([]byte, 32)
+	binary.LittleEndian.PutUint32(stack[12:16], 0x401121)
+	dump := &minidump{
+		architecture: "x86", threadID: 7, address: 0x401010,
+		registers:    map[string]uint64{"eip": 0x401010, "esp": stackAddress},
+		stackAddress: stackAddress, stack: stack,
+		modules: []minidumpModule{{base: 0x400000, size: 0x3000, name: "app.exe", debugID: minidumpFixtureDebugID}},
+	}
+	frames := unwindMinidump(context.Background(), st, "project", dump)
+	if len(frames) != 2 || frames[0].(map[string]any)["instruction_addr"] != "0x401120" || frames[0].(map[string]any)["trust"] != "cfi" || frames[1].(map[string]any)["instruction_addr"] != "0x401010" {
+		t.Fatalf("STACK WIN frames = %#v", frames)
+	}
+}
+
+func TestBreakpadWindowsMetadataAndProgramParsing(t *testing.T) {
+	program, ok := parseBreakpadWIN(`STACK WIN 4 1000 100 10 4 8 c 20 40 1 $T0 $ebp = $eip $T0 4 + ^ = $esp $T0 8 + =`)
+	if !ok || program.address != 0x1000 || program.size != 0x100 || program.params != 8 || program.saved != 0xc || program.locals != 0x20 || program.maxStack != 0x40 || len(program.program) != 3 {
+		t.Fatalf("parsed STACK WIN program = %#v, ok=%v", program, ok)
+	}
+	metadata, ok := parseBreakpadWIN(`STACK WIN 0 1000 100 0 0 8 4 8 0 0 0`)
+	if !ok || len(metadata.program) != 0 || metadata.allocatesBasePointer {
+		t.Fatalf("parsed STACK WIN metadata = %#v, ok=%v", metadata, ok)
+	}
+	memory := minidumpMemory{address: 0x7000, data: make([]byte, 32), pointerSize: 4}
+	binary.LittleEndian.PutUint32(memory.data[12:16], 0x5011)
+	unwinder := &breakpadCFI{windows: []breakpadWIN{metadata}}
+	next := unwinder.unwindWindows(0x1010, map[string]uint64{"eip": 0x5010, "esp": 0x7000}, memory, nil)
+	if next == nil || next["eip"] != 0x5011 || next["esp"] != 0x7010 || next["__callee_params"] != 8 {
+		t.Fatalf("metadata STACK WIN result = %#v", next)
+	}
+	if _, ok := parseBreakpadWIN(`STACK WIN 4 1000 0 0 0 0 0 0 0 1 $eip =`); ok {
+		t.Fatal("invalid STACK WIN record was accepted")
+	}
+}
+
 func TestMinidumpX86AndARM64Contexts(t *testing.T) {
 	x86 := make([]byte, 204)
 	binary.LittleEndian.PutUint32(x86[180:184], 0x7000)

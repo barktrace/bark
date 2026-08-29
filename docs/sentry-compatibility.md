@@ -61,7 +61,7 @@ The DSN shown in the project setup page should always be copied verbatim.
 | Source maps and release files | Source Map v3, including indexed maps, canonical URL source roots, release/distribution precedence, embedded source context, and debug-ID artifact bundles |
 | ELF, Mach-O/dSYM, PE/COFF, Microsoft PDB, and Breakpad debug files | ELF, thin/universal Mach-O, and PE/COFF function symbols with bounded DWARF source locations and inline chains; standalone PDB 7 CodeView public/procedure symbols, C13 source locations, and nested inline sites; and Breakpad `FUNC`/`PUBLIC` symbols with `FILE`/line and nested `INLINE` records, selected by debug ID |
 | ProGuard and R8 mappings | Debug-ID-selected Java class, method, filename, and line remapping, including the Sentry multipart upload route |
-| Native minidumps | Raw or multipart `/api/{project_id}/minidump/` ingestion, event metadata and attachments, bounded multi-thread x86/x86-64/ARM64 contexts, Breakpad `STACK CFI` unwinding, frame-pointer fallback, and debug-ID symbolication |
+| Native minidumps | Raw or multipart `/api/{project_id}/minidump/` ingestion, event metadata and attachments, bounded multi-thread x86/x86-64/ARM64 contexts, Breakpad `STACK CFI` and Windows x86 `STACK WIN` unwinding, frame-pointer fallback, and debug-ID symbolication |
 | Release commits and deploys | Supported |
 | Artifact bundle/chunk upload protocol | Supported for common `sentry-cli` workflows |
 | Pre-production APK/AAB/IPA build upload and installable APK/IPA download | Supported |
@@ -93,10 +93,10 @@ columns when the artifact contains at most 32 MiB of uncompressed DWARF data.
 Mach-O objects extracted from dSYM bundles receive the same bounded symbol and
 DWARF lookup, including runtime load-address rebasing, universal-binary
 architecture selection, and bounded `DW_TAG_inlined_subroutine` expansion.
-Native minidumps use bounded Breakpad `STACK CFI` rules or frame pointers to
-unwind up to 256 captured threads and 2,048 total event frames. Windows
-`STACK WIN`, DWARF `.eh_frame`, and architecture-specific compact-unwind
-formats are not yet evaluated. PE/COFF
+Native minidumps use bounded Breakpad `STACK CFI`, Windows x86 `STACK WIN`
+program/FPO metadata, or frame pointers to unwind up to 256 captured threads
+and 2,048 total event frames. DWARF `.eh_frame` and architecture-specific
+compact-unwind formats are not yet evaluated. PE/COFF
 images resolve embedded symbols and DWARF source locations. Standalone Microsoft
 PDB 7 files resolve bounded public and procedure symbols, C13 source locations,
 and nested `S_INLINESITE` records through IPI and inlinee-line metadata.

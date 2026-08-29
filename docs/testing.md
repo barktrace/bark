@@ -36,7 +36,8 @@ BARKTRACE_PDB_INLINE_FILES_FIXTURE=/path/to/inline-file-changes.pdb \
 ```
 
 The minidump parser can also be checked against a real dump and an optional
-matching Breakpad symbol file containing `STACK CFI` records:
+matching Breakpad symbol file containing `STACK CFI` or Windows `STACK WIN`
+records:
 
 ```sh
 BARKTRACE_MINIDUMP_FIXTURE=/path/to/crash.dmp \
