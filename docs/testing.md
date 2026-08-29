@@ -37,7 +37,8 @@ provider. A real Chromium browser signs in, proves automatic account creation,
 creates a project, sends a Sentry event, opens the resulting issue and telemetry
 views, verifies Sentry-compatible organization/project/key/issue/event detail
 routes, runs a Discover query, creates a saved dashboard widget, renders an
-interactive rrweb replay, analyzes a sampled profile, and signs out.
+interactive rrweb replay, analyzes a sampled profile, exercises MCP triage,
+quota, retention, alert, uptime, and cron operations, and signs out.
 
 ```sh
 npm ci --prefix tests/e2e

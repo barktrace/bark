@@ -231,6 +231,42 @@ try {
   if (!mcpQuota.configured || mcpQuota.per_minute !== 120) throw new Error('MCP quota update failed');
   const mcpRetention = await mcpCall(5, 'update_retention', { organization_id: nativeOrganization.organization_id, days: 45 });
   if (mcpRetention.retention_days !== 45) throw new Error('MCP retention update failed');
+  const mcpComment = await mcpCall(6, 'add_issue_comment', { issue_id: nativeIssues[0].id, body: 'Verified by production MCP E2E' });
+  if (mcpComment.body !== 'Verified by production MCP E2E') throw new Error('MCP issue comment failed');
+  const mcpAlert = await mcpCall(7, 'create_alert_rule', {
+    project_id: nativeProject.id,
+    name: 'E2E errors',
+    trigger: 'new_issue',
+    destination_type: 'email',
+    destination_email: 'alerts@example.com',
+    conditions: { environment: 'e2e', levels: ['error'] },
+    frequency_minutes: 15,
+  });
+  const mcpUpdatedAlert = await mcpCall(8, 'update_alert_rule', { project_id: nativeProject.id, rule_id: mcpAlert.id, enabled: false });
+  if (mcpUpdatedAlert.enabled !== false) throw new Error('MCP alert update failed');
+  await mcpCall(9, 'delete_alert_rule', { project_id: nativeProject.id, rule_id: mcpAlert.id });
+  const mcpUptime = await mcpCall(10, 'create_uptime_monitor', {
+    project_id: nativeProject.id,
+    name: 'E2E public target',
+    url: 'https://example.com/',
+    method: 'HEAD',
+    interval_seconds: 300,
+    timeout_seconds: 5,
+    expected_status_min: 200,
+    expected_status_max: 399,
+  });
+  await mcpCall(11, 'delete_uptime_monitor', { project_id: nativeProject.id, monitor_id: mcpUptime.id });
+  const mcpCron = await mcpCall(12, 'create_cron_monitor', {
+    project_id: nativeProject.id,
+    slug: 'e2e-nightly',
+    name: 'E2E nightly',
+    schedule_type: 'crontab',
+    schedule_value: '0 2 * * *',
+    timezone: 'UTC',
+    checkin_margin: 10,
+    max_runtime: 120,
+  });
+  await mcpCall(13, 'delete_cron_monitor', { project_id: nativeProject.id, monitor_id: mcpCron.id });
 
   await page.locator('#account-button').click();
   await page.getByRole('button', { name: 'Sign out' }).click();

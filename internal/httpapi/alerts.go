@@ -160,7 +160,7 @@ func (s *Server) updateAlertRule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "frequency must be between 0 and 10080 minutes")
 		return
 	}
-	if _, err := s.store.DB.ExecContext(r.Context(), `UPDATE alert_rules SET name = ?, trigger = ?, destination_type = ?, destination_url = ?, destination_email = ?, conditions = ?, frequency_minutes = ?, enabled = ? WHERE id = ?`, name, trigger, destinationType, destinationURL, destinationEmail, conditions, frequency, enabled, ruleID); err != nil {
+	if _, err := s.store.DB.ExecContext(r.Context(), `UPDATE alert_rules SET name = ?, trigger = ?, destination_type = ?, destination_url = ?, destination_email = ?, conditions = ?, frequency_minutes = ?, enabled = ? WHERE id = ?`, name, trigger, destinationType, destinationURL, destinationEmail, conditions, frequency, boolInteger(enabled), ruleID); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not update alert rule")
 		return
 	}
@@ -234,7 +234,7 @@ func (s *Server) alertDeliveries(w http.ResponseWriter, r *http.Request) {
 }
 
 func alertTrigger(value string) bool {
-	return value == "new_issue" || value == "regression" || value == "uptime_down" || value == "cron_missed" || value == "metric_threshold" || value == "user_feedback"
+	return alertservice.ValidTrigger(value)
 }
 
 func destinationHost(raw string) string {
@@ -249,19 +249,5 @@ func destinationHost(raw string) string {
 }
 
 func validAlertConditions(raw json.RawMessage) ([]byte, bool) {
-	if len(raw) == 0 || string(raw) == "null" {
-		return []byte(`{}`), true
-	}
-	var conditions map[string]any
-	if json.Unmarshal(raw, &conditions) != nil {
-		return nil, false
-	}
-	allowed := map[string]bool{"environment": true, "levels": true, "metric_name": true, "min_value": true, "max_value": true}
-	for key := range conditions {
-		if !allowed[key] {
-			return nil, false
-		}
-	}
-	encoded, err := json.Marshal(conditions)
-	return encoded, err == nil
+	return alertservice.NormalizeConditions(raw)
 }

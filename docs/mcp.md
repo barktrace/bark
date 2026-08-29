@@ -72,6 +72,7 @@ curl --fail-with-body https://errors.example.com/mcp \
 | `get_issue` | Returns an issue and its release linkage. |
 | `update_issue_status` | Sets an issue to unresolved, resolved, or ignored. |
 | `update_issue` | Updates issue status, priority, assignment, bookmark, and snooze state. |
+| `add_issue_comment` | Adds a triage comment to an issue. |
 | `list_events` | Lists event occurrences, optionally for one issue. |
 | `get_event` | Returns an event including its original Sentry JSON. |
 | `list_releases` | Lists project releases and event counts. |
@@ -86,6 +87,9 @@ curl --fail-with-body https://errors.example.com/mcp \
 | `list_profiles`, `analyze_profile` | Lists profiles and builds bounded thread, hotspot, and flamegraph analysis from a stored sampled profile. |
 | `list_metrics` | Inspects metric points and tags. |
 | `list_alert_rules`, `list_alert_deliveries` | Inspects alert configuration and delivery. |
+| `create_alert_rule`, `update_alert_rule`, `delete_alert_rule` | Manages email, webhook, and Slack alert rules. |
+| `create_uptime_monitor`, `delete_uptime_monitor` | Manages SSRF-safe HTTP uptime monitors. |
+| `create_cron_monitor`, `delete_cron_monitor` | Manages interval and crontab check-in monitors. |
 | `list_artifacts` | Lists source maps and debug files. |
 | `list_deploys`, `list_commits`, `list_suspect_commits` | Correlates releases and source changes. |
 | `list_project_quotas`, `list_ingestion_jobs` | Inspects limits, retries, and dead letters. |
@@ -98,7 +102,8 @@ curl --fail-with-body https://errors.example.com/mcp \
 
 Database-backed MCP tokens can access only their organization. `read` tokens
 cannot invoke mutation tools; `write` tokens can update issue triage state,
-manage dashboards and quotas, operate dead-letter jobs, and change retention.
+manage dashboards, alerts, uptime and cron monitors, manage quotas, operate
+dead-letter jobs, and change retention.
 Successful mutations are recorded with actor type `mcp`. Treat every token as a
 secret and use HTTPS. `BARKTRACE_MCP_TOKEN`, when configured, deliberately keeps
 legacy instance-wide administrative access and should be reserved for recovery.

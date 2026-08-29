@@ -112,6 +112,14 @@ func (s *Service) callAdministrationTool(ctx context.Context, credential *creden
 			s.recordDiscoverMutation(ctx, credential, organizationID, "", "update_retention", "organization", organizationID, map[string]any{"retention_days": args.Days})
 		}
 		return result, err
+	case "add_issue_comment":
+		return s.addIssueCommentTool(ctx, credential, raw)
+	case "create_alert_rule", "update_alert_rule", "delete_alert_rule":
+		return s.callAlertTool(ctx, credential, name, raw)
+	case "create_uptime_monitor", "delete_uptime_monitor":
+		return s.callUptimeTool(ctx, credential, name, raw)
+	case "create_cron_monitor", "delete_cron_monitor":
+		return s.callCronTool(ctx, credential, name, raw)
 	default:
 		return nil, errors.New("unknown administration tool")
 	}

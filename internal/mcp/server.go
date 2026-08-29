@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/barktrace/bark/internal/store"
+	"github.com/barktrace/bark/internal/uptime"
 )
 
 const protocolVersion = "2025-11-25"
@@ -33,6 +34,7 @@ type Service struct {
 	legacyTokenEnabled bool
 	publicURL          string
 	publicOrigin       string
+	uptime             *uptime.Service
 }
 
 type credential struct {
@@ -73,12 +75,13 @@ type tool struct {
 	Annotations map[string]any `json:"annotations,omitempty"`
 }
 
-func New(st *store.Store, token, publicURL string) *Service {
+func New(st *store.Store, token, publicURL string, allowPrivateUptime ...bool) *Service {
 	origin := ""
 	if parsed, err := url.Parse(publicURL); err == nil {
 		origin = parsed.Scheme + "://" + parsed.Host
 	}
-	return &Service{store: st, legacyTokenHash: sha256.Sum256([]byte(token)), legacyTokenEnabled: strings.TrimSpace(token) != "", publicURL: publicURL, publicOrigin: origin}
+	allowPrivate := len(allowPrivateUptime) > 0 && allowPrivateUptime[0]
+	return &Service{store: st, legacyTokenHash: sha256.Sum256([]byte(token)), legacyTokenEnabled: strings.TrimSpace(token) != "", publicURL: publicURL, publicOrigin: origin, uptime: uptime.New(st, allowPrivate)}
 }
 
 func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -115,7 +118,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.writeResult(w, id, map[string]any{
 			"protocolVersion": version,
 			"capabilities":    map[string]any{"tools": map[string]bool{"listChanged": false}},
-			"serverInfo":      map[string]string{"name": "barktrace", "version": "0.8.0"},
+			"serverInfo":      map[string]string{"name": "barktrace", "version": "0.9.0"},
 		})
 	case "ping":
 		s.writeResult(w, id, map[string]any{})
@@ -294,7 +297,9 @@ func (s *Service) callTool(r *http.Request, credential *credential, raw json.Raw
 	case "query_discover", "list_dashboards", "create_dashboard", "add_dashboard_widget", "delete_dashboard":
 		return s.callDiscoverTool(ctx, credential, call.Name, call.Arguments)
 	case "list_organization_members", "list_project_permissions", "update_issue", "set_project_quota",
-		"retry_ingestion_job", "delete_ingestion_job", "update_retention":
+		"retry_ingestion_job", "delete_ingestion_job", "update_retention", "add_issue_comment",
+		"create_alert_rule", "update_alert_rule", "delete_alert_rule", "create_uptime_monitor",
+		"delete_uptime_monitor", "create_cron_monitor", "delete_cron_monitor":
 		return s.callAdministrationTool(ctx, credential, call.Name, call.Arguments)
 	case "list_transactions", "list_logs", "list_uptime_monitors", "list_uptime_checks",
 		"list_cron_monitors", "list_cron_checkins", "list_feedback", "list_replays",
@@ -489,6 +494,38 @@ func tools() []tool {
 		{Name: "retry_ingestion_job", Description: "Move a dead-letter ingestion job back to the pending queue.", InputSchema: objectSchema(map[string]any{"project_id": stringProperty("Project UUID"), "job_id": stringProperty("Ingestion job UUID")}, "project_id", "job_id"), Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false}},
 		{Name: "delete_ingestion_job", Description: "Permanently delete a completed or dead ingestion job and its unreferenced payload.", InputSchema: objectSchema(map[string]any{"project_id": stringProperty("Project UUID"), "job_id": stringProperty("Ingestion job UUID")}, "project_id", "job_id"), Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": true, "idempotentHint": false}},
 		{Name: "update_retention", Description: "Set organization retention between 1 and 3650 days.", InputSchema: objectSchema(map[string]any{"organization_id": stringProperty("Organization UUID; only needed by the legacy instance token"), "days": map[string]any{"type": "integer", "minimum": 1, "maximum": 3650}}, "days"), Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true}},
+		{Name: "add_issue_comment", Description: "Add a triage comment to an issue.", InputSchema: objectSchema(map[string]any{"issue_id": stringProperty("Issue UUID"), "body": stringProperty("Comment text, up to 4000 characters")}, "issue_id", "body"), Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false}},
+		{Name: "create_alert_rule", Description: "Create an email, webhook, or Slack alert rule with bounded conditions.", InputSchema: objectSchema(map[string]any{
+			"project_id": stringProperty("Project UUID"), "name": stringProperty("Rule name"),
+			"trigger":          map[string]any{"type": "string", "enum": []string{"new_issue", "regression", "uptime_down", "cron_missed", "metric_threshold", "user_feedback"}},
+			"destination_type": map[string]any{"type": "string", "enum": []string{"email", "webhook", "slack"}},
+			"destination_url":  stringProperty("HTTPS webhook or Slack URL"), "destination_email": stringProperty("Email recipient"),
+			"conditions": map[string]any{"type": "object", "additionalProperties": true}, "frequency_minutes": map[string]any{"type": "integer", "minimum": 0, "maximum": 10080},
+		}, "project_id", "name", "trigger", "destination_type"), Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false}},
+		{Name: "update_alert_rule", Description: "Update an alert rule's trigger, destination, conditions, cooldown, or enabled state.", InputSchema: objectSchema(map[string]any{
+			"project_id": stringProperty("Project UUID"), "rule_id": stringProperty("Alert rule UUID"), "name": stringProperty("Rule name"),
+			"trigger":          map[string]any{"type": "string", "enum": []string{"new_issue", "regression", "uptime_down", "cron_missed", "metric_threshold", "user_feedback"}},
+			"destination_type": map[string]any{"type": "string", "enum": []string{"email", "webhook", "slack"}},
+			"destination_url":  stringProperty("HTTPS webhook or Slack URL"), "destination_email": stringProperty("Email recipient"),
+			"conditions": map[string]any{"type": "object", "additionalProperties": true}, "frequency_minutes": map[string]any{"type": "integer", "minimum": 0, "maximum": 10080}, "enabled": map[string]any{"type": "boolean"},
+		}, "project_id", "rule_id"), Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true}},
+		{Name: "delete_alert_rule", Description: "Permanently delete an alert rule and its delivery history.", InputSchema: objectSchema(map[string]any{"project_id": stringProperty("Project UUID"), "rule_id": stringProperty("Alert rule UUID")}, "project_id", "rule_id"), Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": true, "idempotentHint": false}},
+		{Name: "create_uptime_monitor", Description: "Create a bounded GET or HEAD uptime monitor after SSRF-safe URL validation.", InputSchema: objectSchema(map[string]any{
+			"project_id": stringProperty("Project UUID"), "name": stringProperty("Monitor name"), "url": stringProperty("HTTP or HTTPS target"),
+			"method":              map[string]any{"type": "string", "enum": []string{"GET", "HEAD"}, "default": "GET"},
+			"interval_seconds":    map[string]any{"type": "integer", "minimum": 30, "maximum": 86400, "default": 60},
+			"timeout_seconds":     map[string]any{"type": "integer", "minimum": 1, "maximum": 30, "default": 10},
+			"expected_status_min": map[string]any{"type": "integer", "minimum": 100, "maximum": 599, "default": 200},
+			"expected_status_max": map[string]any{"type": "integer", "minimum": 100, "maximum": 599, "default": 399},
+		}, "project_id", "name", "url"), Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false}},
+		{Name: "delete_uptime_monitor", Description: "Permanently delete an uptime monitor, checks, and incidents.", InputSchema: objectSchema(map[string]any{"project_id": stringProperty("Project UUID"), "monitor_id": stringProperty("Uptime monitor UUID")}, "project_id", "monitor_id"), Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": true, "idempotentHint": false}},
+		{Name: "create_cron_monitor", Description: "Create an interval or five-field crontab check-in monitor.", InputSchema: objectSchema(map[string]any{
+			"project_id": stringProperty("Project UUID"), "slug": stringProperty("Monitor slug"), "name": stringProperty("Monitor name; defaults to slug"),
+			"schedule_type":  map[string]any{"type": "string", "enum": []string{"interval", "crontab"}, "default": "interval"},
+			"schedule_value": map[string]any{"description": "Interval minutes, Sentry interval pair, or five-field crontab expression"},
+			"timezone":       stringProperty("IANA timezone, defaults to UTC"), "checkin_margin": map[string]any{"type": "integer", "minimum": 1, "default": 5}, "max_runtime": map[string]any{"type": "integer", "minimum": 1, "default": 30},
+		}, "project_id", "slug"), Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false}},
+		{Name: "delete_cron_monitor", Description: "Permanently delete a cron monitor and its check-in history.", InputSchema: objectSchema(map[string]any{"project_id": stringProperty("Project UUID"), "monitor_id": stringProperty("Cron monitor UUID")}, "project_id", "monitor_id"), Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": true, "idempotentHint": false}},
 	}
 }
 

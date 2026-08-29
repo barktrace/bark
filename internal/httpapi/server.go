@@ -209,7 +209,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("HEAD /api/0/objectstore/v1/objects/preprod/{scope}/{object_key...}", s.snapshotObject)
 	s.mux.HandleFunc("PUT /api/0/objectstore/v1/objects/preprod/{scope}/{object_key...}", s.snapshotObject)
 	s.mux.HandleFunc("POST /api/0/objectstore/v1/objects:batch/preprod/{scope}/{$}", s.snapshotObjectBatch)
-	s.mux.Handle("POST /mcp", mcp.New(s.store, s.cfg.MCPToken, s.cfg.PublicURL))
+	s.mux.Handle("POST /mcp", mcp.New(s.store, s.cfg.MCPToken, s.cfg.PublicURL, s.cfg.UptimeAllowPrivateTargets))
 
 	s.mux.HandleFunc("OPTIONS /api/{project_id}/envelope/", ingestionPreflight)
 	s.mux.HandleFunc("OPTIONS /api/{project_id}/store/", ingestionPreflight)

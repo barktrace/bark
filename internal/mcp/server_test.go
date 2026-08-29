@@ -53,15 +53,87 @@ func TestInitializeAndListTools(t *testing.T) {
 	if result["protocolVersion"] != "2025-06-18" {
 		t.Fatalf("protocol version = %v", result["protocolVersion"])
 	}
-	if version := result["serverInfo"].(map[string]any)["version"]; version != "0.8.0" {
+	if version := result["serverInfo"].(map[string]any)["version"]; version != "0.9.0" {
 		t.Fatalf("server version = %v", version)
 	}
 
 	listed := call(t, service, `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
 	toolsResult := listed["result"].(map[string]any)
 	available := toolsResult["tools"].([]any)
-	if len(available) != 44 {
-		t.Fatalf("tool count = %d, want 44", len(available))
+	if len(available) != 52 {
+		t.Fatalf("tool count = %d, want 52", len(available))
+	}
+}
+
+func TestOperationalMCPToolsLifecycle(t *testing.T) {
+	st := testStore(t)
+	seedMCPData(t, st)
+	plain := "bark_mcp_operations-write-token"
+	hash := sha256.Sum256([]byte(plain))
+	_, err := st.DB.Exec(`
+		INSERT INTO users(id, email, name) VALUES ('creator', 'creator@example.com', 'Creator');
+		INSERT INTO organization_memberships(organization_id, user_id, role) VALUES ('org', 'creator', 'owner');
+		INSERT INTO mcp_tokens(id, organization_id, created_by, name, token_hash, token_prefix, scopes) VALUES ('mcp-operations', 'org', 'creator', 'Operations', ?, 'bark_mcp_ops', '["write"]');
+	`, hash[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := New(st, "", "https://errors.example", true)
+
+	comment := callWithToken(t, service, plain, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"add_issue_comment","arguments":{"issue_id":"issue","body":"Investigating via MCP"}}}`)
+	if comment["result"].(map[string]any)["isError"] != false {
+		t.Fatalf("add_issue_comment failed: %#v", comment)
+	}
+
+	createdAlert := callWithToken(t, service, plain, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"create_alert_rule","arguments":{"project_id":"project","name":"Critical email","trigger":"metric_threshold","destination_type":"email","destination_email":"alerts@example.com","conditions":{"metric_name":"queue.depth","min_value":10},"frequency_minutes":30}}}`)
+	alertResult := createdAlert["result"].(map[string]any)
+	if alertResult["isError"] != false {
+		t.Fatalf("create_alert_rule failed: %#v", createdAlert)
+	}
+	alertID := alertResult["structuredContent"].(map[string]any)["id"].(string)
+	updatedAlert := callWithToken(t, service, plain, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"update_alert_rule","arguments":{"project_id":"project","rule_id":"`+alertID+`","name":"Critical queue email","enabled":false}}}`)
+	if updatedAlert["result"].(map[string]any)["isError"] != false || updatedAlert["result"].(map[string]any)["structuredContent"].(map[string]any)["enabled"] != false {
+		t.Fatalf("update_alert_rule failed: %#v", updatedAlert)
+	}
+	deletedAlert := callWithToken(t, service, plain, `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"delete_alert_rule","arguments":{"project_id":"project","rule_id":"`+alertID+`"}}}`)
+	if deletedAlert["result"].(map[string]any)["isError"] != false {
+		t.Fatalf("delete_alert_rule failed: %#v", deletedAlert)
+	}
+
+	createdUptime := callWithToken(t, service, plain, `{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"create_uptime_monitor","arguments":{"project_id":"project","name":"Local health","url":"http://127.0.0.1:18080/healthz","method":"HEAD","interval_seconds":300,"timeout_seconds":5,"expected_status_min":200,"expected_status_max":299}}}`)
+	uptimeResult := createdUptime["result"].(map[string]any)
+	if uptimeResult["isError"] != false {
+		t.Fatalf("create_uptime_monitor failed: %#v", createdUptime)
+	}
+	uptimeID := uptimeResult["structuredContent"].(map[string]any)["id"].(string)
+	deletedUptime := callWithToken(t, service, plain, `{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"delete_uptime_monitor","arguments":{"project_id":"project","monitor_id":"`+uptimeID+`"}}}`)
+	if deletedUptime["result"].(map[string]any)["isError"] != false {
+		t.Fatalf("delete_uptime_monitor failed: %#v", deletedUptime)
+	}
+
+	createdCron := callWithToken(t, service, plain, `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"create_cron_monitor","arguments":{"project_id":"project","slug":"Nightly Backup","name":"Nightly backup","schedule_type":"crontab","schedule_value":"0 2 * * *","timezone":"Europe/Paris","checkin_margin":10,"max_runtime":120}}}`)
+	cronResult := createdCron["result"].(map[string]any)
+	if cronResult["isError"] != false {
+		t.Fatalf("create_cron_monitor failed: %#v", createdCron)
+	}
+	cronContent := cronResult["structuredContent"].(map[string]any)
+	if cronContent["slug"] != "nightly-backup" || cronContent["schedule_value"] != "0 2 * * *" {
+		t.Fatalf("unexpected cron monitor: %#v", cronContent)
+	}
+	cronID := cronContent["id"].(string)
+	deletedCron := callWithToken(t, service, plain, `{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"delete_cron_monitor","arguments":{"project_id":"project","monitor_id":"`+cronID+`"}}}`)
+	if deletedCron["result"].(map[string]any)["isError"] != false {
+		t.Fatalf("delete_cron_monitor failed: %#v", deletedCron)
+	}
+
+	var comments, alerts, uptimeMonitors, cronMonitors, audits int
+	_ = st.DB.QueryRow(`SELECT COUNT(*) FROM issue_activities WHERE issue_id = 'issue' AND kind = 'comment' AND value = 'Investigating via MCP'`).Scan(&comments)
+	_ = st.DB.QueryRow(`SELECT COUNT(*) FROM alert_rules`).Scan(&alerts)
+	_ = st.DB.QueryRow(`SELECT COUNT(*) FROM uptime_monitors`).Scan(&uptimeMonitors)
+	_ = st.DB.QueryRow(`SELECT COUNT(*) FROM cron_monitors`).Scan(&cronMonitors)
+	_ = st.DB.QueryRow(`SELECT COUNT(*) FROM audit_logs WHERE organization_id = 'org' AND actor_type = 'mcp'`).Scan(&audits)
+	if comments != 1 || alerts != 0 || uptimeMonitors != 0 || cronMonitors != 0 || audits != 8 {
+		t.Fatalf("comments=%d alerts=%d uptime=%d cron=%d audits=%d", comments, alerts, uptimeMonitors, cronMonitors, audits)
 	}
 }
 
@@ -184,6 +256,11 @@ func TestAdministrationToolsRejectInvalidAndForeignMutations(t *testing.T) {
 		`{"name":"set_project_quota","arguments":{"project_id":"project","category":"error","per_minute":0,"per_day":0,"max_item_bytes":104857601}}`,
 		`{"name":"update_retention","arguments":{"organization_id":"org","days":0}}`,
 		`{"name":"retry_ingestion_job","arguments":{"project_id":"project","job_id":"missing"}}`,
+		`{"name":"add_issue_comment","arguments":{"issue_id":"issue","body":" "}}`,
+		`{"name":"create_alert_rule","arguments":{"project_id":"project","name":"Bad destination","trigger":"new_issue","destination_type":"webhook","destination_url":"http://example.com/hook"}}`,
+		`{"name":"create_alert_rule","arguments":{"project_id":"project","name":"Bad conditions","trigger":"new_issue","destination_type":"email","destination_email":"alerts@example.com","conditions":{"unsupported":true}}}`,
+		`{"name":"create_uptime_monitor","arguments":{"project_id":"project","name":"Private target","url":"http://127.0.0.1:8080/healthz"}}`,
+		`{"name":"create_cron_monitor","arguments":{"project_id":"project","slug":"invalid-cron","schedule_type":"crontab","schedule_value":"not a cron"}}`,
 	}
 	for index, params := range invalidCalls {
 		response := call(t, legacy, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":`+params+`}`)

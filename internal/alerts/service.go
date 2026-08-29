@@ -118,6 +118,28 @@ func ValidateDestination(kind, raw string) error {
 	return nil
 }
 
+func ValidTrigger(value string) bool {
+	return value == "new_issue" || value == "regression" || value == "uptime_down" || value == "cron_missed" || value == "metric_threshold" || value == "user_feedback"
+}
+
+func NormalizeConditions(raw json.RawMessage) ([]byte, bool) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return []byte(`{}`), true
+	}
+	var conditions map[string]any
+	if json.Unmarshal(raw, &conditions) != nil {
+		return nil, false
+	}
+	allowed := map[string]bool{"environment": true, "levels": true, "metric_name": true, "min_value": true, "max_value": true}
+	for key := range conditions {
+		if !allowed[key] {
+			return nil, false
+		}
+	}
+	encoded, err := json.Marshal(conditions)
+	return encoded, err == nil
+}
+
 func (s *Service) deliverPending(ctx context.Context) {
 	rows, err := s.store.DB.QueryContext(ctx, `
 		SELECT d.id, d.rule_id, r.destination_type, r.destination_url, r.destination_email, d.event_type, d.payload, d.attempts
