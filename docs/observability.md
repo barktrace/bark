@@ -224,6 +224,6 @@ Sentry-compatible clients can manage the same rules through
 First-seen, regression, user-feedback, uptime, cron, and metric conditions are
 mapped to Barktrace triggers. Environment, level, and arbitrary event-tag
 filters are supported. Filters can use `all` or `any` matching and tag filters
-support equality, inequality, contains, prefix, and suffix comparisons. Each
-rule currently has one email, HTTPS webhook, or Slack action; trigger-condition
-matching currently remains `all`.
+support equality, inequality, contains, prefix, and suffix comparisons. Trigger
+conditions can also use `all` or `any` matching, and each rule can deliver to
+multiple email, HTTPS webhook, or Slack actions.

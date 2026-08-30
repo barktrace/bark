@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -44,6 +45,13 @@ type sentryAlertRecord struct {
 	Frequency        int
 	Enabled          bool
 	CreatedAt        string
+	Actions          []sentryAlertAction
+}
+
+type sentryAlertAction struct {
+	Type  string `json:"type"`
+	URL   string `json:"url,omitempty"`
+	Email string `json:"email,omitempty"`
 }
 
 func (s *Server) sentryProjectAlertRules(w http.ResponseWriter, r *http.Request) {
@@ -66,19 +74,29 @@ func (s *Server) sentryProjectAlertRules(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, "could not list alert rules")
 		return
 	}
-	defer rows.Close()
-	items := make([]map[string]any, 0)
+	records := make([]sentryAlertRecord, 0)
 	for rows.Next() {
 		record, err := scanSentryAlert(rows)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "could not list alert rules")
 			return
 		}
-		items = append(items, sentryAlertResponse(record))
+		records = append(records, record)
 	}
 	if err := rows.Err(); err != nil {
+		_ = rows.Close()
 		writeError(w, http.StatusInternalServerError, "could not list alert rules")
 		return
+	}
+	_ = rows.Close()
+	items := make([]map[string]any, 0, len(records))
+	for _, record := range records {
+		var err error
+		if record.Actions, err = s.loadSentryAlertActions(r, record.ID); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not list alert rules")
+			return
+		}
+		items = append(items, sentryAlertResponse(record))
 	}
 	writeJSON(w, http.StatusOK, items)
 }
@@ -143,6 +161,9 @@ func (s *Server) sentryProjectAlertRuleDetail(w http.ResponseWriter, r *http.Req
 	}
 	defer tx.Rollback()
 	if _, err = tx.ExecContext(r.Context(), `UPDATE alert_rules SET name = ?, trigger = ?, destination_type = ?, destination_url = ?, destination_email = ?, conditions = ?, frequency_minutes = ?, enabled = ? WHERE id = ? AND project_id = ?`, updated.Name, updated.Trigger, updated.DestinationType, updated.DestinationURL, updated.DestinationEmail, updated.Conditions, updated.Frequency, boolInteger(updated.Enabled), updated.ID, projectID); err == nil {
+		err = replaceSentryAlertActions(r, tx, updated.ID, updated.Actions)
+	}
+	if err == nil {
 		_, err = tx.ExecContext(r.Context(), `INSERT INTO audit_logs(organization_id, project_id, actor_user_id, action, target_type, target_id) VALUES (?, ?, ?, 'update_sentry_alert_rule', 'alert_rule', ?)`, updated.OrganizationID, projectID, principal.UserID, updated.ID)
 	}
 	if err == nil {
@@ -173,6 +194,9 @@ func (s *Server) createSentryAlertRule(w http.ResponseWriter, r *http.Request, p
 	}
 	defer tx.Rollback()
 	if _, err = tx.ExecContext(r.Context(), `INSERT INTO alert_rules(id, project_id, name, trigger, destination_type, destination_url, destination_email, conditions, frequency_minutes, enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, record.ID, projectID, record.Name, record.Trigger, record.DestinationType, record.DestinationURL, record.DestinationEmail, record.Conditions, record.Frequency, boolInteger(record.Enabled)); err == nil {
+		err = replaceSentryAlertActions(r, tx, record.ID, record.Actions)
+	}
+	if err == nil {
 		_, err = tx.ExecContext(r.Context(), `INSERT INTO audit_logs(organization_id, project_id, actor_user_id, action, target_type, target_id) VALUES (?, ?, ?, 'create_sentry_alert_rule', 'alert_rule', ?)`, organizationID, projectID, principal.UserID, record.ID)
 	}
 	if err == nil {
@@ -201,8 +225,8 @@ func (s *Server) sentryAlertFromInput(r *http.Request, principal *auth.Principal
 	if record.Name == "" {
 		return record, errors.New("alert rule name is required")
 	}
-	if match := strings.ToLower(strings.TrimSpace(input.ActionMatch)); match != "" && match != "all" {
-		return record, errors.New("only actionMatch=all is supported")
+	if match := strings.ToLower(strings.TrimSpace(input.ActionMatch)); match != "" && match != "all" && match != "any" {
+		return record, errors.New("actionMatch must be all or any")
 	}
 	if match := strings.ToLower(strings.TrimSpace(input.FilterMatch)); match != "" && match != "all" && match != "any" {
 		return record, errors.New("filterMatch must be all or any")
@@ -248,40 +272,64 @@ func (s *Server) sentryAlertFromInput(r *http.Request, principal *auth.Principal
 		}
 		record.Conditions = conditions
 	}
-	destinationType, destinationURL, destinationEmail, err := s.sentryAlertDestination(r, principal, input, existing)
+	actions, err := s.sentryAlertDestinations(r, principal, input, existing)
 	if err != nil {
 		return record, err
 	}
-	record.DestinationType, record.DestinationURL, record.DestinationEmail = destinationType, destinationURL, destinationEmail
-	destination := destinationURL
-	if destinationType == "email" {
-		destination = destinationEmail
+	for _, action := range actions {
+		destination := action.URL
+		if action.Type == "email" {
+			destination = action.Email
+		}
+		if err := alertservice.ValidateDestination(action.Type, destination); err != nil {
+			return record, err
+		}
 	}
-	if err := alertservice.ValidateDestination(destinationType, destination); err != nil {
+	if len(actions) == 0 {
+		return record, errors.New("at least one alert action is required")
+	}
+	record.DestinationType, record.DestinationURL, record.DestinationEmail = actions[0].Type, actions[0].URL, actions[0].Email
+	record.Actions = actions
+	conditions, err := sentryAlertMetadata(record.Conditions, input)
+	if err != nil {
 		return record, err
 	}
+	record.Conditions = conditions
 	return record, nil
 }
 
 func sentryTrigger(conditions []map[string]any) string {
-	for _, condition := range conditions {
-		id := strings.ToLower(stringValue(condition["id"]))
-		switch {
-		case strings.Contains(id, "first_seen"):
-			return "new_issue"
-		case strings.Contains(id, "regression"):
-			return "regression"
-		case strings.Contains(id, "user_feedback"):
-			return "user_feedback"
-		case strings.Contains(id, "uptime"):
-			return "uptime_down"
-		case strings.Contains(id, "cron") || strings.Contains(id, "checkin"):
-			return "cron_missed"
-		case strings.Contains(id, "metric"):
-			return "metric_threshold"
-		}
+	triggers := sentryTriggers(conditions)
+	if len(triggers) > 0 {
+		return triggers[0]
 	}
 	return ""
+}
+
+func sentryTriggers(conditions []map[string]any) []string {
+	result := make([]string, 0, len(conditions))
+	for _, condition := range conditions {
+		id := strings.ToLower(stringValue(condition["id"]))
+		trigger := ""
+		switch {
+		case strings.Contains(id, "first_seen"):
+			trigger = "new_issue"
+		case strings.Contains(id, "regression"):
+			trigger = "regression"
+		case strings.Contains(id, "user_feedback"):
+			trigger = "user_feedback"
+		case strings.Contains(id, "uptime"):
+			trigger = "uptime_down"
+		case strings.Contains(id, "cron") || strings.Contains(id, "checkin"):
+			trigger = "cron_missed"
+		case strings.Contains(id, "metric"):
+			trigger = "metric_threshold"
+		}
+		if trigger != "" && !containsString(result, trigger) {
+			result = append(result, trigger)
+		}
+	}
+	return result
 }
 
 func sentryAlertConditions(input sentryAlertInput) ([]byte, error) {
@@ -344,32 +392,42 @@ func sentryLevels(raw, match string) ([]string, error) {
 	}
 }
 
-func (s *Server) sentryAlertDestination(r *http.Request, principal *auth.Principal, input sentryAlertInput, existing *sentryAlertRecord) (string, string, string, error) {
+func (s *Server) sentryAlertDestinations(r *http.Request, principal *auth.Principal, input sentryAlertInput, existing *sentryAlertRecord) ([]sentryAlertAction, error) {
 	destinationType := strings.ToLower(strings.TrimSpace(input.DestinationType))
 	destinationURL, destinationEmail := strings.TrimSpace(input.DestinationURL), strings.TrimSpace(input.DestinationEmail)
-	if len(input.Actions) > 1 {
-		return "", "", "", errors.New("one alert action is supported per rule")
+	if len(input.Actions) > 0 {
+		actions := make([]sentryAlertAction, 0, len(input.Actions))
+		for _, action := range input.Actions {
+			destinationType, destinationURL, destinationEmail = "", "", ""
+			id := strings.ToLower(stringValue(action["id"]))
+			switch {
+			case strings.Contains(id, "slack"):
+				destinationType = "slack"
+			case strings.Contains(id, "mail") || strings.Contains(id, "email"):
+				destinationType = "email"
+			case strings.Contains(id, "webhook") || strings.Contains(id, "notify_event"):
+				destinationType = "webhook"
+			default:
+				return nil, errors.New("unsupported alert action")
+			}
+			if value := firstNonEmpty(stringValue(action["url"]), stringValue(action["webhook"])); value != "" {
+				destinationURL = value
+			}
+			if value := firstNonEmpty(stringValue(action["email"]), stringValue(action["targetIdentifier"])); strings.Contains(value, "@") {
+				destinationEmail = value
+			} else if destinationType == "email" && value != "" {
+				_ = s.store.DB.QueryRowContext(r.Context(), `SELECT u.email FROM users u JOIN organization_memberships om ON om.user_id = u.id WHERE om.organization_id = ? AND u.id = ?`, projectOrganizationID(r, s, existing), value).Scan(&destinationEmail)
+			}
+			if destinationType == "email" && destinationEmail == "" {
+				destinationEmail = strings.TrimSpace(principal.Email)
+			}
+			actions = append(actions, sentryAlertAction{Type: destinationType, URL: destinationURL, Email: destinationEmail})
+		}
+		return actions, nil
 	}
-	if len(input.Actions) == 1 {
-		action := input.Actions[0]
-		id := strings.ToLower(stringValue(action["id"]))
-		switch {
-		case strings.Contains(id, "slack"):
-			destinationType = "slack"
-		case strings.Contains(id, "mail") || strings.Contains(id, "email"):
-			destinationType = "email"
-		case strings.Contains(id, "webhook") || strings.Contains(id, "notify_event"):
-			destinationType = "webhook"
-		default:
-			return "", "", "", errors.New("unsupported alert action")
-		}
-		if value := firstNonEmpty(stringValue(action["url"]), stringValue(action["webhook"])); value != "" {
-			destinationURL = value
-		}
-		if value := firstNonEmpty(stringValue(action["email"]), stringValue(action["targetIdentifier"])); strings.Contains(value, "@") {
-			destinationEmail = value
-		} else if destinationType == "email" && value != "" {
-			_ = s.store.DB.QueryRowContext(r.Context(), `SELECT u.email FROM users u JOIN organization_memberships om ON om.user_id = u.id WHERE om.organization_id = ? AND u.id = ?`, projectOrganizationID(r, s, existing), value).Scan(&destinationEmail)
+	if destinationType == "" && destinationURL == "" && destinationEmail == "" && existing != nil {
+		if len(existing.Actions) > 0 {
+			return existing.Actions, nil
 		}
 	}
 	if existing != nil {
@@ -386,7 +444,32 @@ func (s *Server) sentryAlertDestination(r *http.Request, principal *auth.Princip
 	if destinationType == "email" && destinationEmail == "" {
 		destinationEmail = strings.TrimSpace(principal.Email)
 	}
-	return destinationType, destinationURL, destinationEmail, nil
+	return []sentryAlertAction{{Type: destinationType, URL: destinationURL, Email: destinationEmail}}, nil
+}
+
+func sentryAlertMetadata(raw []byte, input sentryAlertInput) ([]byte, error) {
+	var normalized map[string]any
+	if len(raw) == 0 || json.Unmarshal(raw, &normalized) != nil {
+		normalized = make(map[string]any)
+	}
+	if len(input.Conditions) > 0 {
+		normalized["triggers"] = sentryTriggers(input.Conditions)
+	}
+	if match := strings.ToLower(strings.TrimSpace(input.ActionMatch)); match != "" {
+		normalized["action_match"] = match
+	} else if _, ok := normalized["action_match"]; !ok {
+		normalized["action_match"] = "all"
+	}
+	return json.Marshal(normalized)
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func projectOrganizationID(r *http.Request, s *Server, existing *sentryAlertRecord) string {
@@ -424,13 +507,59 @@ func scanSentryAlert(scanner sentryAlertScanner) (sentryAlertRecord, error) {
 }
 
 func (s *Server) loadSentryAlert(r *http.Request, projectID, ruleID string) (sentryAlertRecord, error) {
-	return scanSentryAlert(s.store.DB.QueryRowContext(r.Context(), sentryAlertSelect+` WHERE ar.project_id = ? AND ar.id = ?`, projectID, ruleID))
+	record, err := scanSentryAlert(s.store.DB.QueryRowContext(r.Context(), sentryAlertSelect+` WHERE ar.project_id = ? AND ar.id = ?`, projectID, ruleID))
+	if err != nil {
+		return record, err
+	}
+	record.Actions, err = s.loadSentryAlertActions(r, record.ID)
+	return record, err
+}
+
+func (s *Server) loadSentryAlertActions(r *http.Request, ruleID string) ([]sentryAlertAction, error) {
+	rows, err := s.store.DB.QueryContext(r.Context(), `SELECT destination_type, destination_url, destination_email FROM alert_rule_actions WHERE rule_id = ? ORDER BY position`, ruleID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	actions := make([]sentryAlertAction, 0, 2)
+	for rows.Next() {
+		var action sentryAlertAction
+		if err := rows.Scan(&action.Type, &action.URL, &action.Email); err != nil {
+			return nil, err
+		}
+		actions = append(actions, action)
+	}
+	return actions, rows.Err()
+}
+
+type sentryAlertExecer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func replaceSentryAlertActions(r *http.Request, execer sentryAlertExecer, ruleID string, actions []sentryAlertAction) error {
+	if _, err := execer.ExecContext(r.Context(), `DELETE FROM alert_rule_actions WHERE rule_id = ?`, ruleID); err != nil {
+		return err
+	}
+	for position, action := range actions {
+		if _, err := execer.ExecContext(r.Context(), `INSERT INTO alert_rule_actions(rule_id, position, destination_type, destination_url, destination_email) VALUES (?, ?, ?, ?, ?)`, ruleID, position, action.Type, action.URL, action.Email); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func sentryAlertResponse(record sentryAlertRecord) map[string]any {
 	var normalized map[string]any
 	_ = json.Unmarshal(record.Conditions, &normalized)
-	conditions := []map[string]any{{"id": sentryTriggerID(record.Trigger)}}
+	conditions := make([]map[string]any, 0, 2)
+	if triggers, ok := normalized["triggers"].([]any); ok {
+		for _, trigger := range triggers {
+			conditions = append(conditions, map[string]any{"id": sentryTriggerID(stringValue(trigger))})
+		}
+	}
+	if len(conditions) == 0 {
+		conditions = append(conditions, map[string]any{"id": sentryTriggerID(record.Trigger)})
+	}
 	filters := make([]map[string]any, 0, 2)
 	if environment := stringValue(normalized["environment"]); environment != "" {
 		filters = append(filters, map[string]any{"id": "sentry.rules.filters.tagged_event.TaggedEventFilter", "key": "environment", "match": "eq", "value": environment})
@@ -449,25 +578,36 @@ func sentryAlertResponse(record sentryAlertRecord) map[string]any {
 			}
 		}
 	}
-	action := map[string]any{"id": sentryActionID(record.DestinationType), "targetType": record.DestinationType}
-	switch record.DestinationType {
-	case "email":
-		action["targetIdentifier"], action["targetDisplay"] = record.DestinationEmail, record.DestinationEmail
-	default:
-		action["targetIdentifier"], action["targetDisplay"] = nil, destinationHost(record.DestinationURL)
+	actions := make([]map[string]any, 0, len(record.Actions))
+	for _, action := range record.Actions {
+		actions = append(actions, sentryAlertActionResponse(action.Type, action.URL, action.Email))
+	}
+	if len(actions) == 0 {
+		actions = append(actions, sentryAlertActionResponse(record.DestinationType, record.DestinationURL, record.DestinationEmail))
 	}
 	status := "active"
 	if !record.Enabled {
 		status = "disabled"
 	}
 	filterMatch := firstNonEmpty(stringValue(normalized["filter_match"]), "all")
+	actionMatch := firstNonEmpty(stringValue(normalized["action_match"]), "all")
 	return map[string]any{
 		"id": record.ID, "name": record.Name, "project": record.ProjectSlug, "projects": []string{record.ProjectSlug},
-		"actionMatch": "all", "filterMatch": filterMatch, "frequency": record.Frequency, "status": status,
-		"conditions": conditions, "filters": filters, "actions": []map[string]any{action},
+		"actionMatch": actionMatch, "filterMatch": filterMatch, "frequency": record.Frequency, "status": status,
+		"conditions": conditions, "filters": filters, "actions": actions,
 		"environment": nullableText(stringValue(normalized["environment"])), "dateCreated": normalizeAPITime(record.CreatedAt),
 		"owner": nil, "createdBy": nil, "dateModified": normalizeAPITime(record.CreatedAt),
 	}
+}
+
+func sentryAlertActionResponse(destinationType, destinationURL, destinationEmail string) map[string]any {
+	action := map[string]any{"id": sentryActionID(destinationType), "targetType": destinationType}
+	if destinationType == "email" {
+		action["targetIdentifier"], action["targetDisplay"] = destinationEmail, destinationEmail
+	} else {
+		action["targetIdentifier"], action["targetDisplay"] = nil, destinationHost(destinationURL)
+	}
+	return action
 }
 
 func sentryTriggerID(trigger string) string {

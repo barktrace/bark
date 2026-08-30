@@ -92,9 +92,9 @@ the response `Link` header. Its bounded search syntax includes free text,
 Project alert rules are available at
 `/api/0/projects/{organization}/{project}/rules/`. Barktrace accepts Sentry's
 condition, filter, and action objects and also its native flat trigger and
-destination fields. Rules support `filterMatch=all` and `filterMatch=any`,
-while `actionMatch` remains `all` with one delivery action. Webhook secrets are never returned by list or detail
-responses.
+destination fields. Rules support `all` or `any` matching for filters and
+trigger conditions, plus multiple email, HTTPS webhook, or Slack actions.
+Webhook secrets are never returned by list or detail responses.
 
 Project event-count series are available at
 `/api/0/projects/{organization}/{project}/stats/`. The `stat` parameter accepts

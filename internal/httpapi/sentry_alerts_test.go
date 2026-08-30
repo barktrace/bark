@@ -85,9 +85,9 @@ func TestSentryAlertRuleLifecycle(t *testing.T) {
 	if anyFilters.Code != http.StatusCreated || !containsAll(anyFilters.Body.String(), `"filterMatch":"any"`, `"key":"region"`, `"value":"eu"`) {
 		t.Fatalf("any filter match status=%d body=%s", anyFilters.Code, anyFilters.Body.String())
 	}
-	invalid := serveSentryAlert(t, server, owner, http.MethodPost, "/api/0/projects/org/app/rules/", `{"name":"Any triggers","actionMatch":"any","destination_type":"email","destination_email":"user@example.com"}`)
-	if invalid.Code != http.StatusBadRequest {
-		t.Fatalf("unsupported action match status=%d body=%s", invalid.Code, invalid.Body.String())
+	anyTriggers := serveSentryAlert(t, server, owner, http.MethodPost, "/api/0/projects/org/app/rules/", `{"name":"Any triggers","actionMatch":"any","conditions":[{"id":"sentry.rules.conditions.first_seen_event.FirstSeenEventCondition"},{"id":"sentry.rules.conditions.regression_event.RegressionEventCondition"}],"destination_type":"email","destination_email":"user@example.com"}`)
+	if anyTriggers.Code != http.StatusCreated || !containsAll(anyTriggers.Body.String(), `"actionMatch":"any"`, `FirstSeenEventCondition`, `RegressionEventCondition`) {
+		t.Fatalf("any action match status=%d body=%s", anyTriggers.Code, anyTriggers.Body.String())
 	}
 
 	deleted := serveSentryAlert(t, server, owner, http.MethodDelete, "/api/0/projects/org/app/rules/"+ruleID+"/", "")
@@ -102,7 +102,7 @@ func TestSentryAlertRuleLifecycle(t *testing.T) {
 	}
 }
 
-func TestSentryAlertRuleSupportsWebhookAndRejectsMultipleActions(t *testing.T) {
+func TestSentryAlertRuleSupportsWebhookAndMultipleActions(t *testing.T) {
 	server, owner := managementFixture(t)
 	webhook := serveSentryAlert(t, server, owner, http.MethodPost, "/api/0/projects/org/app/rules/", `{
 		"name":"Regression webhook",
@@ -119,9 +119,23 @@ func TestSentryAlertRuleSupportsWebhookAndRejectsMultipleActions(t *testing.T) {
 			{"id":"sentry.rules.actions.notify_event.NotifyEventAction","url":"https://hooks.example.test/sentry"}
 		]
 	}`)
-	if multiple.Code != http.StatusBadRequest {
+	if multiple.Code != http.StatusCreated || !containsAll(multiple.Body.String(), `"targetIdentifier":"user@example.com"`, `"targetDisplay":"hooks.example.test"`) {
 		t.Fatalf("multiple actions status=%d body=%s", multiple.Code, multiple.Body.String())
 	}
+	var actionCount int
+	if err := server.store.DB.QueryRow(`SELECT COUNT(*) FROM alert_rule_actions WHERE rule_id = ?`, jsonField(t, multiple.Body.Bytes(), "id")).Scan(&actionCount); err != nil || actionCount != 2 {
+		t.Fatalf("stored multiple actions=%d err=%v", actionCount, err)
+	}
+}
+
+func jsonField(t *testing.T, raw []byte, key string) string {
+	t.Helper()
+	var value map[string]any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		t.Fatal(err)
+	}
+	result, _ := value[key].(string)
+	return result
 }
 
 func serveSentryAlert(t *testing.T, server *Server, principal *auth.Principal, method, target, body string) *httptest.ResponseRecorder {

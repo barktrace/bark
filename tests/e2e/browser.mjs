@@ -280,18 +280,24 @@ try {
   const sentryRulesPath = `/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/rules/`;
   const createSentryRule = await page.request.post(sentryRulesPath, { data: {
     name: 'E2E first-seen email',
-    actionMatch: 'all',
+    actionMatch: 'any',
     filterMatch: 'any',
     frequency: 15,
-    conditions: [{ id: 'sentry.rules.conditions.first_seen_event.FirstSeenEventCondition' }],
+    conditions: [
+      { id: 'sentry.rules.conditions.first_seen_event.FirstSeenEventCondition' },
+      { id: 'sentry.rules.conditions.regression_event.RegressionEventCondition' },
+    ],
     filters: [
       { id: 'sentry.rules.filters.tagged_event.TaggedEventFilter', key: 'environment', match: 'eq', value: 'e2e' },
       { id: 'sentry.rules.filters.tagged_event.TaggedEventFilter', key: 'region', match: 'starts_with', value: 'eu-' },
     ],
-    actions: [{ id: 'sentry.mail.actions.NotifyEmailAction', targetIdentifier: 'owner' }],
+    actions: [
+      { id: 'sentry.mail.actions.NotifyEmailAction', targetIdentifier: 'owner' },
+      { id: 'sentry.rules.actions.notify_event.NotifyEventAction', url: 'https://hooks.example.test/e2e' },
+    ],
   } });
   const sentryRule = await createSentryRule.json();
-  if (!createSentryRule.ok() || !sentryRule.id || sentryRule.filterMatch !== 'any' || !sentryRule.filters?.some((filter) => filter.key === 'region') || sentryRule.actions?.[0]?.targetIdentifier !== accountEmail) throw new Error(`Sentry alert-rule creation failed: ${JSON.stringify(sentryRule)}`);
+  if (!createSentryRule.ok() || !sentryRule.id || sentryRule.actionMatch !== 'any' || sentryRule.filterMatch !== 'any' || sentryRule.conditions?.length !== 2 || !sentryRule.filters?.some((filter) => filter.key === 'region') || sentryRule.actions?.[0]?.targetIdentifier !== accountEmail || sentryRule.actions?.[1]?.targetDisplay !== 'hooks.example.test') throw new Error(`Sentry alert-rule creation failed: ${JSON.stringify(sentryRule)}`);
   const listSentryRules = await page.request.get(sentryRulesPath);
   const sentryRules = await listSentryRules.json();
   if (!listSentryRules.ok() || !sentryRules.some((rule) => rule.id === sentryRule.id)) throw new Error(`Sentry alert-rule listing failed: ${JSON.stringify(sentryRules)}`);

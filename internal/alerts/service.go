@@ -66,18 +66,19 @@ func Queue(ctx context.Context, db *sql.DB, projectID, eventType string, payload
 	}
 	var values map[string]any
 	_ = json.Unmarshal(encoded, &values)
-	rows, err := db.QueryContext(ctx, `SELECT id, conditions, frequency_minutes FROM alert_rules WHERE project_id = ? AND trigger = ? AND enabled = 1`, projectID, eventType)
+	rows, err := db.QueryContext(ctx, `SELECT id, trigger, conditions, frequency_minutes, destination_type, destination_url, destination_email FROM alert_rules WHERE project_id = ? AND enabled = 1`, projectID)
 	if err != nil {
 		return err
 	}
 	type rule struct {
-		id, conditions string
-		frequency      int
+		id, trigger, conditions                           string
+		frequency                                         int
+		destinationType, destinationURL, destinationEmail string
 	}
 	rules := make([]rule, 0)
 	for rows.Next() {
 		var item rule
-		if err := rows.Scan(&item.id, &item.conditions, &item.frequency); err == nil && matchesConditions(item.conditions, values) {
+		if err := rows.Scan(&item.id, &item.trigger, &item.conditions, &item.frequency, &item.destinationType, &item.destinationURL, &item.destinationEmail); err == nil && matchesTrigger(item.trigger, item.conditions, eventType) && matchesConditions(item.conditions, values) {
 			rules = append(rules, item)
 		}
 	}
@@ -93,8 +94,17 @@ func Queue(ctx context.Context, db *sql.DB, projectID, eventType string, payload
 				continue
 			}
 		}
-		if _, err := db.ExecContext(ctx, `INSERT INTO alert_deliveries(id, rule_id, event_type, payload, status) VALUES (?, ?, ?, ?, 'pending')`, uuid.NewString(), item.id, eventType, encoded); err != nil {
+		actions, err := loadAlertActions(ctx, db, item.id)
+		if err != nil {
 			return err
+		}
+		if len(actions) == 0 {
+			actions = []alertAction{{Type: item.destinationType, URL: item.destinationURL, Email: item.destinationEmail}}
+		}
+		for _, action := range actions {
+			if _, err := db.ExecContext(ctx, `INSERT INTO alert_deliveries(id, rule_id, event_type, payload, status, destination_type, destination_url, destination_email) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)`, uuid.NewString(), item.id, eventType, encoded, action.Type, action.URL, action.Email); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -130,7 +140,7 @@ func NormalizeConditions(raw json.RawMessage) ([]byte, bool) {
 	if json.Unmarshal(raw, &conditions) != nil {
 		return nil, false
 	}
-	allowed := map[string]bool{"environment": true, "levels": true, "metric_name": true, "min_value": true, "max_value": true, "filter_match": true, "tags": true}
+	allowed := map[string]bool{"environment": true, "levels": true, "metric_name": true, "min_value": true, "max_value": true, "filter_match": true, "tags": true, "action_match": true, "triggers": true}
 	for key := range conditions {
 		if !allowed[key] {
 			return nil, false
@@ -142,7 +152,9 @@ func NormalizeConditions(raw json.RawMessage) ([]byte, bool) {
 
 func (s *Service) deliverPending(ctx context.Context) {
 	rows, err := s.store.DB.QueryContext(ctx, `
-		SELECT d.id, d.rule_id, r.destination_type, r.destination_url, r.destination_email, d.event_type, d.payload, d.attempts
+		SELECT d.id, d.rule_id, COALESCE(NULLIF(d.destination_type, ''), r.destination_type),
+		       COALESCE(NULLIF(d.destination_url, ''), r.destination_url),
+		       COALESCE(NULLIF(d.destination_email, ''), r.destination_email), d.event_type, d.payload, d.attempts
 		FROM alert_deliveries d JOIN alert_rules r ON r.id = d.rule_id
 		WHERE d.status = 'pending' ORDER BY d.created_at LIMIT 10
 	`)
@@ -169,6 +181,54 @@ func (s *Service) deliverPending(ctx context.Context) {
 		}
 		_, _ = s.store.DB.ExecContext(ctx, `UPDATE alert_deliveries SET attempts = attempts + 1, status = 'sent', last_error = '', delivered_at = CURRENT_TIMESTAMP WHERE id = ?`, item.id)
 	}
+}
+
+type alertAction struct {
+	Type  string `json:"type"`
+	URL   string `json:"url,omitempty"`
+	Email string `json:"email,omitempty"`
+}
+
+func loadAlertActions(ctx context.Context, db *sql.DB, ruleID string) ([]alertAction, error) {
+	rows, err := db.QueryContext(ctx, `SELECT destination_type, destination_url, destination_email FROM alert_rule_actions WHERE rule_id = ? ORDER BY position`, ruleID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	actions := make([]alertAction, 0, 2)
+	for rows.Next() {
+		var action alertAction
+		if err := rows.Scan(&action.Type, &action.URL, &action.Email); err != nil {
+			return nil, err
+		}
+		actions = append(actions, action)
+	}
+	return actions, rows.Err()
+}
+
+func matchesTrigger(primary, raw, eventType string) bool {
+	var conditions struct {
+		ActionMatch string   `json:"action_match"`
+		Triggers    []string `json:"triggers"`
+	}
+	_ = json.Unmarshal([]byte(raw), &conditions)
+	if len(conditions.Triggers) == 0 {
+		return primary == eventType
+	}
+	if conditions.ActionMatch == "any" {
+		for _, trigger := range conditions.Triggers {
+			if trigger == eventType {
+				return true
+			}
+		}
+		return false
+	}
+	for _, trigger := range conditions.Triggers {
+		if trigger != eventType {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Service) deliver(ctx context.Context, item delivery) error {

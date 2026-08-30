@@ -21,8 +21,8 @@ func TestOpenAppliesMigrations(t *testing.T) {
 	if err := st.DB.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&migrations); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if migrations != 18 {
-		t.Fatalf("migration count = %d, want 18", migrations)
+	if migrations != 19 {
+		t.Fatalf("migration count = %d, want 19", migrations)
 	}
 
 	var journalMode string
@@ -124,8 +124,8 @@ func TestConcurrentOpenSerializesMigrations(t *testing.T) {
 		var migrations int
 		if err := st.DB.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&migrations); err != nil {
 			t.Errorf("count migrations: %v", err)
-		} else if migrations != 18 {
-			t.Errorf("migration count = %d, want 18", migrations)
+		} else if migrations != 19 {
+			t.Errorf("migration count = %d, want 19", migrations)
 		}
 		_ = st.Close()
 	}
