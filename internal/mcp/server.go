@@ -22,7 +22,7 @@ import (
 
 const (
 	protocolVersion = "2025-11-25"
-	serverVersion   = "0.35.0"
+	serverVersion   = "0.36.0"
 )
 
 var supportedProtocolVersions = map[string]bool{
@@ -317,7 +317,7 @@ func (s *Service) callTool(r *http.Request, credential *credential, raw json.Raw
 		"create_alert_rule", "update_alert_rule", "delete_alert_rule", "create_uptime_monitor",
 		"delete_uptime_monitor", "create_cron_monitor", "delete_cron_monitor":
 		return s.callAdministrationTool(ctx, credential, call.Name, call.Arguments)
-	case "list_transactions", "list_logs", "list_uptime_monitors", "list_uptime_checks",
+	case "list_environments", "list_transactions", "list_logs", "list_uptime_monitors", "list_uptime_checks",
 		"list_cron_monitors", "list_cron_checkins", "list_feedback", "list_replays", "list_replay_clicks", "list_replay_selectors",
 		"analyze_replay", "list_profiles", "analyze_profile", "list_metrics", "list_alert_rules", "list_alert_deliveries",
 		"list_artifacts", "list_attachments", "list_deploys", "list_commits",
@@ -424,6 +424,10 @@ func tools() []tool {
 		{Name: "list_organizations", Description: "List organizations available on this Barktrace instance.", InputSchema: objectSchema(nil), Annotations: readOnly},
 		{Name: "list_projects", Description: "List projects, optionally limited to one organization slug. Includes each project's Sentry DSN.", InputSchema: objectSchema(map[string]any{"organization_slug": stringProperty("Optional organization slug")}), Annotations: readOnly},
 		{Name: "get_project_summary", Description: "Get issue, event, and release counts for a project.", InputSchema: objectSchema(map[string]any{"project_id": stringProperty("Project UUID")}, "project_id"), Annotations: readOnly},
+		{Name: "list_environments", Description: "List environments discovered across project telemetry and their visibility state.", InputSchema: objectSchema(map[string]any{
+			"project_id": stringProperty("Project UUID"),
+			"visibility": map[string]any{"type": "string", "enum": []string{"visible", "hidden", "all"}, "default": "visible"},
+		}, "project_id"), Annotations: readOnly},
 		{Name: "list_issues", Description: "List grouped issues for a project, optionally filtered by status or title.", InputSchema: objectSchema(map[string]any{
 			"project_id": stringProperty("Project UUID"),
 			"status":     map[string]any{"type": "string", "enum": []string{"all", "unresolved", "resolved", "ignored"}, "default": "all"},

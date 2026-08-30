@@ -9,6 +9,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/barktrace/bark/internal/environments"
 	telemetryanalysis "github.com/barktrace/bark/internal/telemetry"
 )
 
@@ -48,6 +49,7 @@ func (s *Service) callObservabilityTool(ctx context.Context, credential *credent
 		Release     string `json:"release"`
 		UserID      string `json:"user_id"`
 		HasError    bool   `json:"has_error"`
+		Visibility  string `json:"visibility"`
 		Limit       int    `json:"limit"`
 	}
 	if err := decodeArguments(raw, &args); err != nil || strings.TrimSpace(args.ProjectID) == "" {
@@ -58,6 +60,8 @@ func (s *Service) callObservabilityTool(ctx context.Context, credential *credent
 	}
 	limit := boundedLimit(args.Limit)
 	switch name {
+	case "list_environments":
+		return s.listEnvironments(ctx, args.ProjectID, args.Visibility)
 	case "list_transactions":
 		return s.listTransactions(ctx, args.ProjectID, limit)
 	case "list_logs":
@@ -122,6 +126,28 @@ func (s *Service) callObservabilityTool(ctx context.Context, credential *credent
 	default:
 		return nil, fmt.Errorf("unknown tool %q", name)
 	}
+}
+
+func (s *Service) listEnvironments(ctx context.Context, projectID, visibility string) (any, error) {
+	visibility = strings.ToLower(strings.TrimSpace(visibility))
+	if visibility == "" {
+		visibility = "visible"
+	}
+	if visibility != "visible" && visibility != "hidden" && visibility != "all" {
+		return nil, errors.New("visibility must be visible, hidden, or all")
+	}
+	observed, err := environments.List(ctx, s.store.DB, projectID)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]map[string]any, 0, len(observed))
+	for _, environment := range observed {
+		if visibility == "visible" && environment.IsHidden || visibility == "hidden" && !environment.IsHidden {
+			continue
+		}
+		items = append(items, map[string]any{"name": environment.Name, "is_hidden": environment.IsHidden})
+	}
+	return items, nil
 }
 
 func (s *Service) listTransactions(ctx context.Context, projectID string, limit int) (any, error) {

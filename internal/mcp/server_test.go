@@ -60,8 +60,34 @@ func TestInitializeAndListTools(t *testing.T) {
 	listed := call(t, service, `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
 	toolsResult := listed["result"].(map[string]any)
 	available := toolsResult["tools"].([]any)
-	if len(available) != 61 {
-		t.Fatalf("tool count = %d, want 61", len(available))
+	if len(available) != 62 {
+		t.Fatalf("tool count = %d, want 62", len(available))
+	}
+}
+
+func TestListEnvironmentsTool(t *testing.T) {
+	st := testStore(t)
+	seedMCPData(t, st)
+	if _, err := st.DB.Exec(`
+		INSERT INTO logs(id, project_id, timestamp, message, environment)
+		VALUES ('environment-log', 'project', '2026-01-02T00:00:00Z', 'preview', 'preview');
+		INSERT INTO metric_points(project_id, name, metric_type, value, tags, timestamp)
+		VALUES ('project', 'queue.depth', 'gauge', 2, '{"sentry.environment":"metrics"}', '2026-01-02T00:00:00Z');
+		INSERT INTO project_environment_settings(project_id, name, is_hidden)
+		VALUES ('project', 'preview', TRUE)
+	`); err != nil {
+		t.Fatal(err)
+	}
+	service := New(st, testToken, "https://errors.example")
+	visible := call(t, service, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_environments","arguments":{"project_id":"project"}}}`)
+	visibleItems := visible["result"].(map[string]any)["structuredContent"].([]any)
+	if len(visibleItems) != 2 || visibleItems[0].(map[string]any)["name"] != "metrics" || visibleItems[1].(map[string]any)["name"] != "production" {
+		t.Fatalf("visible environments = %#v", visibleItems)
+	}
+	hidden := call(t, service, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_environments","arguments":{"project_id":"project","visibility":"hidden"}}}`)
+	hiddenItems := hidden["result"].(map[string]any)["structuredContent"].([]any)
+	if len(hiddenItems) != 1 || hiddenItems[0].(map[string]any)["name"] != "preview" || hiddenItems[0].(map[string]any)["is_hidden"] != true {
+		t.Fatalf("hidden environments = %#v", hiddenItems)
 	}
 }
 

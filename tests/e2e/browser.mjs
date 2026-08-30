@@ -208,6 +208,23 @@ try {
   const projectKeys = await page.request.get(`/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/keys/`);
   const keys = await projectKeys.json();
   if (!projectKeys.ok() || keys[0]?.public !== parsed.username) throw new Error('Sentry project key endpoint failed');
+  const organizationEnvironmentsResponse = await page.request.get('/api/0/organizations/e2e/environments/');
+  const organizationEnvironments = await organizationEnvironmentsResponse.json();
+  if (!organizationEnvironmentsResponse.ok() || !organizationEnvironments.some((item) => item.name === 'e2e')) throw new Error(`Sentry organization environment discovery failed: ${JSON.stringify(organizationEnvironments)}`);
+  const projectEnvironmentsPath = `/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/environments/`;
+  const projectEnvironmentsResponse = await page.request.get(projectEnvironmentsPath);
+  const projectEnvironments = await projectEnvironmentsResponse.json();
+  if (!projectEnvironmentsResponse.ok() || !projectEnvironments.some((item) => item.name === 'e2e' && item.isHidden === false)) throw new Error(`Sentry project environment discovery failed: ${JSON.stringify(projectEnvironments)}`);
+  const hideEnvironmentResponse = await page.request.put(projectEnvironmentsPath, { data: { environmentNames: ['e2e', 'e2e'], isHidden: true } });
+  const hiddenEnvironments = await hideEnvironmentResponse.json();
+  if (!hideEnvironmentResponse.ok() || hiddenEnvironments.length !== 1 || hiddenEnvironments[0]?.name !== 'e2e' || hiddenEnvironments[0]?.isHidden !== true) throw new Error(`Sentry environment bulk hide failed: ${JSON.stringify(hiddenEnvironments)}`);
+  const visibleAfterHide = await (await page.request.get(projectEnvironmentsPath)).json();
+  if (visibleAfterHide.some((item) => item.name === 'e2e')) throw new Error(`hidden Sentry environment remained visible: ${JSON.stringify(visibleAfterHide)}`);
+  const hiddenOnlyResponse = await page.request.get(`${projectEnvironmentsPath}?visibility=hidden`);
+  const hiddenOnly = await hiddenOnlyResponse.json();
+  if (!hiddenOnlyResponse.ok() || !hiddenOnly.some((item) => item.name === 'e2e' && item.isHidden === true)) throw new Error(`Sentry hidden environment filter failed: ${JSON.stringify(hiddenOnly)}`);
+  const restoreEnvironmentResponse = await page.request.put(`${projectEnvironmentsPath}${encodeURIComponent('e2e')}/`, { data: { isHidden: false } });
+  if (!restoreEnvironmentResponse.ok() || (await restoreEnvironmentResponse.json()).isHidden !== false) throw new Error('Sentry environment restore failed');
   const issueList = await page.request.get(`/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/issues/`);
   const sentryIssues = await issueList.json();
   if (!issueList.ok() || !sentryIssues[0]?.id) throw new Error('Sentry issue discovery failed');
@@ -334,6 +351,8 @@ try {
   if (!mcpMembers.some((member) => member.email === 'e2e@barktrace.test')) throw new Error('MCP organization member listing failed');
   const mcpPermissions = await mcpCall(2, 'list_project_permissions', { project_id: nativeProject.id });
   if (!mcpPermissions.some((permission) => permission.email === 'e2e@barktrace.test' && permission.effective_role === 'admin')) throw new Error('MCP project permission listing failed');
+  const mcpEnvironments = await mcpCall(21, 'list_environments', { project_id: nativeProject.id, visibility: 'all' });
+  if (!mcpEnvironments.some((environment) => environment.name === 'e2e' && environment.is_hidden === false)) throw new Error(`MCP environment listing failed: ${JSON.stringify(mcpEnvironments)}`);
   const mcpIssue = await mcpCall(3, 'update_issue', { issue_id: nativeIssues[0].id, priority: 'critical', bookmarked: true });
   if (mcpIssue.priority !== 'critical' || !mcpIssue.bookmarked) throw new Error('MCP advanced issue update failed');
   const mcpReplays = await mcpCall(18, 'list_replays', { project_id: nativeProject.id, query: 'checkout', environment: 'e2e', release: 'checkout@1.0.0', issue_id: nativeIssues[0].id, has_error: true });
@@ -417,7 +436,7 @@ try {
   if (me.status() !== 401) throw new Error(`logout left session active: /auth/me returned ${me.status()}`);
 
   if (browserErrors.length) throw new Error(browserErrors.join('\n'));
-  console.log('browser E2E passed: OIDC, ingestion, source-map symbolication, Sentry Replay issues/interactions/deletion, Discover, dashboards, teams, profiles, telemetry, MCP, and logout');
+  console.log('browser E2E passed: OIDC, ingestion, source-map symbolication, Sentry environments, Replay issues/interactions/deletion, Discover, dashboards, teams, profiles, telemetry, MCP, and logout');
 } finally {
   await browser.close();
 }
