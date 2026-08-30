@@ -60,8 +60,8 @@ func TestInitializeAndListTools(t *testing.T) {
 	listed := call(t, service, `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
 	toolsResult := listed["result"].(map[string]any)
 	available := toolsResult["tools"].([]any)
-	if len(available) != 63 {
-		t.Fatalf("tool count = %d, want 63", len(available))
+	if len(available) != 64 {
+		t.Fatalf("tool count = %d, want 64", len(available))
 	}
 }
 
@@ -113,6 +113,29 @@ func TestListEventTagsTool(t *testing.T) {
 	valueItems := values["result"].(map[string]any)["structuredContent"].([]any)
 	if len(valueItems) != 1 || valueItems[0].(map[string]any)["value"] != "eu-west-1" || valueItems[0].(map[string]any)["count"] != float64(1) {
 		t.Fatalf("tag values = %#v", valueItems)
+	}
+}
+
+func TestQueryReleaseHealthTool(t *testing.T) {
+	st := testStore(t)
+	seedMCPData(t, st)
+	if _, err := st.DB.Exec(`
+		INSERT INTO project_sessions(id, session_id, project_id, release_id, environment, distinct_id, status, started_at, duration, errors) VALUES
+			('health-one', 'health-one', 'project', 'release', 'production', 'user-1', 'ok', '2026-08-30T08:15:00Z', 10, 0),
+			('health-two', 'health-two', 'project', 'release', 'production', 'user-2', 'crashed', '2026-08-30T09:15:00Z', 20, 1)
+	`); err != nil {
+		t.Fatal(err)
+	}
+	service := New(st, testToken, "https://errors.example")
+	response := call(t, service, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"query_release_health","arguments":{"project_id":"project","start":"2026-08-30T08:00:00Z","end":"2026-08-30T10:00:00Z","interval":"1h","fields":["sum(session)","crash_free_rate(session)"],"group_by":["release"]}}}`)
+	result := response["result"].(map[string]any)["structuredContent"].(map[string]any)
+	groups := result["groups"].([]any)
+	if len(groups) != 1 {
+		t.Fatalf("release-health groups = %#v", groups)
+	}
+	totals := groups[0].(map[string]any)["totals"].(map[string]any)
+	if totals["sum(session)"] != float64(2) || totals["crash_free_rate(session)"] != float64(50) {
+		t.Fatalf("release-health totals = %#v", totals)
 	}
 }
 

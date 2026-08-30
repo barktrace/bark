@@ -186,6 +186,29 @@ try {
       thread_metadata: { main: { name: 'Main thread' } },
     },
   }));
+  const sessionTimestamp = new Date().toISOString();
+  await ingestEnvelope({}, 'session', JSON.stringify({
+    sid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    did: 'e2e-user-healthy',
+    init: true,
+    started: sessionTimestamp,
+    timestamp: sessionTimestamp,
+    status: 'ok',
+    duration: 12,
+    errors: 0,
+    attrs: { release: 'checkout@1.0.0', environment: 'e2e' },
+  }));
+  await ingestEnvelope({}, 'session', JSON.stringify({
+    sid: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    did: 'e2e-user-crashed',
+    init: true,
+    started: sessionTimestamp,
+    timestamp: sessionTimestamp,
+    status: 'crashed',
+    duration: 18,
+    errors: 1,
+    attrs: { release: 'checkout@1.0.0', environment: 'e2e' },
+  }));
 
   for (let attempt = 0; attempt < 20; attempt += 1) {
     await page.goto('/ui/issues/');
@@ -226,6 +249,15 @@ try {
   if (!hiddenOnlyResponse.ok() || !hiddenOnly.some((item) => item.name === 'e2e' && item.isHidden === true)) throw new Error(`Sentry hidden environment filter failed: ${JSON.stringify(hiddenOnly)}`);
   const restoreEnvironmentResponse = await page.request.put(`${projectEnvironmentsPath}${encodeURIComponent('e2e')}/`, { data: { isHidden: false } });
   if (!restoreEnvironmentResponse.ok() || (await restoreEnvironmentResponse.json()).isHidden !== false) throw new Error('Sentry environment restore failed');
+  const sessionsQuery = new URLSearchParams({ statsPeriod: '24h', interval: '1h', project: sentryProject.id, environment: 'e2e' });
+  sessionsQuery.append('field', 'sum(session)');
+  sessionsQuery.append('field', 'count_unique(user)');
+  sessionsQuery.append('field', 'crash_free_rate(session)');
+  sessionsQuery.append('groupBy', 'release');
+  const sessionsResponse = await page.request.get(`/api/0/organizations/e2e/sessions/?${sessionsQuery}`);
+  const sessions = await sessionsResponse.json();
+  const releaseHealth = sessions.groups?.find((group) => group.by?.release === 'checkout@1.0.0');
+  if (!sessionsResponse.ok() || releaseHealth?.totals?.['sum(session)'] !== 2 || releaseHealth?.totals?.['count_unique(user)'] !== 2 || releaseHealth?.totals?.['crash_free_rate(session)'] !== 50) throw new Error(`Sentry release health failed: ${JSON.stringify(sessions)}`);
   const issueList = await page.request.get(`/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/issues/`);
   const sentryIssues = await issueList.json();
   if (!issueList.ok() || !sentryIssues[0]?.id) throw new Error('Sentry issue discovery failed');
@@ -364,6 +396,9 @@ try {
   if (!mcpEnvironments.some((environment) => environment.name === 'e2e' && environment.is_hidden === false)) throw new Error(`MCP environment listing failed: ${JSON.stringify(mcpEnvironments)}`);
   const mcpTags = await mcpCall(22, 'list_event_tags', { project_id: nativeProject.id, tag_key: 'region' });
   if (mcpTags[0]?.value !== 'eu-west-1' || mcpTags[0]?.count !== 1) throw new Error(`MCP event tag values failed: ${JSON.stringify(mcpTags)}`);
+  const mcpReleaseHealth = await mcpCall(23, 'query_release_health', { project_id: nativeProject.id, environment: 'e2e', stats_period: '24h', interval: '1h', fields: ['sum(session)', 'crash_free_rate(session)'], group_by: ['release'] });
+  const mcpReleaseGroup = mcpReleaseHealth.groups?.find((group) => group.by?.release === 'checkout@1.0.0');
+  if (mcpReleaseGroup?.totals?.['sum(session)'] !== 2 || mcpReleaseGroup?.totals?.['crash_free_rate(session)'] !== 50) throw new Error(`MCP release health failed: ${JSON.stringify(mcpReleaseHealth)}`);
   const mcpIssue = await mcpCall(3, 'update_issue', { issue_id: nativeIssues[0].id, priority: 'critical', bookmarked: true });
   if (mcpIssue.priority !== 'critical' || !mcpIssue.bookmarked) throw new Error('MCP advanced issue update failed');
   const mcpReplays = await mcpCall(18, 'list_replays', { project_id: nativeProject.id, query: 'checkout', environment: 'e2e', release: 'checkout@1.0.0', issue_id: nativeIssues[0].id, has_error: true });
@@ -447,7 +482,7 @@ try {
   if (me.status() !== 401) throw new Error(`logout left session active: /auth/me returned ${me.status()}`);
 
   if (browserErrors.length) throw new Error(browserErrors.join('\n'));
-  console.log('browser E2E passed: OIDC, ingestion, source-map symbolication, Sentry environments/tags, Replay issues/interactions/deletion, Discover, dashboards, teams, profiles, telemetry, MCP, and logout');
+  console.log('browser E2E passed: OIDC, ingestion, source-map symbolication, Sentry environments/tags/release health, Replay issues/interactions/deletion, Discover, dashboards, teams, profiles, telemetry, MCP, and logout');
 } finally {
   await browser.close();
 }

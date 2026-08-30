@@ -25,6 +25,27 @@ rows show session count, distinct users, and crash-free session and user
 percentages. Configure `release` in the SDK and enable its session tracking to
 populate these values.
 
+The Sentry-compatible organization endpoint returns totals and aligned time
+series, with optional project, release, and environment filters:
+
+```sh
+curl --get 'https://errors.example.com/api/0/organizations/acme/sessions/' \
+  -H 'Cookie: barktrace_session=...' \
+  --data-urlencode 'statsPeriod=24h' \
+  --data-urlencode 'interval=1h' \
+  --data-urlencode 'field=sum(session)' \
+  --data-urlencode 'field=count_unique(user)' \
+  --data-urlencode 'field=crash_free_rate(session)' \
+  --data-urlencode 'groupBy=release' \
+  --data-urlencode 'groupBy=environment'
+```
+
+Supported fields are `sum(session)`, `count_unique(user)`,
+`avg(session.duration)`, `crash_free_rate(session)`, and
+`crash_free_rate(user)`. Results can group by `project`, `release`,
+`environment`, and `session.status`; explicit RFC3339 `start`/`end` ranges are
+also accepted. Queries are limited to 90 days and 1,000 time buckets.
+
 ## Structured logs
 
 Sentry envelope items with type `log` or `logs` are accepted. Barktrace also

@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/barktrace/bark/internal/environments"
 	"github.com/barktrace/bark/internal/eventtags"
+	"github.com/barktrace/bark/internal/releasehealth"
 	telemetryanalysis "github.com/barktrace/bark/internal/telemetry"
 )
 
@@ -37,22 +39,28 @@ func (s *Service) callObservabilityTool(ctx context.Context, credential *credent
 		return s.storageSummary(ctx, credential)
 	}
 	var args struct {
-		ProjectID   string `json:"project_id"`
-		MonitorID   string `json:"monitor_id"`
-		Level       string `json:"level"`
-		Query       string `json:"query"`
-		Name        string `json:"name"`
-		Status      string `json:"status"`
-		IssueID     string `json:"issue_id"`
-		ReplayID    string `json:"replay_id"`
-		ProfileID   string `json:"profile_id"`
-		Environment string `json:"environment"`
-		Release     string `json:"release"`
-		UserID      string `json:"user_id"`
-		HasError    bool   `json:"has_error"`
-		Visibility  string `json:"visibility"`
-		TagKey      string `json:"tag_key"`
-		Limit       int    `json:"limit"`
+		ProjectID   string   `json:"project_id"`
+		MonitorID   string   `json:"monitor_id"`
+		Level       string   `json:"level"`
+		Query       string   `json:"query"`
+		Name        string   `json:"name"`
+		Status      string   `json:"status"`
+		IssueID     string   `json:"issue_id"`
+		ReplayID    string   `json:"replay_id"`
+		ProfileID   string   `json:"profile_id"`
+		Environment string   `json:"environment"`
+		Release     string   `json:"release"`
+		UserID      string   `json:"user_id"`
+		HasError    bool     `json:"has_error"`
+		Visibility  string   `json:"visibility"`
+		TagKey      string   `json:"tag_key"`
+		StatsPeriod string   `json:"stats_period"`
+		Start       string   `json:"start"`
+		End         string   `json:"end"`
+		Interval    string   `json:"interval"`
+		Fields      []string `json:"fields"`
+		GroupBy     []string `json:"group_by"`
+		Limit       int      `json:"limit"`
 	}
 	if err := decodeArguments(raw, &args); err != nil || strings.TrimSpace(args.ProjectID) == "" {
 		return nil, errors.New("project_id is required")
@@ -66,6 +74,8 @@ func (s *Service) callObservabilityTool(ctx context.Context, credential *credent
 		return s.listEnvironments(ctx, args.ProjectID, args.Visibility)
 	case "list_event_tags":
 		return s.listEventTags(ctx, args.ProjectID, args.IssueID, args.TagKey, limit)
+	case "query_release_health":
+		return s.queryReleaseHealth(ctx, args.ProjectID, args.Environment, args.Release, args.Fields, args.GroupBy, args.StatsPeriod, args.Start, args.End, args.Interval)
 	case "list_transactions":
 		return s.listTransactions(ctx, args.ProjectID, limit)
 	case "list_logs":
@@ -190,6 +200,25 @@ func (s *Service) listEventTags(ctx context.Context, projectID, issueID, tagKey 
 		break
 	}
 	return items, nil
+}
+
+func (s *Service) queryReleaseHealth(ctx context.Context, projectID, environment, release string, fields, groupBy []string, statsPeriod, startRaw, endRaw, intervalRaw string) (any, error) {
+	start, end, err := releasehealth.ParseRange(time.Now().UTC(), startRaw, endRaw, statsPeriod)
+	if err != nil {
+		return nil, err
+	}
+	interval, err := releasehealth.ParseInterval(intervalRaw, end.Sub(start))
+	if err != nil {
+		return nil, err
+	}
+	request := releasehealth.Request{ProjectIDs: []string{projectID}, Fields: fields, GroupBy: groupBy, Start: start, End: end, Interval: interval}
+	if environment = strings.TrimSpace(environment); environment != "" {
+		request.Environments = []string{environment}
+	}
+	if release = strings.TrimSpace(release); release != "" {
+		request.Releases = []string{release}
+	}
+	return releasehealth.Query(ctx, s.store.DB, request)
 }
 
 func (s *Service) listTransactions(ctx context.Context, projectID string, limit int) (any, error) {

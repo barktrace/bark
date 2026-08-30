@@ -22,7 +22,7 @@ import (
 
 const (
 	protocolVersion = "2025-11-25"
-	serverVersion   = "0.37.0"
+	serverVersion   = "0.38.0"
 )
 
 var supportedProtocolVersions = map[string]bool{
@@ -317,7 +317,7 @@ func (s *Service) callTool(r *http.Request, credential *credential, raw json.Raw
 		"create_alert_rule", "update_alert_rule", "delete_alert_rule", "create_uptime_monitor",
 		"delete_uptime_monitor", "create_cron_monitor", "delete_cron_monitor":
 		return s.callAdministrationTool(ctx, credential, call.Name, call.Arguments)
-	case "list_environments", "list_event_tags", "list_transactions", "list_logs", "list_uptime_monitors", "list_uptime_checks",
+	case "list_environments", "list_event_tags", "query_release_health", "list_transactions", "list_logs", "list_uptime_monitors", "list_uptime_checks",
 		"list_cron_monitors", "list_cron_checkins", "list_feedback", "list_replays", "list_replay_clicks", "list_replay_selectors",
 		"analyze_replay", "list_profiles", "analyze_profile", "list_metrics", "list_alert_rules", "list_alert_deliveries",
 		"list_artifacts", "list_attachments", "list_deploys", "list_commits",
@@ -431,6 +431,12 @@ func tools() []tool {
 		{Name: "list_event_tags", Description: "List event-tag summaries or the value distribution for one tag, optionally limited to an issue.", InputSchema: objectSchema(map[string]any{
 			"project_id": stringProperty("Project UUID"), "issue_id": stringProperty("Optional issue UUID"),
 			"tag_key": stringProperty("Optional tag key; omit it to list tag summaries"), "limit": limitProperty,
+		}, "project_id"), Annotations: readOnly},
+		{Name: "query_release_health", Description: "Aggregate session and user health over time for a project.", InputSchema: objectSchema(map[string]any{
+			"project_id": stringProperty("Project UUID"), "environment": stringProperty("Optional environment"), "release": stringProperty("Optional release"),
+			"fields":       map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": []string{"sum(session)", "count_unique(user)", "avg(session.duration)", "crash_free_rate(session)", "crash_free_rate(user)"}}},
+			"group_by":     map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": []string{"project", "release", "environment", "session.status"}}, "maxItems": 4},
+			"stats_period": stringProperty("Time range such as 24h, 7d, or 30d"), "start": stringProperty("Optional RFC3339 start"), "end": stringProperty("Optional RFC3339 end"), "interval": stringProperty("Bucket interval such as 1h or 1d"),
 		}, "project_id"), Annotations: readOnly},
 		{Name: "list_issues", Description: "List grouped issues for a project, optionally filtered by status or title.", InputSchema: objectSchema(map[string]any{
 			"project_id": stringProperty("Project UUID"),

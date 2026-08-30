@@ -197,6 +197,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/0/organizations/{org_slug}/repos/", s.auth.Require(http.HandlerFunc(s.sentryOrganizationRepositories)))
 	s.mux.Handle("POST /api/0/organizations/{org_slug}/code-mappings/bulk/", s.auth.Require(http.HandlerFunc(s.sentryBulkCodeMappings)))
 	s.mux.Handle("GET /api/0/organizations/{org_slug}/events/", s.auth.Require(http.HandlerFunc(s.sentryOrganizationEvents)))
+	s.mux.Handle("GET /api/0/organizations/{org_slug}/sessions/", s.auth.Require(http.HandlerFunc(s.sentryOrganizationSessions)))
 	s.mux.Handle("GET /api/0/organizations/{org_slug}/replay-count/", s.auth.Require(http.HandlerFunc(s.sentryReplayCount)))
 	s.mux.Handle("GET /api/0/organizations/{org_slug}/replay-selectors/", s.auth.Require(http.HandlerFunc(s.sentryReplaySelectors)))
 	s.mux.Handle("GET /api/0/organizations/{org_slug}/replays/", s.auth.Require(http.HandlerFunc(s.sentryOrganizationReplays)))

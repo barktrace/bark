@@ -50,7 +50,7 @@ The DSN shown in the project setup page should always be copied verbatim.
 | Browser SDK CORS preflight | Supported |
 | Transaction envelopes and trace identifiers | Supported |
 | Inline and standalone span normalization | Supported |
-| Session envelopes and release health | Supported |
+| Session envelopes and release health | Ingestion plus organization session totals/time series, release/environment/status grouping, unique users, duration, and crash-free rates |
 | Sentry structured log envelope items | Supported |
 | Project ingestion rate-limit headers | Supported |
 | Unknown envelope item acknowledgement/outcome recording | Supported |
