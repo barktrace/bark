@@ -200,14 +200,8 @@ func (s *Server) sentrySharedIssue(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) sentryIssueEvents(w http.ResponseWriter, r *http.Request) {
-	principal, _ := auth.PrincipalFromContext(r.Context())
-	issue, err := s.loadSentryIssue(r, r.PathValue("issue_id"))
-	if errors.Is(err, sql.ErrNoRows) || err == nil && !s.canAccessProject(r, principal, issue.ProjectID) {
-		writeError(w, http.StatusNotFound, "issue not found")
-		return
-	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not load issue")
+	issue, _, ok := s.authorizedSentryIssue(w, r, false)
+	if !ok {
 		return
 	}
 	rows, err := s.store.DB.QueryContext(r.Context(), sentryEventSelect+` WHERE e.issue_id = ? ORDER BY e.timestamp DESC LIMIT 100`, issue.ID)
@@ -233,17 +227,57 @@ func (s *Server) sentryIssueEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) sentryIssueLatestEvent(w http.ResponseWriter, r *http.Request) {
-	principal, _ := auth.PrincipalFromContext(r.Context())
-	issue, err := s.loadSentryIssue(r, r.PathValue("issue_id"))
-	if errors.Is(err, sql.ErrNoRows) || err == nil && !s.canAccessProject(r, principal, issue.ProjectID) {
-		writeError(w, http.StatusNotFound, "issue not found")
+	s.sentryIssueEventBySelector(w, r, "latest")
+}
+
+func (s *Server) sentryIssueEventDetail(w http.ResponseWriter, r *http.Request) {
+	s.sentryIssueEventBySelector(w, r, r.PathValue("event_id"))
+}
+
+func (s *Server) sentryIssueEventBySelector(w http.ResponseWriter, r *http.Request, selector string) {
+	issue, _, ok := s.authorizedSentryIssue(w, r, false)
+	if !ok {
 		return
 	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not load issue")
-		return
+	query := sentryEventSelect + ` WHERE e.issue_id = ?`
+	arguments := []any{issue.ID}
+	if environments := compactQueryValues(r.URL.Query()["environment"]); len(environments) > 0 {
+		query += ` AND e.environment IN (` + queryPlaceholders(len(environments)) + `)`
+		for _, environment := range environments {
+			arguments = append(arguments, environment)
+		}
 	}
-	record, err := s.querySentryEvent(r, sentryEventSelect+` WHERE e.issue_id = ? ORDER BY e.timestamp DESC LIMIT 1`, issue.ID)
+	for _, boundary := range []struct {
+		name   string
+		clause string
+	}{{"start", " AND e.timestamp >= ?"}, {"end", " AND e.timestamp <= ?"}} {
+		if raw := strings.TrimSpace(r.URL.Query().Get(boundary.name)); raw != "" {
+			parsed, err := time.Parse(time.RFC3339, raw)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "invalid "+boundary.name+" time")
+				return
+			}
+			query += boundary.clause
+			arguments = append(arguments, parsed.UTC().Format(time.RFC3339Nano))
+		}
+	}
+	if search := strings.TrimSpace(r.URL.Query().Get("query")); search != "" {
+		query += ` AND (LOWER(i.title) LIKE ? OR LOWER(CAST(e.payload AS TEXT)) LIKE ?)`
+		pattern := "%" + strings.ToLower(search) + "%"
+		arguments = append(arguments, pattern, pattern)
+	}
+	switch selector {
+	case "latest":
+		query += ` ORDER BY e.timestamp DESC, e.received_at DESC LIMIT 1`
+	case "oldest":
+		query += ` ORDER BY e.timestamp, e.received_at LIMIT 1`
+	case "recommended":
+		query += ` ORDER BY CASE WHEN EXISTS (SELECT 1 FROM replay_error_links rel WHERE rel.project_id = e.project_id AND rel.event_id = e.event_id) THEN 0 ELSE 1 END, e.timestamp DESC, e.received_at DESC LIMIT 1`
+	default:
+		query += ` AND (e.event_id = ? OR e.id = ?) LIMIT 1`
+		arguments = append(arguments, selector, selector)
+	}
+	record, err := s.querySentryEvent(r, query, arguments...)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "event not found")
 		return
@@ -253,6 +287,46 @@ func (s *Server) sentryIssueLatestEvent(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, s.sentryEventResponse(record))
+}
+
+func (s *Server) sentryProjectEventJSON(w http.ResponseWriter, r *http.Request) {
+	principal, _ := auth.PrincipalFromContext(r.Context())
+	projectID, _, ok := s.projectBySlugs(r, r.PathValue("org_slug"), r.PathValue("project_slug"))
+	if !ok || !s.canAccessProject(r, principal, projectID) {
+		writeError(w, http.StatusNotFound, "event not found")
+		return
+	}
+	var payload []byte
+	err := s.store.DB.QueryRowContext(r.Context(), `SELECT payload FROM events WHERE project_id = ? AND (event_id = ? OR id = ?) LIMIT 1`, projectID, r.PathValue("event_id"), r.PathValue("event_id")).Scan(&payload)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "event not found")
+		return
+	}
+	if err != nil || !json.Valid(payload) {
+		writeError(w, http.StatusInternalServerError, "could not load event JSON")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(payload)
+}
+
+func compactQueryValues(values []string) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			result = append(result, value)
+		}
+	}
+	return result
+}
+
+func queryPlaceholders(count int) string {
+	values := make([]string, count)
+	for index := range values {
+		values[index] = "?"
+	}
+	return strings.Join(values, ",")
 }
 
 func (s *Server) sentryProjectEventDetail(w http.ResponseWriter, r *http.Request) {

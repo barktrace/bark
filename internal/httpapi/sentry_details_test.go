@@ -90,6 +90,46 @@ func TestSentryIssueAndEventDetailWorkflow(t *testing.T) {
 	}
 }
 
+func TestSentryIssueEventSelectorsAndRawJSON(t *testing.T) {
+	server, principal := managementFixture(t)
+	_, err := server.store.DB.Exec(`
+		INSERT INTO events(id, event_id, project_id, issue_id, environment, platform, level, timestamp, received_at, payload) VALUES
+			('event-old', '11111111111111111111111111111111', 'project', 'issue', 'staging', 'go', 'error', '2026-08-30T08:00:00Z', '2026-08-30T08:00:01Z', '{"message":"old event"}'),
+			('event-replay', '22222222222222222222222222222222', 'project', 'issue', 'production', 'go', 'error', '2026-08-30T09:00:00Z', '2026-08-30T09:00:01Z', '{"message":"recommended event","extra":{"safe":true}}'),
+			('event-new', '33333333333333333333333333333333', 'project', 'issue', 'production', 'go', 'error', '2026-08-30T10:00:00Z', '2026-08-30T10:00:01Z', '{"message":"latest event"}');
+		INSERT INTO replay_error_links(project_id, replay_id, segment_id, event_id) VALUES ('project', '44444444444444444444444444444444', 0, '22222222222222222222222222222222')
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var issueID int64
+	if err := server.store.DB.QueryRow(`SELECT rowid FROM issues WHERE id = 'issue'`).Scan(&issueID); err != nil {
+		t.Fatal(err)
+	}
+	identifier := strconv.FormatInt(issueID, 10)
+
+	for name, target := range map[string]string{
+		"latest":      "/api/0/issues/" + identifier + "/events/latest/",
+		"oldest":      "/api/0/groups/" + identifier + "/events/oldest/",
+		"recommended": "/api/0/organizations/org/issues/" + identifier + "/events/recommended/",
+		"specific":    "/api/0/organizations/org/groups/" + identifier + "/events/22222222222222222222222222222222/",
+	} {
+		response := serveSentryDetail(t, server, principal, http.MethodGet, target, "")
+		want := map[string]string{"latest": "latest event", "oldest": "old event", "recommended": "recommended event", "specific": "recommended event"}[name]
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"message":"`+want+`"`) {
+			t.Fatalf("%s selector status=%d body=%s", name, response.Code, response.Body.String())
+		}
+	}
+	filtered := serveSentryDetail(t, server, principal, http.MethodGet, "/api/0/issues/"+identifier+"/events/latest/?environment=staging", "")
+	if filtered.Code != http.StatusOK || !strings.Contains(filtered.Body.String(), `"message":"old event"`) {
+		t.Fatalf("environment selector status=%d body=%s", filtered.Code, filtered.Body.String())
+	}
+	raw := serveSentryDetail(t, server, principal, http.MethodGet, "/api/0/projects/org/app/events/22222222222222222222222222222222/json/", "")
+	if raw.Code != http.StatusOK || raw.Header().Get("Content-Type") != "application/json" || raw.Body.String() != `{"message":"recommended event","extra":{"safe":true}}` {
+		t.Fatalf("raw event status=%d content-type=%q body=%s", raw.Code, raw.Header().Get("Content-Type"), raw.Body.String())
+	}
+}
+
 func TestSentryIssueMutationHonorsProjectRole(t *testing.T) {
 	server, _ := managementFixture(t)
 	if _, err := server.store.DB.Exec(`
@@ -302,11 +342,16 @@ func serveSentryDetail(t *testing.T, server *Server, principal *auth.Principal, 
 	mux.HandleFunc("GET /api/0/projects/{org_slug}/{project_slug}/", server.sentryProjectDetail)
 	mux.HandleFunc("GET /api/0/projects/{org_slug}/{project_slug}/keys/", server.sentryProjectKeys)
 	mux.HandleFunc("GET /api/0/projects/{org_slug}/{project_slug}/events/{event_id}/", server.sentryProjectEventDetail)
+	mux.HandleFunc("GET /api/0/projects/{org_slug}/{project_slug}/events/{event_id}/json/", server.sentryProjectEventJSON)
 	mux.HandleFunc("GET /api/0/issues/{issue_id}/", server.sentryIssueDetail)
 	mux.HandleFunc("PUT /api/0/issues/{issue_id}/", server.sentryIssueDetail)
 	mux.HandleFunc("DELETE /api/0/issues/{issue_id}/", server.sentryIssueDetail)
 	mux.HandleFunc("GET /api/0/issues/{issue_id}/events/", server.sentryIssueEvents)
 	mux.HandleFunc("GET /api/0/issues/{issue_id}/events/latest/", server.sentryIssueLatestEvent)
+	mux.HandleFunc("GET /api/0/issues/{issue_id}/events/{event_id}/", server.sentryIssueEventDetail)
+	mux.HandleFunc("GET /api/0/groups/{issue_id}/events/{event_id}/", server.sentryIssueEventDetail)
+	mux.HandleFunc("GET /api/0/organizations/{org_slug}/issues/{issue_id}/events/{event_id}/", server.sentryIssueEventDetail)
+	mux.HandleFunc("GET /api/0/organizations/{org_slug}/groups/{issue_id}/events/{event_id}/", server.sentryIssueEventDetail)
 	mux.ServeHTTP(response, request)
 	if response.Code != http.StatusNoContent && response.Body.Len() > 0 && !json.Valid(response.Body.Bytes()) {
 		t.Fatalf("invalid JSON response status=%d body=%s", response.Code, response.Body.String())

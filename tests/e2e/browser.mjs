@@ -235,6 +235,10 @@ try {
   if (!latestEvent.ok() || (await latestEvent.json()).eventID !== eventID) throw new Error('Sentry latest issue event endpoint failed');
   const eventDetail = await page.request.get(`/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/events/${eventID}/`);
   if (!eventDetail.ok() || (await eventDetail.json()).groupID !== sentryIssues[0].id) throw new Error('Sentry event detail endpoint failed');
+  const recommendedEvent = await page.request.get(`/api/0/organizations/e2e/groups/${encodeURIComponent(sentryIssues[0].id)}/events/recommended/`);
+  if (!recommendedEvent.ok() || (await recommendedEvent.json()).eventID !== eventID) throw new Error('Sentry recommended issue event endpoint failed');
+  const rawEvent = await page.request.get(`/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/events/${eventID}/json/`);
+  if (!rawEvent.ok() || (await rawEvent.json()).event_id !== eventID) throw new Error('Sentry raw event JSON endpoint failed');
   const attachmentList = await page.request.get(`/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/events/${eventID}/attachments/?query=diagnostic`);
   const attachments = await attachmentList.json();
   if (!attachmentList.ok() || attachments[0]?.name !== 'diagnostic.txt' || attachments[0]?.event_id !== eventID) throw new Error(`Sentry attachment list failed: ${JSON.stringify(attachments)}`);

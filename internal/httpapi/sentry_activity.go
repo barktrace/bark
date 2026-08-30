@@ -23,7 +23,7 @@ type sentryActivityRecord struct {
 }
 
 func (s *Server) sentryIssueActivities(w http.ResponseWriter, r *http.Request) {
-	issue, _, ok := s.authorizedSentryActivityIssue(w, r, false)
+	issue, _, ok := s.authorizedSentryIssue(w, r, false)
 	if !ok {
 		return
 	}
@@ -40,7 +40,7 @@ func (s *Server) sentryIssueActivities(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) sentryIssueComments(w http.ResponseWriter, r *http.Request) {
-	issue, principal, ok := s.authorizedSentryActivityIssue(w, r, r.Method == http.MethodPost)
+	issue, principal, ok := s.authorizedSentryIssue(w, r, r.Method == http.MethodPost)
 	if !ok {
 		return
 	}
@@ -86,7 +86,7 @@ func (s *Server) sentryIssueComments(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) sentryIssueCommentDetail(w http.ResponseWriter, r *http.Request) {
-	issue, principal, ok := s.authorizedSentryActivityIssue(w, r, true)
+	issue, principal, ok := s.authorizedSentryIssue(w, r, true)
 	if !ok {
 		return
 	}
@@ -124,7 +124,7 @@ func (s *Server) sentryIssueCommentDetail(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, sentryActivityResponse(activity))
 }
 
-func (s *Server) authorizedSentryActivityIssue(w http.ResponseWriter, r *http.Request, write bool) (sentryIssueRecord, *auth.Principal, bool) {
+func (s *Server) authorizedSentryIssue(w http.ResponseWriter, r *http.Request, write bool) (sentryIssueRecord, *auth.Principal, bool) {
 	principal, _ := auth.PrincipalFromContext(r.Context())
 	issue, err := s.loadSentryIssue(r, r.PathValue("issue_id"))
 	if errors.Is(err, sql.ErrNoRows) || err == nil && r.PathValue("org_slug") != "" && r.PathValue("org_slug") != issue.OrganizationSlug && r.PathValue("org_slug") != issue.OrganizationID {
