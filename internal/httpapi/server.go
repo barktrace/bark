@@ -225,6 +225,8 @@ func (s *Server) routes() {
 	s.mux.Handle("PUT /api/0/projects/{org_slug}/{project_slug}/environments/", s.auth.Require(http.HandlerFunc(s.sentryProjectEnvironments)))
 	s.mux.Handle("GET /api/0/projects/{org_slug}/{project_slug}/environments/{environment}/", s.auth.Require(http.HandlerFunc(s.sentryProjectEnvironmentDetail)))
 	s.mux.Handle("PUT /api/0/projects/{org_slug}/{project_slug}/environments/{environment}/", s.auth.Require(http.HandlerFunc(s.sentryProjectEnvironmentDetail)))
+	s.mux.Handle("GET /api/0/projects/{org_slug}/{project_slug}/tags/", s.auth.Require(http.HandlerFunc(s.sentryProjectTags)))
+	s.mux.Handle("GET /api/0/projects/{org_slug}/{project_slug}/tags/{tag_key}/values/", s.auth.Require(http.HandlerFunc(s.sentryProjectTags)))
 	s.mux.Handle("GET /api/0/projects/{org_slug}/{project_slug}/events/", s.auth.Require(http.HandlerFunc(s.sentryProjectEvents)))
 	s.mux.Handle("GET /api/0/projects/{org_slug}/{project_slug}/events/{event_id}/", s.auth.Require(http.HandlerFunc(s.sentryProjectEventDetail)))
 	s.mux.Handle("GET /api/0/projects/{org_slug}/{project_slug}/events/{event_id}/json/", s.auth.Require(http.HandlerFunc(s.sentryProjectEventJSON)))
@@ -323,6 +325,8 @@ func (s *Server) registerSentryIssueSupplementalRoutes(prefix string) {
 	s.mux.Handle("GET "+prefix+"/events/", s.auth.Require(http.HandlerFunc(s.sentryIssueEvents)))
 	s.mux.Handle("GET "+prefix+"/events/{event_id}/", s.auth.Require(http.HandlerFunc(s.sentryIssueEventDetail)))
 	s.mux.Handle("GET "+prefix+"/activities/", s.auth.Require(http.HandlerFunc(s.sentryIssueActivities)))
+	s.mux.Handle("GET "+prefix+"/tags/", s.auth.Require(http.HandlerFunc(s.sentryIssueTags)))
+	s.mux.Handle("GET "+prefix+"/tags/{tag_key}/values/", s.auth.Require(http.HandlerFunc(s.sentryIssueTags)))
 	for _, resource := range []string{"comments", "notes"} {
 		s.mux.Handle("GET "+prefix+"/"+resource+"/", s.auth.Require(http.HandlerFunc(s.sentryIssueComments)))
 		s.mux.Handle("POST "+prefix+"/"+resource+"/", s.auth.Require(http.HandlerFunc(s.sentryIssueComments)))

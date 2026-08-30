@@ -19,6 +19,9 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=secret,id=goproxy,require
 COPY . .
 COPY --from=ui /src/ui/dist/ ./internal/web/dist/
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=secret,id=goproxy,required=false --mount=type=secret,id=build_ca,required=false \
+    if [ -f /run/secrets/goproxy ]; then export GOPROXY="$(cat /run/secrets/goproxy)"; fi; \
+    if [ -f /run/secrets/build_ca ]; then export SSL_CERT_FILE=/run/secrets/build_ca; fi; \
     CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o /out/barktrace ./cmd/barktrace && \
     mkdir -p /out/data && chown 65532:65532 /out/data
 

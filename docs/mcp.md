@@ -68,6 +68,7 @@ curl --fail-with-body https://errors.example.com/mcp \
 | `list_projects` | Lists projects and DSNs, optionally by organization slug. |
 | `get_project_summary` | Returns issue, open issue, event, and release counts. |
 | `list_environments` | Lists visible, hidden, or all environments discovered across project telemetry. |
+| `list_event_tags` | Lists project/issue tag summaries or the most frequent values for one tag. |
 | `list_project_permissions` | Lists organization roles, explicit project overrides, and effective project roles. |
 | `list_teams`, `create_team` | Lists or creates organization teams. |
 | `add_team_member`, `remove_team_member` | Manages membership of an organization team. |

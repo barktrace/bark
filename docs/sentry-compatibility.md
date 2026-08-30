@@ -70,6 +70,7 @@ The DSN shown in the project setup page should always be copied verbatim.
 | Organization events/Discover endpoint | Errors, transactions, spans, logs, metrics, bounded filters and aggregates |
 | Organization and project detail endpoints | Supported, including project DSN-key discovery |
 | Organization and project environment endpoints | Discovery across telemetry plus visible/hidden management |
+| Project and issue tag endpoints | Built-in and custom tag summaries plus value distributions |
 | Organization members and teams | Listing, team CRUD, team membership, project links, and project responses |
 | Issue and event detail endpoints | Supported, including latest/oldest/recommended/specific group events, raw event JSON, activity history, comment/note lifecycle, status, priority, user/team assignment, bookmark, snooze, public sharing, and permanent discard updates |
 | User feedback endpoints | Project listing, detail, and deletion |

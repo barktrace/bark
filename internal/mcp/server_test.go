@@ -60,8 +60,8 @@ func TestInitializeAndListTools(t *testing.T) {
 	listed := call(t, service, `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
 	toolsResult := listed["result"].(map[string]any)
 	available := toolsResult["tools"].([]any)
-	if len(available) != 62 {
-		t.Fatalf("tool count = %d, want 62", len(available))
+	if len(available) != 63 {
+		t.Fatalf("tool count = %d, want 63", len(available))
 	}
 }
 
@@ -88,6 +88,31 @@ func TestListEnvironmentsTool(t *testing.T) {
 	hiddenItems := hidden["result"].(map[string]any)["structuredContent"].([]any)
 	if len(hiddenItems) != 1 || hiddenItems[0].(map[string]any)["name"] != "preview" || hiddenItems[0].(map[string]any)["is_hidden"] != true {
 		t.Fatalf("hidden environments = %#v", hiddenItems)
+	}
+}
+
+func TestListEventTagsTool(t *testing.T) {
+	st := testStore(t)
+	seedMCPData(t, st)
+	if _, err := st.DB.Exec(`UPDATE events SET payload = '{"tags":{"region":"eu-west-1"},"user":{"id":"customer-1"}}' WHERE id = 'event'`); err != nil {
+		t.Fatal(err)
+	}
+	service := New(st, testToken, "https://errors.example")
+	summaries := call(t, service, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_event_tags","arguments":{"project_id":"project","issue_id":"issue"}}}`)
+	summaryItems := summaries["result"].(map[string]any)["structuredContent"].([]any)
+	foundRegion := false
+	for _, item := range summaryItems {
+		if tag := item.(map[string]any); tag["key"] == "region" && tag["total_values"] == float64(1) {
+			foundRegion = true
+		}
+	}
+	if !foundRegion {
+		t.Fatalf("tag summaries = %#v", summaryItems)
+	}
+	values := call(t, service, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_event_tags","arguments":{"project_id":"project","tag_key":"region"}}}`)
+	valueItems := values["result"].(map[string]any)["structuredContent"].([]any)
+	if len(valueItems) != 1 || valueItems[0].(map[string]any)["value"] != "eu-west-1" || valueItems[0].(map[string]any)["count"] != float64(1) {
+		t.Fatalf("tag values = %#v", valueItems)
 	}
 }
 

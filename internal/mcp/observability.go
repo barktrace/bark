@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/barktrace/bark/internal/environments"
+	"github.com/barktrace/bark/internal/eventtags"
 	telemetryanalysis "github.com/barktrace/bark/internal/telemetry"
 )
 
@@ -50,6 +51,7 @@ func (s *Service) callObservabilityTool(ctx context.Context, credential *credent
 		UserID      string `json:"user_id"`
 		HasError    bool   `json:"has_error"`
 		Visibility  string `json:"visibility"`
+		TagKey      string `json:"tag_key"`
 		Limit       int    `json:"limit"`
 	}
 	if err := decodeArguments(raw, &args); err != nil || strings.TrimSpace(args.ProjectID) == "" {
@@ -62,6 +64,8 @@ func (s *Service) callObservabilityTool(ctx context.Context, credential *credent
 	switch name {
 	case "list_environments":
 		return s.listEnvironments(ctx, args.ProjectID, args.Visibility)
+	case "list_event_tags":
+		return s.listEventTags(ctx, args.ProjectID, args.IssueID, args.TagKey, limit)
 	case "list_transactions":
 		return s.listTransactions(ctx, args.ProjectID, limit)
 	case "list_logs":
@@ -146,6 +150,44 @@ func (s *Service) listEnvironments(ctx context.Context, projectID, visibility st
 			continue
 		}
 		items = append(items, map[string]any{"name": environment.Name, "is_hidden": environment.IsHidden})
+	}
+	return items, nil
+}
+
+func (s *Service) listEventTags(ctx context.Context, projectID, issueID, tagKey string, limit int) (any, error) {
+	issueID = strings.TrimSpace(issueID)
+	if issueID != "" {
+		var belongs int
+		if err := s.store.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM issues WHERE id = ? AND project_id = ?`, issueID, projectID).Scan(&belongs); err != nil {
+			return nil, err
+		}
+		if belongs == 0 {
+			return nil, errors.New("issue not found in project")
+		}
+	}
+	tags, err := eventtags.List(ctx, s.store.DB, projectID, issueID)
+	if err != nil {
+		return nil, err
+	}
+	if tagKey = strings.TrimSpace(tagKey); tagKey == "" {
+		items := make([]map[string]any, 0, len(tags))
+		for _, tag := range tags {
+			items = append(items, map[string]any{"key": tag.Key, "name": tag.Name, "total_values": tag.TotalValues, "unique_values": len(tag.Values)})
+		}
+		return items, nil
+	}
+	items := make([]map[string]any, 0)
+	for _, tag := range tags {
+		if tag.Key != tagKey {
+			continue
+		}
+		for _, value := range tag.Values {
+			if len(items) == limit {
+				break
+			}
+			items = append(items, map[string]any{"value": value.Value, "count": value.Count, "first_seen": value.FirstSeen, "last_seen": value.LastSeen})
+		}
+		break
 	}
 	return items, nil
 }

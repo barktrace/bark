@@ -105,6 +105,7 @@ try {
       release: 'checkout@1.0.0',
       dist: 'e2e-web',
       level: 'error',
+      tags: { region: 'eu-west-1', checkout_flow: 'express' },
       debug_meta: { images: [{ type: 'sourcemap', code_file: 'https://cdn.example/assets/checkout.js', debug_id: sourceMapDebugID }] },
       exception: { values: [{ type: 'E2EError', value: 'Browser workflow failed', stacktrace: { frames: [{ filename: 'https://cdn.example/assets/checkout.js', abs_path: 'https://cdn.example/assets/checkout.js', function: 'a', lineno: 1, colno: 10, in_app: true }] } }] },
     }),
@@ -228,6 +229,14 @@ try {
   const issueList = await page.request.get(`/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/issues/`);
   const sentryIssues = await issueList.json();
   if (!issueList.ok() || !sentryIssues[0]?.id) throw new Error('Sentry issue discovery failed');
+  const errorIssue = sentryIssues.find((item) => item.title === 'E2EError: Browser workflow failed');
+  if (!errorIssue) throw new Error(`Sentry error issue discovery failed: ${JSON.stringify(sentryIssues)}`);
+  const projectTagsResponse = await page.request.get(`/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/tags/`);
+  const projectTags = await projectTagsResponse.json();
+  if (!projectTagsResponse.ok() || !projectTags.some((tag) => tag.key === 'region' && tag.totalValues === 1) || !projectTags.some((tag) => tag.key === 'sentry:environment')) throw new Error(`Sentry project tag summary failed: ${JSON.stringify(projectTags)}`);
+  const issueTagValuesResponse = await page.request.get(`/api/0/issues/${encodeURIComponent(errorIssue.id)}/tags/region/values/`);
+  const issueTagValues = await issueTagValuesResponse.json();
+  if (!issueTagValuesResponse.ok() || issueTagValues[0]?.value !== 'eu-west-1' || issueTagValues[0]?.count !== 1) throw new Error(`Sentry issue tag values failed: ${JSON.stringify(issueTagValues)}`);
   const replayIssue = sentryIssues.find((item) => item.issueType === 'rage_click');
   if (!replayIssue || replayIssue.issueCategory !== 'replay') throw new Error(`Sentry Replay issue discovery failed: ${JSON.stringify(sentryIssues)}`);
   const replayIssueDetail = await page.request.get(`/api/0/issues/${encodeURIComponent(replayIssue.id)}/`);
@@ -353,6 +362,8 @@ try {
   if (!mcpPermissions.some((permission) => permission.email === 'e2e@barktrace.test' && permission.effective_role === 'admin')) throw new Error('MCP project permission listing failed');
   const mcpEnvironments = await mcpCall(21, 'list_environments', { project_id: nativeProject.id, visibility: 'all' });
   if (!mcpEnvironments.some((environment) => environment.name === 'e2e' && environment.is_hidden === false)) throw new Error(`MCP environment listing failed: ${JSON.stringify(mcpEnvironments)}`);
+  const mcpTags = await mcpCall(22, 'list_event_tags', { project_id: nativeProject.id, tag_key: 'region' });
+  if (mcpTags[0]?.value !== 'eu-west-1' || mcpTags[0]?.count !== 1) throw new Error(`MCP event tag values failed: ${JSON.stringify(mcpTags)}`);
   const mcpIssue = await mcpCall(3, 'update_issue', { issue_id: nativeIssues[0].id, priority: 'critical', bookmarked: true });
   if (mcpIssue.priority !== 'critical' || !mcpIssue.bookmarked) throw new Error('MCP advanced issue update failed');
   const mcpReplays = await mcpCall(18, 'list_replays', { project_id: nativeProject.id, query: 'checkout', environment: 'e2e', release: 'checkout@1.0.0', issue_id: nativeIssues[0].id, has_error: true });
@@ -436,7 +447,7 @@ try {
   if (me.status() !== 401) throw new Error(`logout left session active: /auth/me returned ${me.status()}`);
 
   if (browserErrors.length) throw new Error(browserErrors.join('\n'));
-  console.log('browser E2E passed: OIDC, ingestion, source-map symbolication, Sentry environments, Replay issues/interactions/deletion, Discover, dashboards, teams, profiles, telemetry, MCP, and logout');
+  console.log('browser E2E passed: OIDC, ingestion, source-map symbolication, Sentry environments/tags, Replay issues/interactions/deletion, Discover, dashboards, teams, profiles, telemetry, MCP, and logout');
 } finally {
   await browser.close();
 }
