@@ -120,6 +120,9 @@ func (c *postgresConn) IsValid() bool {
 func postgresQuery(query string) string {
 	query = strings.ReplaceAll(query, "CAST(strftime('%s', timestamp) AS INTEGER)", "CAST(EXTRACT(EPOCH FROM timestamp) AS BIGINT)")
 	query = strings.ReplaceAll(query, "CAST(strftime('%s', created_at) AS INTEGER)", "CAST(EXTRACT(EPOCH FROM created_at) AS BIGINT)")
+	query = strings.ReplaceAll(query, "MAX(score, excluded.score)", "GREATEST(issue_suspect_commits.score, excluded.score)")
+	query = strings.ReplaceAll(query, "excluded.score > score", "excluded.score > issue_suspect_commits.score")
+	query = strings.ReplaceAll(query, "THEN excluded.reason ELSE reason END", "THEN excluded.reason ELSE issue_suspect_commits.reason END")
 	query = postgresNullableTime.ReplaceAllString(query, "COALESCE($1::text, '')")
 	query = strings.ReplaceAll(query, " COLLATE NOCASE", "")
 	query = strings.ReplaceAll(query, " LIKE ", " ILIKE ")

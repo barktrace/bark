@@ -83,6 +83,16 @@ try {
     },
   });
   if (!sourceMapUpload.ok()) throw new Error(`source-map upload failed: ${sourceMapUpload.status()} ${await sourceMapUpload.text()}`);
+  const createRepositoryResponse = await page.request.post('/api/0/organizations/e2e/repos/', { data: {
+    name: 'e2e/checkout', url: 'https://github.com/e2e/checkout', provider: 'integrations:github',
+  } });
+  const sourceRepository = await createRepositoryResponse.json();
+  if (!createRepositoryResponse.ok() || !sourceRepository.id || sourceRepository.name !== 'e2e/checkout') throw new Error(`Sentry repository creation failed: ${JSON.stringify(sourceRepository)}`);
+  const commitID = 'abcdef1234567890abcdef1234567890abcdef12';
+  const releaseCommitResponse = await page.request.put(`/api/0/organizations/e2e/releases/${encodeURIComponent('checkout@1.0.0')}/`, { data: {
+    commits: [{ id: commitID, repository: 'e2e/checkout', message: 'Fix checkout failure', author: { name: 'E2E Bot', email: 'e2e@example.test' }, timestamp: new Date().toISOString(), patch_set: [{ path: 'checkout.js', type: 'M' }] }],
+  } });
+  if (!releaseCommitResponse.ok()) throw new Error(`Sentry release commit upload failed: ${releaseCommitResponse.status()} ${await releaseCommitResponse.text()}`);
 
   const ingestEnvelope = async (header, type, payload, item = {}) => {
     const body = `${JSON.stringify(header)}\n${JSON.stringify({ type, length: Buffer.byteLength(payload), ...item })}\n${payload}\n`;
@@ -318,6 +328,17 @@ try {
   if (!issueList.ok() || !sentryIssues[0]?.id) throw new Error('Sentry issue discovery failed');
   const errorIssue = sentryIssues.find((item) => item.title === 'E2EError: Browser workflow failed');
   if (!errorIssue) throw new Error(`Sentry error issue discovery failed: ${JSON.stringify(sentryIssues)}`);
+  const repositoryDetailResponse = await page.request.get(`/api/0/organizations/e2e/repos/${encodeURIComponent(sourceRepository.id)}/`);
+  if (!repositoryDetailResponse.ok() || (await repositoryDetailResponse.json()).name !== 'e2e/checkout') throw new Error('Sentry repository detail failed');
+  const repositoryCommitsResponse = await page.request.get(`/api/0/organizations/e2e/repos/${encodeURIComponent(sourceRepository.id)}/commits/?query=checkout`);
+  const repositoryCommits = await repositoryCommitsResponse.json();
+  if (!repositoryCommitsResponse.ok() || repositoryCommits[0]?.id !== commitID) throw new Error(`Sentry repository commit list failed: ${JSON.stringify(repositoryCommits)}`);
+  const repositoryCommitResponse = await page.request.get(`/api/0/organizations/e2e/repos/${encodeURIComponent(sourceRepository.id)}/commits/${commitID}/`);
+  const repositoryCommit = await repositoryCommitResponse.json();
+  if (!repositoryCommitResponse.ok() || repositoryCommit.files?.[0]?.filename !== 'checkout.js' || repositoryCommit.releases?.[0]?.version !== 'checkout@1.0.0') throw new Error(`Sentry repository commit detail failed: ${JSON.stringify(repositoryCommit)}`);
+  const suspectCommitsResponse = await page.request.get(`/api/0/issues/${encodeURIComponent(errorIssue.id)}/suspects/`);
+  const suspectCommits = await suspectCommitsResponse.json();
+  if (!suspectCommitsResponse.ok() || suspectCommits[0]?.id !== commitID || suspectCommits[0]?.score !== 100) throw new Error(`Sentry suspect commits failed: ${JSON.stringify(suspectCommits)}`);
   const organizationIssueResponse = await page.request.get(`/api/0/organizations/e2e/issues/?project=${encodeURIComponent(sentryProject.id)}&environment=e2e&query=${encodeURIComponent('is:unresolved level:error E2EError')}&sort=freq`);
   const organizationIssues = await organizationIssueResponse.json();
   if (!organizationIssueResponse.ok() || organizationIssues[0]?.id !== errorIssue.id || organizationIssues[0]?.project?.slug !== sentryProject.slug) throw new Error(`Sentry organization issue search failed: ${JSON.stringify(organizationIssues)}`);
@@ -555,7 +576,7 @@ try {
   if (me.status() !== 401) throw new Error(`logout left session active: /auth/me returned ${me.status()}`);
 
   if (browserErrors.length) throw new Error(browserErrors.join('\n'));
-  console.log('browser E2E passed: OIDC, ingestion, source-map symbolication, Sentry organization issues/event resolution/environments/tags/release health, Replay issues/interactions/deletion, Discover, dashboards, teams, profiles, telemetry, MCP, and logout');
+  console.log('browser E2E passed: OIDC, ingestion, source-map symbolication, Sentry projects/stats/monitors/source control/issues/environments/tags/release health, Replay issues/interactions/deletion, Discover, dashboards, teams, profiles, telemetry, MCP, and logout');
 } finally {
   await browser.close();
 }

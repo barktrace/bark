@@ -16,8 +16,8 @@ func TestRebindPostgres(t *testing.T) {
 }
 
 func TestPostgresQueryCompatibility(t *testing.T) {
-	query := postgresQuery(`SELECT rowid, CAST(strftime('%s', timestamp) AS INTEGER), CAST(strftime('%s', created_at) AS INTEGER) FROM issues WHERE title LIKE ? COLLATE NOCASE AND datetime(created_at) >= datetime(?)`)
-	for _, expected := range []string{"legacy_id", "ILIKE $1", "created_at::timestamptz >= $2::timestamptz", "CAST(EXTRACT(EPOCH FROM timestamp) AS BIGINT)", "CAST(EXTRACT(EPOCH FROM created_at) AS BIGINT)"} {
+	query := postgresQuery(`SELECT rowid, CAST(strftime('%s', timestamp) AS INTEGER), CAST(strftime('%s', created_at) AS INTEGER), MAX(score, excluded.score), CASE WHEN excluded.score > score THEN excluded.reason ELSE reason END FROM issues WHERE title LIKE ? COLLATE NOCASE AND datetime(created_at) >= datetime(?)`)
+	for _, expected := range []string{"legacy_id", "ILIKE $1", "created_at::timestamptz >= $2::timestamptz", "CAST(EXTRACT(EPOCH FROM timestamp) AS BIGINT)", "CAST(EXTRACT(EPOCH FROM created_at) AS BIGINT)", "GREATEST(issue_suspect_commits.score, excluded.score)", "excluded.score > issue_suspect_commits.score", "ELSE issue_suspect_commits.reason END"} {
 		if !strings.Contains(query, expected) {
 			t.Fatalf("expected %q in %q", expected, query)
 		}

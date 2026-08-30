@@ -208,6 +208,10 @@ func (s *Server) sentryOrganizationRepositories(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusNotFound, "organization not found")
 		return
 	}
+	if r.Method == http.MethodPost {
+		s.createSentryRepository(w, r, principal, organizationID)
+		return
+	}
 	rows, err := s.store.DB.QueryContext(r.Context(), `SELECT id, name, COALESCE(url, ''), provider, status, created_at FROM repositories WHERE organization_id = ? ORDER BY name`, organizationID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not list repositories")

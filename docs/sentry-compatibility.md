@@ -62,7 +62,7 @@ The DSN shown in the project setup page should always be copied verbatim.
 | ELF, Mach-O/dSYM, PE/COFF, Microsoft PDB, and Breakpad debug files | ELF, thin/universal Mach-O, and PE/COFF function symbols with bounded DWARF source locations and inline chains; standalone PDB 7 CodeView public/procedure symbols, C13 source locations, and nested inline sites; and Breakpad `FUNC`/`PUBLIC` symbols with `FILE`/line and nested `INLINE` records, selected by debug ID |
 | ProGuard and R8 mappings | Debug-ID-selected Java class, method, filename, and line remapping with bounded inline-call expansion, including the Sentry multipart upload route |
 | Native minidumps | Raw or multipart `/api/{project_id}/minidump/` ingestion, event metadata and attachments, bounded multi-thread x86/x86-64/ARM64 contexts, Breakpad `STACK CFI`, Windows x86 `STACK WIN`, ELF/Mach-O `.eh_frame`, x86/x86-64/ARM64 Mach-O compact unwind, universal-binary architecture selection, frame-pointer fallback, and debug-ID symbolication |
-| Release commits and deploys | Supported |
+| Repositories, release commits, deploys, and suspect commits | Repository lifecycle/detail, repository commit search/detail, release commit/deploy metadata, and issue suspect-commit lookup |
 | Artifact bundle/chunk upload protocol | Supported for common `sentry-cli` workflows |
 | Pre-production APK/AAB/IPA build upload and installable APK/IPA download | Supported |
 | Snapshot image upload, latest-base lookup, and ZIP download | Supported |
@@ -103,6 +103,12 @@ Project event-count series are available at
 (the default), or `1d`. Requests are limited to 90 days and 10,000 buckets.
 The response uses Sentry's `[[unix_timestamp, count], ...]` shape and includes
 empty buckets.
+
+Source-control clients can manage generic repository records through
+`/api/0/organizations/{organization}/repos/`, browse a repository's commits,
+inspect commit files and linked releases, and retrieve ranked suspect commits
+from `/api/0/issues/{issue}/suspects/`. Repository mutations require
+organization administrator access and are included in the audit log.
 
 The compatibility checks currently exercise real `sentry-sdk` 2.21.0 and
 `sentry-go` 0.43.0 clients against the production Docker image. CI also
