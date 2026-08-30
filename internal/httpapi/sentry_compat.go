@@ -201,29 +201,6 @@ func (s *Server) sentryReleaseDeployList(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, items)
 }
 
-func (s *Server) sentryOrganizationMonitors(w http.ResponseWriter, r *http.Request) {
-	principal, _ := auth.PrincipalFromContext(r.Context())
-	organizationID, ok := s.authorizedOrganizationSlug(r, principal, r.PathValue("org_slug"))
-	if !ok {
-		writeError(w, http.StatusNotFound, "organization not found")
-		return
-	}
-	rows, err := s.store.DB.QueryContext(r.Context(), `SELECT m.id, m.slug, m.name, m.status FROM cron_monitors m JOIN projects p ON p.id = m.project_id WHERE p.organization_id = ? ORDER BY m.name`, organizationID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not list monitors")
-		return
-	}
-	defer rows.Close()
-	items := make([]map[string]string, 0)
-	for rows.Next() {
-		var id, slug, name, status string
-		if rows.Scan(&id, &slug, &name, &status) == nil {
-			items = append(items, map[string]string{"id": id, "slug": slug, "name": name, "status": status})
-		}
-	}
-	writeJSON(w, http.StatusOK, items)
-}
-
 func (s *Server) sentryOrganizationRepositories(w http.ResponseWriter, r *http.Request) {
 	principal, _ := auth.PrincipalFromContext(r.Context())
 	organizationID, ok := s.authorizedOrganizationSlug(r, principal, r.PathValue("org_slug"))

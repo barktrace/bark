@@ -64,6 +64,15 @@ Each item requires `body` or `message`; batches are capped at 1,000 entries and
 5 MiB. Attributes are stored as JSON and can carry `sentry.release`,
 `sentry.environment`, `sentry.trace_id`, and `sentry.span_id`.
 
+## Cron monitoring
+
+Sentry SDK check-ins and `monitor_config` payloads create or update cron
+monitors automatically. Sentry-compatible management clients can list and
+create monitors at `/api/0/organizations/{organization}/monitors/`, manage a
+monitor by ID or slug at the corresponding `/{monitor}/` path, and read its
+check-in history from `/{monitor}/checkins/`. Monitor mutations require project
+administrator access and are written to the organization audit log.
+
 ## Session replay
 
 Sentry `replay_event` and `replay_recording` envelope items are linked by replay

@@ -54,7 +54,7 @@ The DSN shown in the project setup page should always be copied verbatim.
 | Sentry structured log envelope items | Supported |
 | Project ingestion rate-limit headers | Supported |
 | Unknown envelope item acknowledgement/outcome recording | Supported |
-| Cron/check-in envelope items | Supported |
+| Cron/check-in monitoring | Envelope and DSN check-in ingestion plus organization-scoped monitor CRUD and check-in history APIs |
 | Attachments and user reports | Supported |
 | Replay event/recording payloads | Storage, retrieval, metadata, bounded statistics, event timeline, and interactive rrweb playback |
 | Profile and metric payloads | Storage, summaries, sampled-profile hotspots, threads, and flamegraph |

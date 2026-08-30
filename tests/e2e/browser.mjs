@@ -237,6 +237,28 @@ try {
   const projectStats = await statsResponse.json();
   const receivedEvents = projectStats.reduce((total, bucket) => total + bucket[1], 0);
   if (!statsResponse.ok() || receivedEvents < 1 || !projectStats.every((bucket) => Array.isArray(bucket) && bucket.length === 2)) throw new Error(`Sentry project statistics failed: ${JSON.stringify(projectStats)}`);
+  const sentryMonitorsPath = '/api/0/organizations/e2e/monitors/';
+  const createSentryMonitor = await page.request.post(sentryMonitorsPath, { data: {
+    name: 'E2E heartbeat', slug: 'e2e-heartbeat', project: sentryProject.id,
+    config: { schedule: { type: 'interval', value: [5, 'minute'] }, checkin_margin: 5, max_runtime: 30, timezone: 'UTC' },
+  } });
+  const sentryMonitor = await createSentryMonitor.json();
+  if (!createSentryMonitor.ok() || sentryMonitor.slug !== 'e2e-heartbeat' || sentryMonitor.project?.id !== sentryProject.id) throw new Error(`Sentry monitor creation failed: ${JSON.stringify(sentryMonitor)}`);
+  const checkinResponse = await fetch(`${baseURL}/api/${projectID}/cron/e2e-heartbeat/e2e-checkin/?sentry_key=${encodeURIComponent(parsed.username)}`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+      check_in_id: 'e2e-checkin', status: 'ok', duration: 1.25, environment: 'e2e', release: 'checkout@1.0.0',
+      contexts: { monitor_config: { schedule: { type: 'interval', value: [5, 'minute'] }, checkin_margin: 5, max_runtime: 30, timezone: 'UTC' } },
+    }),
+  });
+  if (!checkinResponse.ok) throw new Error(`Sentry check-in ingestion failed: ${checkinResponse.status} ${await checkinResponse.text()}`);
+  const sentryCheckinsResponse = await page.request.get(`${sentryMonitorsPath}e2e-heartbeat/checkins/?status=ok`);
+  const sentryCheckins = await sentryCheckinsResponse.json();
+  if (!sentryCheckinsResponse.ok() || sentryCheckins[0]?.id !== 'e2e-checkin' || sentryCheckins[0]?.duration !== 1.25) throw new Error(`Sentry check-in history failed: ${JSON.stringify(sentryCheckins)}`);
+  const updateSentryMonitor = await page.request.put(`${sentryMonitorsPath}e2e-heartbeat/`, { data: { name: 'E2E heartbeat updated', config: { schedule: { type: 'crontab', value: '*/5 * * * *' } } } });
+  const updatedSentryMonitor = await updateSentryMonitor.json();
+  if (!updateSentryMonitor.ok() || updatedSentryMonitor.name !== 'E2E heartbeat updated' || updatedSentryMonitor.config?.schedule?.type !== 'crontab') throw new Error(`Sentry monitor update failed: ${JSON.stringify(updatedSentryMonitor)}`);
+  const deleteSentryMonitor = await page.request.delete(`${sentryMonitorsPath}e2e-heartbeat/`);
+  if (!deleteSentryMonitor.ok()) throw new Error(`Sentry monitor deletion failed: ${deleteSentryMonitor.status()}`);
   const createSentryProject = await page.request.post('/api/0/organizations/e2e/projects/', { data: { name: 'Temporary E2E', platform: 'go' } });
   const temporarySentryProject = await createSentryProject.json();
   if (!createSentryProject.ok() || temporarySentryProject.slug !== 'temporary-e2e' || !temporarySentryProject.dsn?.public) throw new Error(`Sentry project creation failed: ${JSON.stringify(temporarySentryProject)}`);
