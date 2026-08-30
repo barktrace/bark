@@ -73,6 +73,7 @@ The DSN shown in the project setup page should always be copied verbatim.
 | Project and issue tag endpoints | Built-in and custom tag summaries plus value distributions |
 | Organization members and teams | Listing, team CRUD, team membership, project links, and project responses |
 | Issue and event detail endpoints | Supported, including latest/oldest/recommended/specific group events, raw event JSON, activity history, comment/note lifecycle, status, priority, user/team assignment, bookmark, snooze, public sharing, and permanent discard updates |
+| Organization event-ID resolution | Resolves normalized SDK event IDs to their authorized event and issue representations |
 | User feedback endpoints | Project listing, detail, and deletion |
 | Event attachment endpoints | Event-scoped listing, metadata, download, and deletion |
 | Replay endpoints | Organization search/count/detail/selectors, project-scoped decoded recording segments, dead/rage-click issue creation, viewer history, issue correlation, and durable administrator deletion jobs |

@@ -293,6 +293,9 @@ try {
   if (!latestEvent.ok() || (await latestEvent.json()).eventID !== eventID) throw new Error('Sentry latest issue event endpoint failed');
   const eventDetail = await page.request.get(`/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/events/${eventID}/`);
   if (!eventDetail.ok() || (await eventDetail.json()).groupID !== sentryIssues[0].id) throw new Error('Sentry event detail endpoint failed');
+  const resolvedEvent = await page.request.get(`/api/0/organizations/e2e/eventids/${eventID}/`);
+  const resolvedEventBody = await resolvedEvent.json();
+  if (!resolvedEvent.ok() || resolvedEventBody.event?.eventID !== eventID || resolvedEventBody.group?.id !== sentryIssues[0].id) throw new Error(`Sentry event ID resolution failed: ${JSON.stringify(resolvedEventBody)}`);
   const recommendedEvent = await page.request.get(`/api/0/organizations/e2e/groups/${encodeURIComponent(sentryIssues[0].id)}/events/recommended/`);
   if (!recommendedEvent.ok() || (await recommendedEvent.json()).eventID !== eventID) throw new Error('Sentry recommended issue event endpoint failed');
   const rawEvent = await page.request.get(`/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/events/${eventID}/json/`);
@@ -482,7 +485,7 @@ try {
   if (me.status() !== 401) throw new Error(`logout left session active: /auth/me returned ${me.status()}`);
 
   if (browserErrors.length) throw new Error(browserErrors.join('\n'));
-  console.log('browser E2E passed: OIDC, ingestion, source-map symbolication, Sentry environments/tags/release health, Replay issues/interactions/deletion, Discover, dashboards, teams, profiles, telemetry, MCP, and logout');
+  console.log('browser E2E passed: OIDC, ingestion, source-map symbolication, Sentry event resolution/environments/tags/release health, Replay issues/interactions/deletion, Discover, dashboards, teams, profiles, telemetry, MCP, and logout');
 } finally {
   await browser.close();
 }

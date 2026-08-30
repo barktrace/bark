@@ -88,6 +88,32 @@ func TestSentryIssueAndEventDetailWorkflow(t *testing.T) {
 	if event.Code != http.StatusOK || !containsAll(event.Body.String(), `"projectID":"1"`, `"projectSlug":"app"`, `"id":"customer-1"`) {
 		t.Fatalf("project event status=%d body=%s", event.Code, event.Body.String())
 	}
+
+	resolved := serveSentryDetail(t, server, principal, http.MethodGet, "/api/0/organizations/org/eventids/AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA/", "")
+	if resolved.Code != http.StatusOK || !containsAll(resolved.Body.String(), `"event":{"`, `"eventID":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"`, `"group":{"`, `"shortId":"APP-`+identifier+`"`) {
+		t.Fatalf("event ID resolution status=%d body=%s", resolved.Code, resolved.Body.String())
+	}
+	missing := serveSentryDetail(t, server, principal, http.MethodGet, "/api/0/organizations/org/eventids/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/", "")
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("missing event ID status=%d body=%s", missing.Code, missing.Body.String())
+	}
+	outsider := &auth.Principal{UserID: "outsider", Email: "outsider@example.com"}
+	denied := serveSentryDetail(t, server, outsider, http.MethodGet, "/api/0/organizations/org/eventids/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/", "")
+	if denied.Code != http.StatusNotFound {
+		t.Fatalf("outsider event ID status=%d body=%s", denied.Code, denied.Body.String())
+	}
+	if _, err := server.store.DB.Exec(`
+		INSERT INTO users(id, email, name) VALUES ('restricted', 'restricted@example.com', 'Restricted');
+		INSERT INTO organization_memberships(organization_id, user_id, role) VALUES ('org', 'restricted', 'viewer');
+		INSERT INTO project_memberships(project_id, user_id, role) VALUES ('project', 'restricted', 'none')
+	`); err != nil {
+		t.Fatal(err)
+	}
+	restricted := &auth.Principal{UserID: "restricted", Email: "restricted@example.com", Memberships: []auth.Membership{{OrganizationID: "org", OrganizationSlug: "org", OrganizationName: "Org", Role: "viewer"}}}
+	denied = serveSentryDetail(t, server, restricted, http.MethodGet, "/api/0/organizations/org/eventids/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/", "")
+	if denied.Code != http.StatusNotFound {
+		t.Fatalf("restricted event ID status=%d body=%s", denied.Code, denied.Body.String())
+	}
 }
 
 func TestSentryIssueEventSelectorsAndRawJSON(t *testing.T) {
@@ -339,6 +365,7 @@ func serveSentryDetail(t *testing.T, server *Server, principal *auth.Principal, 
 	response := httptest.NewRecorder()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/0/organizations/{org_slug}/", server.sentryOrganizationDetail)
+	mux.HandleFunc("GET /api/0/organizations/{org_slug}/eventids/{event_id}/", server.sentryOrganizationEventID)
 	mux.HandleFunc("GET /api/0/projects/{org_slug}/{project_slug}/", server.sentryProjectDetail)
 	mux.HandleFunc("GET /api/0/projects/{org_slug}/{project_slug}/keys/", server.sentryProjectKeys)
 	mux.HandleFunc("GET /api/0/projects/{org_slug}/{project_slug}/events/{event_id}/", server.sentryProjectEventDetail)

@@ -22,7 +22,7 @@ import (
 
 const (
 	protocolVersion = "2025-11-25"
-	serverVersion   = "0.38.0"
+	serverVersion   = "0.39.0"
 )
 
 var supportedProtocolVersions = map[string]bool{

@@ -348,6 +348,47 @@ func (s *Server) sentryProjectEventDetail(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, s.sentryEventResponse(record))
 }
 
+func (s *Server) sentryOrganizationEventID(w http.ResponseWriter, r *http.Request) {
+	principal, _ := auth.PrincipalFromContext(r.Context())
+	organizationID, ok := s.authorizedOrganizationSlug(r, principal, r.PathValue("org_slug"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "event not found")
+		return
+	}
+	projectIDs, err := s.discoverProjectIDs(r, principal, organizationID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not authorize projects")
+		return
+	}
+	if len(projectIDs) == 0 {
+		writeError(w, http.StatusNotFound, "event not found")
+		return
+	}
+	eventID := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(r.PathValue("event_id")), "-", ""))
+	query := sentryEventSelect + ` WHERE p.organization_id = ? AND e.project_id IN (` + queryPlaceholders(len(projectIDs)) + `) AND e.event_id = ? LIMIT 1`
+	arguments := make([]any, 0, len(projectIDs)+2)
+	arguments = append(arguments, organizationID)
+	for _, projectID := range projectIDs {
+		arguments = append(arguments, projectID)
+	}
+	arguments = append(arguments, eventID)
+	record, err := s.querySentryEvent(r, query, arguments...)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "event not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not resolve event")
+		return
+	}
+	issue, err := s.loadSentryIssue(r, strconv.FormatInt(record.IssueLegacyID, 10))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not resolve event issue")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"event": s.sentryEventResponse(record), "group": s.sentryIssueResponse(issue)})
+}
+
 func (s *Server) sentryProjectResponse(r *http.Request, projectID, organizationID string) (map[string]any, error) {
 	var sentryID, slug, name, platform, publicKey, createdAt, organizationSlug, organizationName string
 	err := s.store.DB.QueryRowContext(r.Context(), `
