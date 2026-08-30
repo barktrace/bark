@@ -48,3 +48,16 @@ func TestQueueAndDeliverWebhook(t *testing.T) {
 		t.Fatalf("delivery status = %q, %v", status, err)
 	}
 }
+
+func TestMatchesConditionsSupportsAnyAndTags(t *testing.T) {
+	payload := map[string]any{"environment": "production", "level": "warning", "tags": map[string]any{"region": "eu-west-1", "tier": "api"}}
+	if !matchesConditions(`{"filter_match":"any","environment":"staging","tags":[{"key":"region","match":"starts_with","value":"eu-"}]}`, payload) {
+		t.Fatal("any filter did not match a tag predicate")
+	}
+	if matchesConditions(`{"environment":"production","tags":[{"key":"tier","match":"neq","value":"api"}]}`, payload) {
+		t.Fatal("all filters matched despite a failing tag predicate")
+	}
+	if !matchesConditions(`{"tags":[{"key":"region","match":"contains","value":"west"},{"key":"tier","match":"eq","value":"api"}]}`, payload) {
+		t.Fatal("all tag predicates should match")
+	}
+}

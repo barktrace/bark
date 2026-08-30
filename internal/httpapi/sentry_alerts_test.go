@@ -81,9 +81,13 @@ func TestSentryAlertRuleLifecycle(t *testing.T) {
 		t.Fatalf("member create status=%d body=%s", denied.Code, denied.Body.String())
 	}
 
-	invalid := serveSentryAlert(t, server, owner, http.MethodPost, "/api/0/projects/org/app/rules/", `{"name":"Any filters","filterMatch":"any","destination_type":"email","destination_email":"user@example.com"}`)
+	anyFilters := serveSentryAlert(t, server, owner, http.MethodPost, "/api/0/projects/org/app/rules/", `{"name":"Any filters","filterMatch":"any","filters":[{"id":"sentry.rules.filters.tagged_event.TaggedEventFilter","key":"region","match":"eq","value":"eu"}],"destination_type":"email","destination_email":"user@example.com"}`)
+	if anyFilters.Code != http.StatusCreated || !containsAll(anyFilters.Body.String(), `"filterMatch":"any"`, `"key":"region"`, `"value":"eu"`) {
+		t.Fatalf("any filter match status=%d body=%s", anyFilters.Code, anyFilters.Body.String())
+	}
+	invalid := serveSentryAlert(t, server, owner, http.MethodPost, "/api/0/projects/org/app/rules/", `{"name":"Any triggers","actionMatch":"any","destination_type":"email","destination_email":"user@example.com"}`)
 	if invalid.Code != http.StatusBadRequest {
-		t.Fatalf("unsupported filter match status=%d body=%s", invalid.Code, invalid.Body.String())
+		t.Fatalf("unsupported action match status=%d body=%s", invalid.Code, invalid.Body.String())
 	}
 
 	deleted := serveSentryAlert(t, server, owner, http.MethodDelete, "/api/0/projects/org/app/rules/"+ruleID+"/", "")

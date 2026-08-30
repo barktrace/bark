@@ -281,14 +281,17 @@ try {
   const createSentryRule = await page.request.post(sentryRulesPath, { data: {
     name: 'E2E first-seen email',
     actionMatch: 'all',
-    filterMatch: 'all',
+    filterMatch: 'any',
     frequency: 15,
     conditions: [{ id: 'sentry.rules.conditions.first_seen_event.FirstSeenEventCondition' }],
-    filters: [{ id: 'sentry.rules.filters.tagged_event.TaggedEventFilter', key: 'environment', match: 'eq', value: 'e2e' }],
+    filters: [
+      { id: 'sentry.rules.filters.tagged_event.TaggedEventFilter', key: 'environment', match: 'eq', value: 'e2e' },
+      { id: 'sentry.rules.filters.tagged_event.TaggedEventFilter', key: 'region', match: 'starts_with', value: 'eu-' },
+    ],
     actions: [{ id: 'sentry.mail.actions.NotifyEmailAction', targetIdentifier: 'owner' }],
   } });
   const sentryRule = await createSentryRule.json();
-  if (!createSentryRule.ok() || !sentryRule.id || sentryRule.actions?.[0]?.targetIdentifier !== accountEmail) throw new Error(`Sentry alert-rule creation failed: ${JSON.stringify(sentryRule)}`);
+  if (!createSentryRule.ok() || !sentryRule.id || sentryRule.filterMatch !== 'any' || !sentryRule.filters?.some((filter) => filter.key === 'region') || sentryRule.actions?.[0]?.targetIdentifier !== accountEmail) throw new Error(`Sentry alert-rule creation failed: ${JSON.stringify(sentryRule)}`);
   const listSentryRules = await page.request.get(sentryRulesPath);
   const sentryRules = await listSentryRules.json();
   if (!listSentryRules.ok() || !sentryRules.some((rule) => rule.id === sentryRule.id)) throw new Error(`Sentry alert-rule listing failed: ${JSON.stringify(sentryRules)}`);

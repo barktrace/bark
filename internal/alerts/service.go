@@ -130,7 +130,7 @@ func NormalizeConditions(raw json.RawMessage) ([]byte, bool) {
 	if json.Unmarshal(raw, &conditions) != nil {
 		return nil, false
 	}
-	allowed := map[string]bool{"environment": true, "levels": true, "metric_name": true, "min_value": true, "max_value": true}
+	allowed := map[string]bool{"environment": true, "levels": true, "metric_name": true, "min_value": true, "max_value": true, "filter_match": true, "tags": true}
 	for key := range conditions {
 		if !allowed[key] {
 			return nil, false
@@ -217,12 +217,17 @@ func matchesConditions(raw string, payload map[string]any) bool {
 		MetricName  string   `json:"metric_name"`
 		MinValue    *float64 `json:"min_value"`
 		MaxValue    *float64 `json:"max_value"`
+		FilterMatch string   `json:"filter_match"`
+		Tags        []struct {
+			Key, Match, Value string
+		} `json:"tags"`
 	}
 	if strings.TrimSpace(raw) == "" || json.Unmarshal([]byte(raw), &conditions) != nil {
 		return true
 	}
-	if conditions.Environment != "" && !strings.EqualFold(stringField(payload, "environment"), conditions.Environment) {
-		return false
+	results := make([]bool, 0, 4+len(conditions.Tags))
+	if conditions.Environment != "" {
+		results = append(results, strings.EqualFold(stringField(payload, "environment"), conditions.Environment))
 	}
 	if len(conditions.Levels) > 0 {
 		level := strings.ToLower(stringField(payload, "level"))
@@ -230,21 +235,70 @@ func matchesConditions(raw string, payload map[string]any) bool {
 		for _, allowed := range conditions.Levels {
 			matched = matched || strings.EqualFold(level, allowed)
 		}
+		results = append(results, matched)
+	}
+	if conditions.MetricName != "" {
+		results = append(results, stringField(payload, "metric_name") == conditions.MetricName)
+	}
+	value, hasValue := numberField(payload, "value")
+	if conditions.MinValue != nil {
+		results = append(results, hasValue && value >= *conditions.MinValue)
+	}
+	if conditions.MaxValue != nil {
+		results = append(results, hasValue && value <= *conditions.MaxValue)
+	}
+	for _, condition := range conditions.Tags {
+		actual := tagField(payload["tags"], condition.Key)
+		results = append(results, matchTag(actual, condition.Match, condition.Value))
+	}
+	if len(results) == 0 {
+		return true
+	}
+	if conditions.FilterMatch == "any" {
+		for _, matched := range results {
+			if matched {
+				return true
+			}
+		}
+		return false
+	}
+	for _, matched := range results {
 		if !matched {
 			return false
 		}
 	}
-	if conditions.MetricName != "" && stringField(payload, "metric_name") != conditions.MetricName {
-		return false
-	}
-	value, hasValue := numberField(payload, "value")
-	if conditions.MinValue != nil && (!hasValue || value < *conditions.MinValue) {
-		return false
-	}
-	if conditions.MaxValue != nil && (!hasValue || value > *conditions.MaxValue) {
-		return false
-	}
 	return true
+}
+
+func tagField(raw any, key string) string {
+	switch tags := raw.(type) {
+	case map[string]any:
+		return stringField(tags, key)
+	case []any:
+		for _, rawPair := range tags {
+			if pair, ok := rawPair.([]any); ok && len(pair) == 2 && stringField(map[string]any{"key": pair[0]}, "key") == key {
+				return stringField(map[string]any{"value": pair[1]}, "value")
+			}
+		}
+	}
+	return ""
+}
+
+func matchTag(actual, operation, expected string) bool {
+	switch strings.ToLower(strings.TrimSpace(operation)) {
+	case "neq", "not_equal":
+		return actual != expected
+	case "contains":
+		return strings.Contains(actual, expected)
+	case "not_contains":
+		return !strings.Contains(actual, expected)
+	case "starts_with":
+		return strings.HasPrefix(actual, expected)
+	case "ends_with":
+		return strings.HasSuffix(actual, expected)
+	default:
+		return actual == expected
+	}
 }
 
 func (s *Service) deliverEmail(item delivery) error {

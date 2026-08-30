@@ -69,6 +69,7 @@ type eventPayload struct {
 	Timestamp   json.RawMessage `json:"timestamp"`
 	Fingerprint json.RawMessage `json:"fingerprint"`
 	Exception   json.RawMessage `json:"exception"`
+	Tags        json.RawMessage `json:"tags"`
 }
 
 type transactionPayload struct {
@@ -496,7 +497,9 @@ func (s *Service) StoreEvent(ctx context.Context, project Project, raw []byte, e
 		trigger = "regression"
 	}
 	if trigger != "" {
-		if err := alerts.Queue(ctx, s.store.DB, project.ID, trigger, map[string]any{"title": title, "issue_id": issueID, "event_id": eventID, "level": level, "trigger": trigger, "timestamp": timestamp}); err != nil {
+		var tags any
+		_ = json.Unmarshal(event.Tags, &tags)
+		if err := alerts.Queue(ctx, s.store.DB, project.ID, trigger, map[string]any{"title": title, "issue_id": issueID, "event_id": eventID, "level": level, "environment": event.Environment, "tags": tags, "trigger": trigger, "timestamp": timestamp}); err != nil {
 			slog.Error("queue issue alert", "error", err, "issue_id", issueID)
 		}
 	}

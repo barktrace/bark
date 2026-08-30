@@ -204,8 +204,8 @@ func (s *Server) sentryAlertFromInput(r *http.Request, principal *auth.Principal
 	if match := strings.ToLower(strings.TrimSpace(input.ActionMatch)); match != "" && match != "all" {
 		return record, errors.New("only actionMatch=all is supported")
 	}
-	if match := strings.ToLower(strings.TrimSpace(input.FilterMatch)); match != "" && match != "all" {
-		return record, errors.New("only filterMatch=all is supported")
+	if match := strings.ToLower(strings.TrimSpace(input.FilterMatch)); match != "" && match != "all" && match != "any" {
+		return record, errors.New("filterMatch must be all or any")
 	}
 	if input.Frequency != nil {
 		record.Frequency = *input.Frequency
@@ -286,6 +286,9 @@ func sentryTrigger(conditions []map[string]any) string {
 
 func sentryAlertConditions(input sentryAlertInput) ([]byte, error) {
 	normalized := make(map[string]any)
+	if match := strings.ToLower(strings.TrimSpace(input.FilterMatch)); match == "any" {
+		normalized["filter_match"] = "any"
+	}
 	if environment := sentryEnvironmentValue(input.Environment); environment != "" {
 		normalized["environment"] = environment
 	}
@@ -294,6 +297,14 @@ func sentryAlertConditions(input sentryAlertInput) ([]byte, error) {
 		id := strings.ToLower(stringValue(filter["id"]))
 		if strings.Contains(id, "tagged_event") && strings.EqualFold(stringValue(filter["key"]), "environment") {
 			normalized["environment"] = stringValue(filter["value"])
+		} else if strings.Contains(id, "tagged_event") {
+			key, value := strings.TrimSpace(stringValue(filter["key"])), stringValue(filter["value"])
+			match := strings.ToLower(strings.TrimSpace(stringValue(filter["match"])))
+			if key == "" || value == "" || (match != "" && match != "eq" && match != "neq" && match != "contains" && match != "not_contains" && match != "starts_with" && match != "ends_with") {
+				return nil, errors.New("invalid tag filter")
+			}
+			tags, _ := normalized["tags"].([]map[string]string)
+			normalized["tags"] = append(tags, map[string]string{"key": key, "match": firstNonEmpty(match, "eq"), "value": value})
 		}
 		if strings.Contains(id, "level") {
 			levels, err := sentryLevels(stringValue(filter["level"]), stringValue(filter["match"]))
@@ -431,6 +442,13 @@ func sentryAlertResponse(record sentryAlertRecord) map[string]any {
 		}
 		filters = append(filters, map[string]any{"id": "barktrace.rules.filters.levels", "levels": values})
 	}
+	if tags, ok := normalized["tags"].([]any); ok {
+		for _, rawTag := range tags {
+			if tag, ok := rawTag.(map[string]any); ok {
+				filters = append(filters, map[string]any{"id": "sentry.rules.filters.tagged_event.TaggedEventFilter", "key": stringValue(tag["key"]), "match": stringValue(tag["match"]), "value": stringValue(tag["value"])})
+			}
+		}
+	}
 	action := map[string]any{"id": sentryActionID(record.DestinationType), "targetType": record.DestinationType}
 	switch record.DestinationType {
 	case "email":
@@ -442,9 +460,10 @@ func sentryAlertResponse(record sentryAlertRecord) map[string]any {
 	if !record.Enabled {
 		status = "disabled"
 	}
+	filterMatch := firstNonEmpty(stringValue(normalized["filter_match"]), "all")
 	return map[string]any{
 		"id": record.ID, "name": record.Name, "project": record.ProjectSlug, "projects": []string{record.ProjectSlug},
-		"actionMatch": "all", "filterMatch": "all", "frequency": record.Frequency, "status": status,
+		"actionMatch": "all", "filterMatch": filterMatch, "frequency": record.Frequency, "status": status,
 		"conditions": conditions, "filters": filters, "actions": []map[string]any{action},
 		"environment": nullableText(stringValue(normalized["environment"])), "dateCreated": normalizeAPITime(record.CreatedAt),
 		"owner": nil, "createdBy": nil, "dateModified": normalizeAPITime(record.CreatedAt),

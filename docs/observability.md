@@ -222,6 +222,8 @@ Sentry-compatible clients can manage the same rules through
 `GET`/`POST /api/0/projects/{organization}/{project}/rules/` and
 `GET`/`PUT`/`DELETE /api/0/projects/{organization}/{project}/rules/{id}/`.
 First-seen, regression, user-feedback, uptime, cron, and metric conditions are
-mapped to Barktrace triggers. Environment and level filters are supported.
-Each rule currently has one email, HTTPS webhook, or Slack action; both match
-modes must be `all`.
+mapped to Barktrace triggers. Environment, level, and arbitrary event-tag
+filters are supported. Filters can use `all` or `any` matching and tag filters
+support equality, inequality, contains, prefix, and suffix comparisons. Each
+rule currently has one email, HTTPS webhook, or Slack action; trigger-condition
+matching currently remains `all`.
