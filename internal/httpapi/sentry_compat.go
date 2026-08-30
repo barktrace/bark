@@ -44,6 +44,10 @@ func (s *Server) sentryOrganizationProjects(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusNotFound, "organization not found")
 		return
 	}
+	if r.Method == http.MethodPost {
+		s.createSentryProject(w, r, principal, organizationID)
+		return
+	}
 	rows, err := s.store.DB.QueryContext(r.Context(), `
 		SELECT p.sentry_id, p.slug, p.name, COALESCE(p.platform, ''),
 		       COALESCE((SELECT t.slug FROM team_projects tp JOIN teams t ON t.id = tp.team_id WHERE tp.project_id = p.id ORDER BY t.name LIMIT 1), '')

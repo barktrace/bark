@@ -367,6 +367,61 @@ func TestSentryIssueDeleteRequiresProjectAdmin(t *testing.T) {
 	}
 }
 
+func TestSentryProjectLifecycle(t *testing.T) {
+	server, owner := managementFixture(t)
+	if _, err := server.store.DB.Exec(`INSERT INTO teams(id, organization_id, slug, name) VALUES ('team', 'org', 'backend', 'Backend')`); err != nil {
+		t.Fatal(err)
+	}
+	created := serveSentryProject(t, server, owner, http.MethodPost, "/api/0/organizations/org/projects/", `{"name":"Billing API","platform":"go","team":"backend"}`)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
+	}
+	var project map[string]any
+	if err := json.Unmarshal(created.Body.Bytes(), &project); err != nil {
+		t.Fatal(err)
+	}
+	if project["slug"] != "billing-api" || project["platform"] != "go" || project["id"] == "" || !containsAll(created.Body.String(), `"slug":"backend"`) {
+		t.Fatalf("created project=%#v", project)
+	}
+
+	updated := serveSentryProject(t, server, owner, http.MethodPut, "/api/0/projects/org/billing-api/", `{"name":"Payments API","slug":"payments","platform":"python"}`)
+	if updated.Code != http.StatusOK || !containsAll(updated.Body.String(), `"name":"Payments API"`, `"slug":"payments"`, `"platform":"python"`) {
+		t.Fatalf("update status=%d body=%s", updated.Code, updated.Body.String())
+	}
+
+	member := &auth.Principal{UserID: "member", Email: "member@example.com", Memberships: []auth.Membership{{OrganizationID: "org", OrganizationSlug: "org", Role: "member"}}}
+	if denied := serveSentryProject(t, server, member, http.MethodDelete, "/api/0/projects/org/payments/", ""); denied.Code != http.StatusForbidden {
+		t.Fatalf("member delete status=%d body=%s", denied.Code, denied.Body.String())
+	}
+	deleted := serveSentryProject(t, server, owner, http.MethodDelete, "/api/0/projects/org/payments/", "")
+	if deleted.Code != http.StatusNoContent {
+		t.Fatalf("delete status=%d body=%s", deleted.Code, deleted.Body.String())
+	}
+	if detail := serveSentryProject(t, server, owner, http.MethodGet, "/api/0/projects/org/payments/", ""); detail.Code != http.StatusNotFound {
+		t.Fatalf("deleted detail status=%d body=%s", detail.Code, detail.Body.String())
+	}
+	if denied := serveSentryProject(t, server, member, http.MethodPost, "/api/0/organizations/org/projects/", `{"name":"Denied"}`); denied.Code != http.StatusForbidden {
+		t.Fatalf("member create status=%d body=%s", denied.Code, denied.Body.String())
+	}
+}
+
+func serveSentryProject(t *testing.T, server *Server, principal *auth.Principal, method, target, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	request := principalRequest(t, principal, method, target, body)
+	response := httptest.NewRecorder()
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/0/organizations/{org_slug}/projects/", server.sentryOrganizationProjects)
+	mux.HandleFunc("POST /api/0/organizations/{org_slug}/projects/", server.sentryOrganizationProjects)
+	mux.HandleFunc("GET /api/0/projects/{org_slug}/{project_slug}/", server.sentryProjectDetail)
+	mux.HandleFunc("PUT /api/0/projects/{org_slug}/{project_slug}/", server.sentryProjectDetail)
+	mux.HandleFunc("DELETE /api/0/projects/{org_slug}/{project_slug}/", server.sentryProjectDetail)
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent && response.Body.Len() > 0 && !json.Valid(response.Body.Bytes()) {
+		t.Fatalf("invalid JSON response status=%d body=%s", response.Code, response.Body.String())
+	}
+	return response
+}
+
 func serveSentryDetail(t *testing.T, server *Server, principal *auth.Principal, method, target, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	request := principalRequest(t, principal, method, target, body)

@@ -91,6 +91,23 @@ func (s *Server) sentryProjectDetail(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "project not found")
 		return
 	}
+	if r.Method != http.MethodGet {
+		if !s.canManageProject(r, principal, projectID) {
+			writeError(w, http.StatusForbidden, "project administrator access required")
+			return
+		}
+		if r.Method == http.MethodDelete {
+			if _, err := s.store.DB.ExecContext(r.Context(), `DELETE FROM projects WHERE id = ?`, projectID); err != nil {
+				writeError(w, http.StatusInternalServerError, "could not delete project")
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if !s.updateSentryProject(w, r, projectID) {
+			return
+		}
+	}
 	response, err := s.sentryProjectResponse(r, projectID, organizationID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "project not found")

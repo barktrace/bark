@@ -232,6 +232,14 @@ try {
   const projectKeys = await page.request.get(`/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/keys/`);
   const keys = await projectKeys.json();
   if (!projectKeys.ok() || keys[0]?.public !== parsed.username) throw new Error('Sentry project key endpoint failed');
+  const createSentryProject = await page.request.post('/api/0/organizations/e2e/projects/', { data: { name: 'Temporary E2E', platform: 'go' } });
+  const temporarySentryProject = await createSentryProject.json();
+  if (!createSentryProject.ok() || temporarySentryProject.slug !== 'temporary-e2e' || !temporarySentryProject.dsn?.public) throw new Error(`Sentry project creation failed: ${JSON.stringify(temporarySentryProject)}`);
+  const updateSentryProject = await page.request.put('/api/0/projects/e2e/temporary-e2e/', { data: { name: 'Temporary renamed', slug: 'temporary-renamed', platform: 'python' } });
+  const updatedSentryProject = await updateSentryProject.json();
+  if (!updateSentryProject.ok() || updatedSentryProject.slug !== 'temporary-renamed' || updatedSentryProject.platform !== 'python') throw new Error(`Sentry project update failed: ${JSON.stringify(updatedSentryProject)}`);
+  const deleteSentryProject = await page.request.delete('/api/0/projects/e2e/temporary-renamed/');
+  if (!deleteSentryProject.ok()) throw new Error(`Sentry project deletion failed: ${deleteSentryProject.status()}`);
   const sentryRulesPath = `/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/rules/`;
   const createSentryRule = await page.request.post(sentryRulesPath, { data: {
     name: 'E2E first-seen email',

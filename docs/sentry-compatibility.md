@@ -68,7 +68,7 @@ The DSN shown in the project setup page should always be copied verbatim.
 | Snapshot image upload, latest-base lookup, and ZIP download | Supported |
 | Durable queue, retry, and dead-letter handling | Supported |
 | Organization events/Discover endpoint | Errors, transactions, spans, logs, metrics, bounded filters and aggregates |
-| Organization and project detail endpoints | Supported, including project DSN-key discovery |
+| Organization and project endpoints | Organization/project discovery, project creation/update/deletion, optional initial team assignment, and project DSN-key discovery |
 | Organization and project environment endpoints | Discovery across telemetry plus visible/hidden management |
 | Project and issue tag endpoints | Built-in and custom tag summaries plus value distributions |
 | Organization members and teams | Listing, team CRUD, team membership, project links, and project responses |
