@@ -118,6 +118,8 @@ func (c *postgresConn) IsValid() bool {
 }
 
 func postgresQuery(query string) string {
+	query = strings.ReplaceAll(query, "CAST(strftime('%s', timestamp) AS INTEGER)", "CAST(EXTRACT(EPOCH FROM timestamp) AS BIGINT)")
+	query = strings.ReplaceAll(query, "CAST(strftime('%s', created_at) AS INTEGER)", "CAST(EXTRACT(EPOCH FROM created_at) AS BIGINT)")
 	query = postgresNullableTime.ReplaceAllString(query, "COALESCE($1::text, '')")
 	query = strings.ReplaceAll(query, " COLLATE NOCASE", "")
 	query = strings.ReplaceAll(query, " LIKE ", " ILIKE ")

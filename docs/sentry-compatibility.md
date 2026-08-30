@@ -69,6 +69,7 @@ The DSN shown in the project setup page should always be copied verbatim.
 | Durable queue, retry, and dead-letter handling | Supported |
 | Organization events/Discover endpoint | Errors, transactions, spans, logs, metrics, bounded filters and aggregates |
 | Organization and project endpoints | Organization/project discovery, project creation/update/deletion, optional initial team assignment, and project DSN-key discovery |
+| Project statistics endpoint | Received, rejected, and blacklisted event-count series with Sentry-compatible Unix time ranges and 10-second, hourly, or daily buckets |
 | Organization and project environment endpoints | Discovery across telemetry plus visible/hidden management |
 | Project and issue tag endpoints | Built-in and custom tag summaries plus value distributions |
 | Organization members and teams | Listing, team CRUD, team membership, project links, and project responses |
@@ -94,6 +95,14 @@ condition, filter, and action objects and also its native flat trigger and
 destination fields. Rules currently use `actionMatch=all`, `filterMatch=all`,
 and one delivery action. Webhook secrets are never returned by list or detail
 responses.
+
+Project event-count series are available at
+`/api/0/projects/{organization}/{project}/stats/`. The `stat` parameter accepts
+`received` (the default), `rejected`, or the legacy `blacklisted` name;
+`since` and `until` are Unix timestamps; and `resolution` accepts `10s`, `1h`
+(the default), or `1d`. Requests are limited to 90 days and 10,000 buckets.
+The response uses Sentry's `[[unix_timestamp, count], ...]` shape and includes
+empty buckets.
 
 The compatibility checks currently exercise real `sentry-sdk` 2.21.0 and
 `sentry-go` 0.43.0 clients against the production Docker image. CI also

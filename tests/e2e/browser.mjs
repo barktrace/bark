@@ -232,6 +232,11 @@ try {
   const projectKeys = await page.request.get(`/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/keys/`);
   const keys = await projectKeys.json();
   if (!projectKeys.ok() || keys[0]?.public !== parsed.username) throw new Error('Sentry project key endpoint failed');
+  const statsUntil = Math.floor(Date.now() / 1000) + 60;
+  const statsResponse = await page.request.get(`/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/stats/?stat=received&resolution=1h&since=${statsUntil - 3660}&until=${statsUntil}`);
+  const projectStats = await statsResponse.json();
+  const receivedEvents = projectStats.reduce((total, bucket) => total + bucket[1], 0);
+  if (!statsResponse.ok() || receivedEvents < 1 || !projectStats.every((bucket) => Array.isArray(bucket) && bucket.length === 2)) throw new Error(`Sentry project statistics failed: ${JSON.stringify(projectStats)}`);
   const createSentryProject = await page.request.post('/api/0/organizations/e2e/projects/', { data: { name: 'Temporary E2E', platform: 'go' } });
   const temporarySentryProject = await createSentryProject.json();
   if (!createSentryProject.ok() || temporarySentryProject.slug !== 'temporary-e2e' || !temporarySentryProject.dsn?.public) throw new Error(`Sentry project creation failed: ${JSON.stringify(temporarySentryProject)}`);

@@ -227,6 +227,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/0/projects/{org_slug}/{project_slug}/", s.auth.Require(http.HandlerFunc(s.sentryProjectDetail)))
 	s.mux.Handle("PUT /api/0/projects/{org_slug}/{project_slug}/", s.auth.Require(http.HandlerFunc(s.sentryProjectDetail)))
 	s.mux.Handle("DELETE /api/0/projects/{org_slug}/{project_slug}/", s.auth.Require(http.HandlerFunc(s.sentryProjectDetail)))
+	s.mux.Handle("GET /api/0/projects/{org_slug}/{project_slug}/stats/", s.auth.Require(http.HandlerFunc(s.sentryProjectStats)))
 	s.mux.Handle("GET /api/0/projects/{org_slug}/{project_slug}/keys/", s.auth.Require(http.HandlerFunc(s.sentryProjectKeys)))
 	s.mux.Handle("GET /api/0/projects/{org_slug}/{project_slug}/environments/", s.auth.Require(http.HandlerFunc(s.sentryProjectEnvironments)))
 	s.mux.Handle("PUT /api/0/projects/{org_slug}/{project_slug}/environments/", s.auth.Require(http.HandlerFunc(s.sentryProjectEnvironments)))
