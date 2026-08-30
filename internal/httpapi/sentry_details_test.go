@@ -60,6 +60,14 @@ func TestSentryIssueAndEventDetailWorkflow(t *testing.T) {
 	if issue.Code != http.StatusOK || !containsAll(issue.Body.String(), `"shortId":"APP-`+identifier+`"`, `"title":"Boom"`, `"count":"1"`) {
 		t.Fatalf("issue detail status=%d body=%s", issue.Code, issue.Body.String())
 	}
+	organizationIssue := serveSentryDetail(t, server, principal, http.MethodGet, "/api/0/organizations/org/groups/"+identifier+"/", "")
+	if organizationIssue.Code != http.StatusOK || !containsAll(organizationIssue.Body.String(), `"shortId":"APP-`+identifier+`"`, `"title":"Boom"`) {
+		t.Fatalf("organization issue detail status=%d body=%s", organizationIssue.Code, organizationIssue.Body.String())
+	}
+	wrongOrganization := serveSentryDetail(t, server, principal, http.MethodGet, "/api/0/organizations/other/issues/"+identifier+"/", "")
+	if wrongOrganization.Code != http.StatusNotFound {
+		t.Fatalf("wrong-organization issue status=%d body=%s", wrongOrganization.Code, wrongOrganization.Body.String())
+	}
 
 	updated := serveSentryDetail(t, server, principal, http.MethodPut, "/api/0/issues/"+identifier+"/", `{"status":"resolved","priority":"high","isBookmarked":true}`)
 	if updated.Code != http.StatusOK || !containsAll(updated.Body.String(), `"status":"resolved"`, `"priority":"high"`, `"isBookmarked":true`) {
@@ -373,6 +381,9 @@ func serveSentryDetail(t *testing.T, server *Server, principal *auth.Principal, 
 	mux.HandleFunc("GET /api/0/issues/{issue_id}/", server.sentryIssueDetail)
 	mux.HandleFunc("PUT /api/0/issues/{issue_id}/", server.sentryIssueDetail)
 	mux.HandleFunc("DELETE /api/0/issues/{issue_id}/", server.sentryIssueDetail)
+	mux.HandleFunc("GET /api/0/groups/{issue_id}/", server.sentryIssueDetail)
+	mux.HandleFunc("GET /api/0/organizations/{org_slug}/issues/{issue_id}/", server.sentryIssueDetail)
+	mux.HandleFunc("GET /api/0/organizations/{org_slug}/groups/{issue_id}/", server.sentryIssueDetail)
 	mux.HandleFunc("GET /api/0/issues/{issue_id}/events/", server.sentryIssueEvents)
 	mux.HandleFunc("GET /api/0/issues/{issue_id}/events/latest/", server.sentryIssueLatestEvent)
 	mux.HandleFunc("GET /api/0/issues/{issue_id}/events/{event_id}/", server.sentryIssueEventDetail)

@@ -121,14 +121,8 @@ func (s *Server) sentryProjectKeys(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) sentryIssueDetail(w http.ResponseWriter, r *http.Request) {
-	principal, _ := auth.PrincipalFromContext(r.Context())
-	issue, err := s.loadSentryIssue(r, r.PathValue("issue_id"))
-	if errors.Is(err, sql.ErrNoRows) || err == nil && !s.canAccessProject(r, principal, issue.ProjectID) {
-		writeError(w, http.StatusNotFound, "issue not found")
-		return
-	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not load issue")
+	issue, principal, ok := s.authorizedSentryIssue(w, r, false)
+	if !ok {
 		return
 	}
 	switch r.Method {
@@ -145,6 +139,7 @@ func (s *Server) sentryIssueDetail(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
+		var err error
 		issue, err = s.loadSentryIssue(r, r.PathValue("issue_id"))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "could not reload issue")

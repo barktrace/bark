@@ -60,8 +60,8 @@ func TestInitializeAndListTools(t *testing.T) {
 	listed := call(t, service, `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
 	toolsResult := listed["result"].(map[string]any)
 	available := toolsResult["tools"].([]any)
-	if len(available) != 64 {
-		t.Fatalf("tool count = %d, want 64", len(available))
+	if len(available) != 65 {
+		t.Fatalf("tool count = %d, want 65", len(available))
 	}
 }
 
@@ -449,6 +449,7 @@ func TestOrganizationTokenIsScopedAndReadOnly(t *testing.T) {
 	_, err := st.DB.Exec(`
 		INSERT INTO organizations(id, slug, name) VALUES ('other-org', 'other', 'Other');
 		INSERT INTO projects(id, sentry_id, organization_id, slug, name, public_key) VALUES ('other-project', '2', 'other-org', 'other', 'Other', 'other-key');
+		INSERT INTO issues(id, project_id, fingerprint, title, first_seen_at, last_seen_at) VALUES ('other-issue', 'other-project', 'other', 'Foreign issue', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
 		INSERT INTO users(id, email, name) VALUES ('creator', 'creator@example.com', 'Creator');
 		INSERT INTO organization_memberships(organization_id, user_id, role) VALUES ('org', 'creator', 'owner');
 		INSERT INTO mcp_tokens(id, organization_id, created_by, name, token_hash, token_prefix, scopes) VALUES ('mcp-read', 'org', 'creator', 'Read', ?, 'bark_mcp_scope', '["read"]');
@@ -462,6 +463,11 @@ func TestOrganizationTokenIsScopedAndReadOnly(t *testing.T) {
 	projects := listed["result"].(map[string]any)["structuredContent"].([]any)
 	if len(projects) != 1 || projects[0].(map[string]any)["id"] != "project" {
 		t.Fatalf("scoped projects = %#v", projects)
+	}
+	searched := callWithToken(t, service, plain, `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"search_organization_issues","arguments":{"status":"unresolved","environment":"production","query":"database"}}}`)
+	issues := searched["result"].(map[string]any)["structuredContent"].([]any)
+	if len(issues) != 1 || issues[0].(map[string]any)["id"] != "issue" || issues[0].(map[string]any)["project_id"] != "project" {
+		t.Fatalf("scoped issue search = %#v", issues)
 	}
 
 	foreign := callWithToken(t, service, plain, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_project_summary","arguments":{"project_id":"other-project"}}}`)

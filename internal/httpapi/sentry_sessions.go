@@ -21,7 +21,7 @@ func (s *Server) sentryOrganizationSessions(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusInternalServerError, "could not authorize projects")
 		return
 	}
-	projectIDs, err = s.filterSessionProjects(r, projectIDs, compactQueryValues(r.URL.Query()["project"]))
+	projectIDs, err = s.filterAccessibleProjects(r, projectIDs, compactQueryValues(r.URL.Query()["project"]))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not filter projects")
 		return
@@ -59,7 +59,7 @@ func (s *Server) sentryOrganizationSessions(w http.ResponseWriter, r *http.Reque
 	})
 }
 
-func (s *Server) filterSessionProjects(r *http.Request, accessible, selectors []string) ([]string, error) {
+func (s *Server) filterAccessibleProjects(r *http.Request, accessible, selectors []string) ([]string, error) {
 	if len(selectors) == 0 || len(accessible) == 0 {
 		return accessible, nil
 	}

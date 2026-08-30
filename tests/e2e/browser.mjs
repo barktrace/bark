@@ -263,6 +263,11 @@ try {
   if (!issueList.ok() || !sentryIssues[0]?.id) throw new Error('Sentry issue discovery failed');
   const errorIssue = sentryIssues.find((item) => item.title === 'E2EError: Browser workflow failed');
   if (!errorIssue) throw new Error(`Sentry error issue discovery failed: ${JSON.stringify(sentryIssues)}`);
+  const organizationIssueResponse = await page.request.get(`/api/0/organizations/e2e/issues/?project=${encodeURIComponent(sentryProject.id)}&environment=e2e&query=${encodeURIComponent('is:unresolved level:error E2EError')}&sort=freq`);
+  const organizationIssues = await organizationIssueResponse.json();
+  if (!organizationIssueResponse.ok() || organizationIssues[0]?.id !== errorIssue.id || organizationIssues[0]?.project?.slug !== sentryProject.slug) throw new Error(`Sentry organization issue search failed: ${JSON.stringify(organizationIssues)}`);
+  const organizationIssueDetail = await page.request.get(`/api/0/organizations/e2e/groups/${encodeURIComponent(errorIssue.id)}/`);
+  if (!organizationIssueDetail.ok() || (await organizationIssueDetail.json()).id !== errorIssue.id) throw new Error('Sentry organization issue detail failed');
   const projectTagsResponse = await page.request.get(`/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/tags/`);
   const projectTags = await projectTagsResponse.json();
   if (!projectTagsResponse.ok() || !projectTags.some((tag) => tag.key === 'region' && tag.totalValues === 1) || !projectTags.some((tag) => tag.key === 'sentry:environment')) throw new Error(`Sentry project tag summary failed: ${JSON.stringify(projectTags)}`);
@@ -369,6 +374,8 @@ try {
   const nativeIssuesResponse = await page.request.get(`/issues?project_id=${encodeURIComponent(nativeProject.id)}`);
   const nativeIssues = await nativeIssuesResponse.json();
   if (!nativeIssuesResponse.ok() || !nativeIssues[0]?.id) throw new Error('native issue discovery failed');
+  const nativeErrorIssue = nativeIssues.find((item) => item.title === 'E2EError: Browser workflow failed');
+  if (!nativeErrorIssue) throw new Error(`native error issue discovery failed: ${JSON.stringify(nativeIssues)}`);
   const nativeIssueDetailResponse = await page.request.get(`/issues/${encodeURIComponent(nativeIssues[0].id)}`);
   const nativeIssueDetail = await nativeIssueDetailResponse.json();
   const symbolicatedEvent = nativeIssueDetail.events?.find((item) => item.event_id === eventID);
@@ -402,6 +409,8 @@ try {
   const mcpReleaseHealth = await mcpCall(23, 'query_release_health', { project_id: nativeProject.id, environment: 'e2e', stats_period: '24h', interval: '1h', fields: ['sum(session)', 'crash_free_rate(session)'], group_by: ['release'] });
   const mcpReleaseGroup = mcpReleaseHealth.groups?.find((group) => group.by?.release === 'checkout@1.0.0');
   if (mcpReleaseGroup?.totals?.['sum(session)'] !== 2 || mcpReleaseGroup?.totals?.['crash_free_rate(session)'] !== 50) throw new Error(`MCP release health failed: ${JSON.stringify(mcpReleaseHealth)}`);
+  const mcpOrganizationIssues = await mcpCall(24, 'search_organization_issues', { organization_id: nativeOrganization.organization_id, project_id: nativeProject.id, status: 'unresolved', level: 'error', environment: 'e2e', query: 'E2EError', sort: 'freq' });
+  if (mcpOrganizationIssues.length !== 1 || mcpOrganizationIssues[0]?.id !== nativeErrorIssue.id) throw new Error(`MCP organization issue search failed: ${JSON.stringify(mcpOrganizationIssues)}`);
   const mcpIssue = await mcpCall(3, 'update_issue', { issue_id: nativeIssues[0].id, priority: 'critical', bookmarked: true });
   if (mcpIssue.priority !== 'critical' || !mcpIssue.bookmarked) throw new Error('MCP advanced issue update failed');
   const mcpReplays = await mcpCall(18, 'list_replays', { project_id: nativeProject.id, query: 'checkout', environment: 'e2e', release: 'checkout@1.0.0', issue_id: nativeIssues[0].id, has_error: true });
@@ -485,7 +494,7 @@ try {
   if (me.status() !== 401) throw new Error(`logout left session active: /auth/me returned ${me.status()}`);
 
   if (browserErrors.length) throw new Error(browserErrors.join('\n'));
-  console.log('browser E2E passed: OIDC, ingestion, source-map symbolication, Sentry event resolution/environments/tags/release health, Replay issues/interactions/deletion, Discover, dashboards, teams, profiles, telemetry, MCP, and logout');
+  console.log('browser E2E passed: OIDC, ingestion, source-map symbolication, Sentry organization issues/event resolution/environments/tags/release health, Replay issues/interactions/deletion, Discover, dashboards, teams, profiles, telemetry, MCP, and logout');
 } finally {
   await browser.close();
 }

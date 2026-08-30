@@ -67,6 +67,7 @@ curl --fail-with-body https://errors.example.com/mcp \
 | `list_organization_members` | Lists members and organization roles inside the credential's organization. |
 | `list_projects` | Lists projects and DSNs, optionally by organization slug. |
 | `get_project_summary` | Returns issue, open issue, event, and release counts. |
+| `search_organization_issues` | Searches issues across authorized organization projects with structured filters and sorting. |
 | `list_environments` | Lists visible, hidden, or all environments discovered across project telemetry. |
 | `list_event_tags` | Lists project/issue tag summaries or the most frequent values for one tag. |
 | `query_release_health` | Aggregates session count, users, duration, and crash-free rates over time. |

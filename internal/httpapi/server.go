@@ -198,6 +198,8 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/0/organizations/{org_slug}/code-mappings/bulk/", s.auth.Require(http.HandlerFunc(s.sentryBulkCodeMappings)))
 	s.mux.Handle("GET /api/0/organizations/{org_slug}/events/", s.auth.Require(http.HandlerFunc(s.sentryOrganizationEvents)))
 	s.mux.Handle("GET /api/0/organizations/{org_slug}/eventids/{event_id}/", s.auth.Require(http.HandlerFunc(s.sentryOrganizationEventID)))
+	s.mux.Handle("GET /api/0/organizations/{org_slug}/issues/", s.auth.Require(http.HandlerFunc(s.sentryOrganizationIssues)))
+	s.mux.Handle("GET /api/0/organizations/{org_slug}/groups/", s.auth.Require(http.HandlerFunc(s.sentryOrganizationIssues)))
 	s.mux.Handle("GET /api/0/organizations/{org_slug}/sessions/", s.auth.Require(http.HandlerFunc(s.sentryOrganizationSessions)))
 	s.mux.Handle("GET /api/0/organizations/{org_slug}/replay-count/", s.auth.Require(http.HandlerFunc(s.sentryReplayCount)))
 	s.mux.Handle("GET /api/0/organizations/{org_slug}/replay-selectors/", s.auth.Require(http.HandlerFunc(s.sentryReplaySelectors)))
@@ -247,9 +249,6 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/0/projects/{org_slug}/{project_slug}/replays/{replay_id}/viewed-by/", s.auth.Require(http.HandlerFunc(s.sentryReplayViewedBy)))
 	s.mux.Handle("POST /api/0/projects/{org_slug}/{project_slug}/replays/jobs/delete/", s.auth.Require(http.HandlerFunc(s.sentryReplayDeletionJob)))
 	s.mux.Handle("GET /api/0/projects/{org_slug}/{project_slug}/replays/jobs/delete/{job_id}/", s.auth.Require(http.HandlerFunc(s.sentryReplayDeletionJob)))
-	s.mux.Handle("GET /api/0/issues/{issue_id}/", s.auth.Require(http.HandlerFunc(s.sentryIssueDetail)))
-	s.mux.Handle("PUT /api/0/issues/{issue_id}/", s.auth.Require(http.HandlerFunc(s.sentryIssueDetail)))
-	s.mux.Handle("DELETE /api/0/issues/{issue_id}/", s.auth.Require(http.HandlerFunc(s.sentryIssueDetail)))
 	s.registerSentryIssueSupplementalRoutes("/api/0/issues/{issue_id}")
 	s.registerSentryIssueSupplementalRoutes("/api/0/groups/{issue_id}")
 	s.registerSentryIssueSupplementalRoutes("/api/0/organizations/{org_slug}/issues/{issue_id}")
@@ -324,6 +323,9 @@ func (s *Server) routes() {
 }
 
 func (s *Server) registerSentryIssueSupplementalRoutes(prefix string) {
+	s.mux.Handle("GET "+prefix+"/", s.auth.Require(http.HandlerFunc(s.sentryIssueDetail)))
+	s.mux.Handle("PUT "+prefix+"/", s.auth.Require(http.HandlerFunc(s.sentryIssueDetail)))
+	s.mux.Handle("DELETE "+prefix+"/", s.auth.Require(http.HandlerFunc(s.sentryIssueDetail)))
 	s.mux.Handle("GET "+prefix+"/events/", s.auth.Require(http.HandlerFunc(s.sentryIssueEvents)))
 	s.mux.Handle("GET "+prefix+"/events/{event_id}/", s.auth.Require(http.HandlerFunc(s.sentryIssueEventDetail)))
 	s.mux.Handle("GET "+prefix+"/activities/", s.auth.Require(http.HandlerFunc(s.sentryIssueActivities)))

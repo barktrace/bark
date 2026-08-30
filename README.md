@@ -35,7 +35,7 @@ The current foundation includes:
 - a durable leased ingestion queue with retries, dead letters, and category quotas;
 - organization, team, and project roles plus a queryable mutation audit log;
 - configurable retention, manual cleanup previews, and storage reporting;
-- an organization-scoped Streamable HTTP MCP server with 64 investigation, dashboard, triage, team, alerting, and operations tools;
+- an organization-scoped Streamable HTTP MCP server with 65 investigation, dashboard, triage, team, alerting, and operations tools;
 - optional managed Sentry Relay registration and project-configuration support;
 - optional S3-compatible shared blob storage and leased background workers;
 - one final Docker image containing the API and compiled Astro dashboard.

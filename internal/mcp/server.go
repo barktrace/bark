@@ -22,7 +22,7 @@ import (
 
 const (
 	protocolVersion = "2025-11-25"
-	serverVersion   = "0.39.0"
+	serverVersion   = "0.40.0"
 )
 
 var supportedProtocolVersions = map[string]bool{
@@ -221,6 +221,23 @@ func (s *Service) callTool(r *http.Request, credential *credential, raw json.Raw
 			return nil, err
 		}
 		return s.projectSummary(ctx, args.ProjectID)
+	case "search_organization_issues":
+		var args organizationIssueSearchArgs
+		if err := decodeArguments(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if !credential.can("read") {
+			return nil, errors.New("read scope required")
+		}
+		organizationID, err := s.discoverOrganization(ctx, credential, args.OrganizationID)
+		if err != nil {
+			return nil, err
+		}
+		projectIDs, err := s.discoverProjects(ctx, credential, organizationID, strings.TrimSpace(args.ProjectID))
+		if err != nil {
+			return nil, err
+		}
+		return s.searchOrganizationIssues(ctx, projectIDs, args)
 	case "list_issues":
 		var args struct {
 			ProjectID string `json:"project_id"`
@@ -424,6 +441,12 @@ func tools() []tool {
 		{Name: "list_organizations", Description: "List organizations available on this Barktrace instance.", InputSchema: objectSchema(nil), Annotations: readOnly},
 		{Name: "list_projects", Description: "List projects, optionally limited to one organization slug. Includes each project's Sentry DSN.", InputSchema: objectSchema(map[string]any{"organization_slug": stringProperty("Optional organization slug")}), Annotations: readOnly},
 		{Name: "get_project_summary", Description: "Get issue, event, and release counts for a project.", InputSchema: objectSchema(map[string]any{"project_id": stringProperty("Project UUID")}, "project_id"), Annotations: readOnly},
+		{Name: "search_organization_issues", Description: "Search issues across every project in an organization or one selected project.", InputSchema: objectSchema(map[string]any{
+			"organization_id": stringProperty("Organization UUID; only needed by the legacy instance token"), "project_id": stringProperty("Optional project UUID"),
+			"status": map[string]any{"type": "string", "enum": []string{"all", "unresolved", "resolved", "ignored"}, "default": "all"},
+			"level":  stringProperty("Optional event level"), "issue_type": stringProperty("Optional issue type"), "environment": stringProperty("Optional environment"),
+			"query": stringProperty("Optional case-insensitive title, fingerprint, or issue-type search"), "sort": map[string]any{"type": "string", "enum": []string{"date", "new", "freq", "priority"}, "default": "date"}, "limit": limitProperty,
+		}), Annotations: readOnly},
 		{Name: "list_environments", Description: "List environments discovered across project telemetry and their visibility state.", InputSchema: objectSchema(map[string]any{
 			"project_id": stringProperty("Project UUID"),
 			"visibility": map[string]any{"type": "string", "enum": []string{"visible", "hidden", "all"}, "default": "visible"},
