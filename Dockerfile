@@ -2,12 +2,13 @@
 FROM node:24-alpine AS ui
 WORKDIR /src/ui
 ARG NPM_REGISTRY=https://registry.npmjs.org/
-COPY ui/package.json ui/package-lock.json ui/.npmrc ./
-RUN --mount=type=cache,target=/root/.npm --mount=type=secret,id=build_ca,required=false \
+COPY ui/package.json ui/pnpm-lock.yaml ui/.npmrc ./
+RUN --mount=type=cache,target=/root/.npm --mount=type=cache,target=/root/.local/share/pnpm/store --mount=type=secret,id=build_ca,required=false \
     if [ -f /run/secrets/build_ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/build_ca; fi; \
-    npm ci --registry="$NPM_REGISTRY" --no-audit --no-fund
+    npm install --global pnpm@10.30.3 --registry="$NPM_REGISTRY" --no-audit --no-fund && \
+    pnpm install --frozen-lockfile --registry="$NPM_REGISTRY"
 COPY ui/ ./
-RUN npm run build
+RUN pnpm build
 
 FROM golang:1.26-bookworm AS server
 WORKDIR /src

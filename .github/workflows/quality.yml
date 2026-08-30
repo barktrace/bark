@@ -59,12 +59,15 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.3
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: tests/e2e/package-lock.json
-      - run: npm ci --prefix tests/e2e --no-audit --no-fund
+          cache: pnpm
+          cache-dependency-path: tests/e2e/pnpm-lock.yaml
+      - run: pnpm --dir tests/e2e install --frozen-lockfile
       - run: ./scripts/test-e2e.sh
         env:
           BARKTRACE_E2E_DATABASE_URL: ${{ matrix.database == 'postgres' && 'postgres://barktrace:barktrace-test@127.0.0.1:5432/barktrace?sslmode=disable' || '' }}

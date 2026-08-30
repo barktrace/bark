@@ -5,6 +5,9 @@
 One Go process owns HTTP, OIDC, ingestion, queries, migrations, and static file
 serving. Astro is build-time only. Its static output is copied into the Go
 package and embedded in the binary, so Node is absent from the final image.
+The frontend uses pnpm lockfiles and small Astro-loaded Web Components for
+reusable interactive controls. Dashboard widget queries are loaded only when
+the dashboard route is opened and cached while navigating between views.
 
 The public route layout is:
 

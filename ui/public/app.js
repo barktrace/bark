@@ -18,6 +18,8 @@ const state = {
   dashboards: [],
   dashboardId: '',
   dashboardResults: {},
+  dashboardLoadingId: '',
+  dashboardCreateOpen: false,
   monitors: [],
   monitorId: '',
   monitorDetails: { checks: [], incidents: [] },
@@ -161,6 +163,11 @@ function setRoute(route, push = false) {
   ].filter(Boolean).join(' / ');
   document.title = `${title} · Barktrace`;
   render();
+  if (route === 'dashboards') {
+    void loadDashboardResults().then(() => {
+      if (state.route === 'dashboards') render();
+    });
+  }
 }
 
 function statCard(label, value, detail, tone = '') {
@@ -383,6 +390,9 @@ function renderDiscover() {
 
 function renderWidget(widget, dashboard) {
   const result = state.dashboardResults[widget.id];
+  if (!result && state.dashboardLoadingId === dashboard.id) {
+    return `<article class="card dashboard-widget"><div class="card-heading"><div><p class="eyebrow">${escapeHTML(widget.dataset)} · ${escapeHTML(widget.stats_period)}</p><h2>${escapeHTML(widget.title)}</h2></div></div><div class="empty-state compact-empty"><span class="spinner"></span><p>Loading widget…</p></div></article>`;
+  }
   let body = resultTable(result, 'No data in this widget’s time range.');
   if (widget.display_type === 'number') {
     const first = result?.data?.[0] || {};
@@ -415,11 +425,13 @@ function renderWidgetChart(result, type) {
 function renderDashboards() {
   const selected = state.dashboards.find((item) => item.id === state.dashboardId) || state.dashboards[0];
   const dashboardOptions = state.dashboards.map((item) => `<button class="dashboard-picker ${selected?.id === item.id ? 'selected' : ''}" data-dashboard-id="${escapeHTML(item.id)}"><span><strong>${escapeHTML(item.title)}</strong><small>${item.widgets.length} widget${item.widgets.length === 1 ? '' : 's'}${item.project_id ? ' · project scoped' : ''}</small></span>${icon('chevron')}</button>`).join('');
-  const create = canAdminister() ? `<form id="create-dashboard" class="stack-form"><p class="eyebrow">New dashboard</p><input name="title" required maxlength="120" placeholder="Production health" /><input name="description" placeholder="Optional description" /><label class="check-field"><input name="project_scoped" type="checkbox" checked /> Scope to current project</label><button class="button small">Create dashboard</button></form>` : '';
-  if (!selected) return `<div class="dashboard-layout"><aside class="card dashboard-list">${create || '<p class="muted padded">No saved dashboards.</p>'}</aside><section class="card empty-state">${icon('grid')}<h3>No dashboards yet</h3><p>An organization administrator can create a saved view.</p></section></div>`;
+  const createButton = canAdminister() ? `<button class="button small secondary" data-toggle-dashboard-create>${icon('plus')} New dashboard</button>` : '';
+  const create = canAdminister() && state.dashboardCreateOpen ? `<form id="create-dashboard" class="stack-form"><p class="eyebrow">New dashboard</p><input name="title" required maxlength="120" placeholder="Production health" /><input name="description" placeholder="Optional description" /><label class="check-field"><input name="project_scoped" type="checkbox" checked /> Scope to current project</label><div class="inline-actions"><button class="button small secondary" type="button" data-toggle-dashboard-create>Cancel</button><button class="button small">Create dashboard</button></div></form>` : '';
+  const sidebarHeading = `<div class="card-heading"><div><p class="eyebrow">Saved views</p><h2>Dashboards</h2></div>${createButton}</div>`;
+  if (!selected) return `<div class="dashboard-layout"><aside class="card dashboard-list">${sidebarHeading}${create || '<p class="muted padded">No saved dashboards.</p>'}</aside><section class="card empty-state">${icon('grid')}<h3>No dashboards yet</h3><p>Use New dashboard to create a saved view.</p></section></div>`;
   const widgets = selected.widgets.map((widget) => renderWidget(widget, selected)).join('');
   const addWidget = canAdminister() ? `<section class="card add-widget"><p class="eyebrow">Add widget</p><h2>Discover query</h2><form id="add-widget" class="stack-form"><input name="title" required maxlength="120" placeholder="Error volume" /><div class="form-grid"><select name="dataset"><option value="errors">Errors</option><option value="transactions">Transactions</option><option value="spans">Spans</option><option value="logs">Logs</option><option value="metrics">Metrics</option></select><select name="display_type"><option value="table">Table</option><option value="number">Big number</option><option value="bar">Bar</option><option value="line">Line</option><option value="area">Area</option></select></div><input name="fields" required value="count()" placeholder="project, count()" /><input name="query" placeholder="environment:production" /><div class="form-grid"><select name="stats_period"><option value="24h">24 hours</option><option value="7d">7 days</option><option value="30d">30 days</option><option value="90d">90 days</option></select><input name="order_by" placeholder="-count()" /></div><button class="button small">Add widget</button></form></section>` : '';
-  return `<div class="dashboard-layout"><aside class="card dashboard-list"><div class="card-heading"><div><p class="eyebrow">Saved views</p><h2>Dashboards</h2></div></div>${dashboardOptions}${create}</aside><div class="dashboard-content"><section class="dashboard-title"><div><h2>${escapeHTML(selected.title)}</h2><p class="muted">${escapeHTML(selected.description || 'Saved organization telemetry.')}</p></div>${canAdminister() ? `<button class="button danger small" data-delete-dashboard="${escapeHTML(selected.id)}">Delete dashboard</button>` : ''}</section><div class="widget-grid">${widgets || `<section class="card empty-state">${icon('grid')}<h3>No widgets</h3><p>Add a Discover query to build this dashboard.</p></section>`}${addWidget}</div></div></div>`;
+  return `<div class="dashboard-layout"><aside class="card dashboard-list">${sidebarHeading}${dashboardOptions}${create}</aside><div class="dashboard-content"><section class="dashboard-title"><div><h2>${escapeHTML(selected.title)}</h2><p class="muted">${escapeHTML(selected.description || 'Saved organization telemetry.')}</p></div>${canAdminister() ? `<button class="button danger small" data-delete-dashboard="${escapeHTML(selected.id)}">Delete dashboard</button>` : ''}</section><div class="widget-grid">${widgets || `<section class="card empty-state">${icon('grid')}<h3>No widgets</h3><p>Add a Discover query to build this dashboard.</p></section>`}${addWidget}</div></div></div>`;
 }
 
 function renderUptime() {
@@ -655,14 +667,21 @@ function bindView() {
   });
   $$('[data-dashboard-id].dashboard-picker').forEach((button) => button.addEventListener('click', async () => {
     state.dashboardId = button.dataset.dashboardId;
+    render();
     await loadDashboardResults();
     render();
+  }));
+  $$('[data-toggle-dashboard-create]').forEach((button) => button.addEventListener('click', () => {
+    state.dashboardCreateOpen = !state.dashboardCreateOpen;
+    render();
+    if (state.dashboardCreateOpen) $('#create-dashboard input[name="title"]')?.focus();
   }));
   $('#create-dashboard')?.addEventListener('submit', async (event) => {
     event.preventDefault();
     const input = new FormData(event.currentTarget);
     const dashboard = await request(`/organizations/${encodeURIComponent(state.organizationId)}/dashboards`, { method: 'POST', body: JSON.stringify({ project_id: input.get('project_scoped') ? state.projectId : '', title: input.get('title'), description: input.get('description') }) });
     state.dashboardId = dashboard.id;
+    state.dashboardCreateOpen = false;
     await loadDashboards();
     showToast('Dashboard created');
   });
@@ -1102,9 +1121,7 @@ async function loadProjectData() {
     request(`/issues?project_id=${encodeURIComponent(state.projectId)}`),
     request(`/releases?project_id=${encodeURIComponent(state.projectId)}`),
   ]);
-  await loadObservabilityData();
-  await loadProductData();
-  await loadManagementData();
+  await Promise.all([loadObservabilityData(), loadProductData(), loadManagementData()]);
   $('#issue-count').textContent = String(state.issues.filter((issue) => issue.status === 'unresolved').length);
   populateSelectors();
   render();
@@ -1169,7 +1186,6 @@ async function loadManagementData() {
   } else {
     state.projectMemberships = [];
   }
-  await loadDashboardResults();
   render();
 }
 
@@ -1186,9 +1202,11 @@ async function runDiscover(model, projectId = '') {
 
 async function loadDashboardResults() {
   const dashboard = state.dashboards.find((item) => item.id === state.dashboardId) || state.dashboards[0];
-  state.dashboardResults = {};
   if (!dashboard) return;
   state.dashboardId = dashboard.id;
+  if (dashboard.widgets.every((widget) => Object.hasOwn(state.dashboardResults, widget.id))) return;
+  state.dashboardLoadingId = dashboard.id;
+  if (state.route === 'dashboards') render();
   const results = await Promise.all(dashboard.widgets.map(async (widget) => {
     try {
       return [widget.id, await runDiscover({ dataset: widget.dataset, fields: widget.fields.join(','), query: widget.query, environment: widget.environment, release: widget.release, statsPeriod: widget.stats_period, orderBy: widget.order_by, limit: widget.limit }, dashboard.project_id)];
@@ -1196,13 +1214,15 @@ async function loadDashboardResults() {
       return [widget.id, { data: [], meta: { fields: {} }, error: error.message }];
     }
   }));
-  state.dashboardResults = Object.fromEntries(results);
+  Object.assign(state.dashboardResults, Object.fromEntries(results));
+  if (state.dashboardLoadingId === dashboard.id) state.dashboardLoadingId = '';
 }
 
 async function loadDashboards() {
   const response = await request(`/dashboards?organization_id=${encodeURIComponent(state.organizationId)}`);
   state.dashboards = response.dashboards || [];
   if (!state.dashboards.some((item) => item.id === state.dashboardId)) state.dashboardId = state.dashboards[0]?.id || '';
+  state.dashboardResults = {};
   await loadDashboardResults();
   render();
 }
@@ -1296,8 +1316,9 @@ async function boot() {
     $('#account-name').textContent = state.me.name || 'Account';
     $('#account-email').textContent = state.me.email;
     $('#account-button').textContent = (state.me.name || state.me.email || '?').slice(0, 1).toUpperCase();
+    state.route = routeFromPath();
     await loadProjects();
-    setRoute(routeFromPath());
+    setRoute(state.route);
     $('#loading-state').hidden = true;
     $('#page').hidden = false;
     $('#app').setAttribute('aria-busy', 'false');

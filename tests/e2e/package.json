@@ -1,6 +1,7 @@
 {
   "name": "barktrace-e2e",
   "private": true,
+  "packageManager": "pnpm@10.30.3",
   "type": "module",
   "devDependencies": {
     "playwright": "1.56.1"

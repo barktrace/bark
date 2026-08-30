@@ -9,8 +9,8 @@ release:
 go test ./...
 go test -race ./...
 go vet ./...
-npm ci --prefix ui
-npm run build --prefix ui
+pnpm --dir ui install --frozen-lockfile
+pnpm --dir ui build
 ```
 
 The CLI integration uses a real `sentry-cli` binary and covers releases,
@@ -108,7 +108,7 @@ profile, exercises team ownership and assignment plus MCP triage, quota,
 retention, alert, uptime, and cron operations, and signs out.
 
 ```sh
-npm ci --prefix tests/e2e
+pnpm --dir tests/e2e install --frozen-lockfile
 ./scripts/test-e2e.sh
 ```
 

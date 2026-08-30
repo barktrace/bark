@@ -358,11 +358,17 @@ try {
   await page.getByText('E2EError: Browser workflow failed', { exact: true }).waitFor();
 
   await page.getByRole('link', { name: 'Dashboards' }).click();
+  if (await page.locator('#create-dashboard').count()) throw new Error('new dashboard form should be hidden initially');
+  await page.getByRole('button', { name: 'New dashboard' }).click();
   await page.locator('#create-dashboard input[name="title"]').fill('E2E health');
   await page.locator('#create-dashboard').getByRole('button', { name: 'Create dashboard' }).click();
   await page.getByRole('heading', { name: 'E2E health', exact: true }).waitFor();
   await page.locator('#add-widget input[name="title"]').fill('Error volume');
-  await page.locator('#add-widget select[name="display_type"]').selectOption('number');
+  const displayTypeControl = page.locator('#add-widget bark-select', { has: page.locator('select[name="display_type"]') });
+  if (!await displayTypeControl.locator('.custom-select-trigger').isVisible()) throw new Error('custom dashboard dropdown was not rendered');
+  await displayTypeControl.locator('.custom-select-trigger').click();
+  await displayTypeControl.locator('.custom-select-menu').getByRole('option', { name: 'Big number' }).click();
+  if (await page.locator('#add-widget select[name="display_type"]').inputValue() !== 'number') throw new Error('custom dashboard dropdown did not update its form value');
   await page.locator('#add-widget').getByRole('button', { name: 'Add widget' }).click();
   await page.getByRole('heading', { name: 'Error volume', exact: true }).waitFor();
   await page.locator('.widget-number').waitFor();

@@ -89,11 +89,29 @@ svg { width: 1.1rem; height: 1.1rem; fill: none; stroke: currentColor; stroke-li
 .select-wrap { position: relative; }
 .select-wrap select { width: 100%; height: 35px; padding: 0 2rem 0 .65rem; border: 1px solid var(--border); border-radius: .45rem; outline: 0; background: var(--surface); appearance: none; font-size: .82rem; font-weight: 650; }
 .select-wrap > span { position: absolute; right: .7rem; top: .35rem; pointer-events: none; color: var(--muted); }
+.select-wrap:has(bark-select) > span { display: none; }
 .project-picker { display: grid; grid-template-columns: 32px minmax(0, 1fr); align-items: center; padding: .48rem; gap: .55rem; border: 1px solid var(--border); border-radius: .55rem; background: var(--surface); }
 .project-avatar, .platform-icon { display: grid; place-items: center; border-radius: .4rem; background: var(--primary); color: var(--primary-ink); font-size: .66rem; font-weight: 900; }
 .project-avatar { width: 32px; height: 32px; }
 .project-picker > div { display: grid; min-width: 0; }
 .project-picker select { width: 100%; border: 0; outline: 0; background: transparent; font-size: .82rem; font-weight: 700; }
+bark-select { position: relative; display: block; min-width: 0; width: 100%; }
+.custom-select-native { position: absolute !important; width: 1px !important; height: 1px !important; margin: 0 !important; padding: 0 !important; overflow: hidden; opacity: 0; pointer-events: none; }
+.custom-select-trigger { display: flex; align-items: center; justify-content: space-between; width: 100%; min-width: 0; height: 36px; padding: 0 .65rem; gap: .65rem; border: 1px solid var(--border); border-radius: .45rem; outline: 0; background: var(--background); color: var(--foreground); font-size: .72rem; text-align: left; }
+.custom-select-trigger:hover { border-color: var(--border-strong); background: var(--surface-raised); }
+.custom-select-trigger:focus-visible, bark-select[open] .custom-select-trigger { border-color: var(--primary-hover); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 18%, transparent); }
+.custom-select-trigger span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.custom-select-trigger svg { flex: 0 0 auto; width: 13px; height: 13px; transform: rotate(90deg); color: var(--muted); }
+.custom-select-menu { position: absolute; z-index: 90; top: calc(100% + .3rem); left: 0; display: none; width: max-content; min-width: 100%; max-width: min(340px, 80vw); max-height: 260px; padding: .3rem; overflow-y: auto; border: 1px solid var(--border); border-radius: .55rem; background: var(--surface); box-shadow: var(--shadow); }
+bark-select[open] .custom-select-menu { display: grid; }
+.custom-select-option { min-height: 34px; padding: .45rem .6rem; border: 0; border-radius: .35rem; background: transparent; color: var(--foreground); font-size: .72rem; text-align: left; white-space: nowrap; }
+.custom-select-option:hover, .custom-select-option:focus-visible { outline: 0; background: var(--surface-raised); }
+.custom-select-option.selected { background: color-mix(in srgb, var(--primary) 16%, var(--surface)); color: var(--foreground); font-weight: 750; }
+.custom-select-option:disabled { color: var(--faint); cursor: not-allowed; }
+.select-wrap .custom-select-trigger { height: 35px; background: var(--surface); font-size: .82rem; font-weight: 650; }
+.project-picker .custom-select-trigger { height: auto; padding: 0; border: 0; background: transparent; box-shadow: none; font-size: .82rem; font-weight: 700; }
+.project-picker .custom-select-trigger:hover { background: transparent; }
+.project-picker .custom-select-menu { left: -.5rem; min-width: calc(100% + .5rem); }
 .project-picker small { overflow: hidden; color: var(--muted); font-family: monospace; font-size: .66rem; text-overflow: ellipsis; white-space: nowrap; }
 .primary-nav { padding: .8rem; overflow-y: auto; }
 .nav-label { padding: .75rem .7rem .25rem; }
@@ -450,6 +468,8 @@ pre button { position: absolute; top: .55rem; right: .55rem; color: #cbd4c6; bac
 .discover-head span { font-size: .6rem; }
 .dashboard-layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); align-items: start; gap: .8rem; }
 .dashboard-list { overflow: hidden; }
+.dashboard-list .card-heading { align-items: center; }
+.dashboard-list .card-heading .button { padding-inline: .65rem; white-space: nowrap; }
 .dashboard-list .stack-form { padding: 1rem; border-top: 1px solid var(--border); }
 .dashboard-picker { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: .75rem 1rem; gap: .6rem; border: 0; border-top: 1px solid var(--border); background: transparent; color: inherit; text-align: left; }
 .dashboard-picker:hover, .dashboard-picker.selected { background: var(--surface-raised); }
@@ -463,7 +483,9 @@ pre button { position: absolute; top: .55rem; right: .55rem; color: #cbd4c6; bac
 .dashboard-title p { margin: 0; }
 .widget-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8rem; }
 .dashboard-widget, .add-widget { min-width: 0; overflow: hidden; }
+.add-widget { overflow: visible; }
 .dashboard-widget .discover-table { max-height: 320px; overflow: auto; }
+.compact-empty { min-height: 180px; }
 .add-widget { padding: 1rem; }
 .widget-number { display: grid; place-items: center; min-height: 180px; padding: 1rem; font-size: clamp(2rem, 5vw, 4rem); font-weight: 850; letter-spacing: -.05em; }
 .widget-number small { color: var(--muted); font-size: .65rem; letter-spacing: .04em; text-transform: uppercase; }
@@ -488,6 +510,7 @@ dialog form { display: grid; padding: 1.3rem; gap: 1rem; }
 .dialog-close { width: 32px; height: 32px; border: 0; border-radius: .4rem; background: transparent; color: var(--muted); font-size: 1.4rem; }
 dialog label { display: grid; gap: .45rem; color: var(--muted); font-size: .72rem; font-weight: 700; }
 dialog input, dialog select { width: 100%; height: 40px; padding: 0 .7rem; border: 1px solid var(--border); border-radius: .45rem; outline: none; background: var(--background); }
+dialog .custom-select-trigger { height: 40px; }
 dialog input:focus, dialog select:focus { border-color: var(--primary-hover); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 18%, transparent); }
 .dialog-actions { display: flex; justify-content: flex-end; margin-top: .4rem; gap: .6rem; }
 .form-error { margin: 0; color: var(--danger); font-size: .76rem; }
