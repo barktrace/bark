@@ -99,7 +99,7 @@ raw JSON, organization issue search/detail and event-ID resolution, project and
 organization environment discovery and visibility, project/issue tag summaries
 and values, issue event selection, activity and
 comment lifecycle, release-health session aggregation, event attachment
-download, and user-feedback listing
+download, user-feedback listing, and Sentry-compatible alert-rule lifecycle
 routes, runs a Discover query, creates a saved dashboard widget, renders an
 interactive rrweb replay, verifies Sentry-compatible replay search, issue
 correlation, decoded segments, click classification, automatic Replay issues,

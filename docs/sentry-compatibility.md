@@ -74,6 +74,7 @@ The DSN shown in the project setup page should always be copied verbatim.
 | Organization members and teams | Listing, team CRUD, team membership, project links, and project responses |
 | Issue and event detail endpoints | Organization/project issue listing, project/environment/time/search filters, organization/global detail aliases, latest/oldest/recommended/specific group events, raw event JSON, activity history, comment/note lifecycle, status, priority, user/team assignment, bookmark, snooze, public sharing, and permanent discard updates |
 | Organization event-ID resolution | Resolves normalized SDK event IDs to their authorized event and issue representations |
+| Project alert-rule endpoints | List, create, update, and delete issue alerts with first-seen, regression, feedback, uptime, cron, or metric triggers; environment/level filters; and email, HTTPS webhook, or Slack actions |
 | User feedback endpoints | Project listing, detail, and deletion |
 | Event attachment endpoints | Event-scoped listing, metadata, download, and deletion |
 | Replay endpoints | Organization search/count/detail/selectors, project-scoped decoded recording segments, dead/rage-click issue creation, viewer history, issue correlation, and durable administrator deletion jobs |
@@ -86,6 +87,13 @@ the response `Link` header. Its bounded search syntax includes free text,
 `is:`, `level:`, `issue.type:`, `environment:`, `assigned:`, and
 `bookmarks:me`, with date, new, frequency, and priority sorting. The legacy
 `groups` collection and organization/global issue-detail paths are aliases.
+
+Project alert rules are available at
+`/api/0/projects/{organization}/{project}/rules/`. Barktrace accepts Sentry's
+condition, filter, and action objects and also its native flat trigger and
+destination fields. Rules currently use `actionMatch=all`, `filterMatch=all`,
+and one delivery action. Webhook secrets are never returned by list or detail
+responses.
 
 The compatibility checks currently exercise real `sentry-sdk` 2.21.0 and
 `sentry-go` 0.43.0 clients against the production Docker image. CI also

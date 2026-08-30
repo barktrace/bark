@@ -232,6 +232,26 @@ try {
   const projectKeys = await page.request.get(`/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/keys/`);
   const keys = await projectKeys.json();
   if (!projectKeys.ok() || keys[0]?.public !== parsed.username) throw new Error('Sentry project key endpoint failed');
+  const sentryRulesPath = `/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/rules/`;
+  const createSentryRule = await page.request.post(sentryRulesPath, { data: {
+    name: 'E2E first-seen email',
+    actionMatch: 'all',
+    filterMatch: 'all',
+    frequency: 15,
+    conditions: [{ id: 'sentry.rules.conditions.first_seen_event.FirstSeenEventCondition' }],
+    filters: [{ id: 'sentry.rules.filters.tagged_event.TaggedEventFilter', key: 'environment', match: 'eq', value: 'e2e' }],
+    actions: [{ id: 'sentry.mail.actions.NotifyEmailAction', targetIdentifier: 'owner' }],
+  } });
+  const sentryRule = await createSentryRule.json();
+  if (!createSentryRule.ok() || !sentryRule.id || sentryRule.actions?.[0]?.targetIdentifier !== accountEmail) throw new Error(`Sentry alert-rule creation failed: ${JSON.stringify(sentryRule)}`);
+  const listSentryRules = await page.request.get(sentryRulesPath);
+  const sentryRules = await listSentryRules.json();
+  if (!listSentryRules.ok() || !sentryRules.some((rule) => rule.id === sentryRule.id)) throw new Error(`Sentry alert-rule listing failed: ${JSON.stringify(sentryRules)}`);
+  const updateSentryRule = await page.request.put(`${sentryRulesPath}${encodeURIComponent(sentryRule.id)}/`, { data: { name: 'E2E paused alert', status: 'disabled' } });
+  const updatedSentryRule = await updateSentryRule.json();
+  if (!updateSentryRule.ok() || updatedSentryRule.status !== 'disabled' || updatedSentryRule.environment !== 'e2e') throw new Error(`Sentry alert-rule update failed: ${JSON.stringify(updatedSentryRule)}`);
+  const deleteSentryRule = await page.request.delete(`${sentryRulesPath}${encodeURIComponent(sentryRule.id)}/`);
+  if (!deleteSentryRule.ok()) throw new Error(`Sentry alert-rule deletion failed: ${deleteSentryRule.status()}`);
   const organizationEnvironmentsResponse = await page.request.get('/api/0/organizations/e2e/environments/');
   const organizationEnvironments = await organizationEnvironmentsResponse.json();
   if (!organizationEnvironmentsResponse.ok() || !organizationEnvironments.some((item) => item.name === 'e2e')) throw new Error(`Sentry organization environment discovery failed: ${JSON.stringify(organizationEnvironments)}`);

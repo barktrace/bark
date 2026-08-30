@@ -208,3 +208,11 @@ which keeps memory and outbound concurrency bounded for SQLite deployments.
 New-issue, regression, and uptime-down alert rules can deliver JSON to HTTPS
 webhooks or Slack incoming webhooks. Deliveries are retried up to three times
 and their status is visible under Organization settings.
+
+Sentry-compatible clients can manage the same rules through
+`GET`/`POST /api/0/projects/{organization}/{project}/rules/` and
+`GET`/`PUT`/`DELETE /api/0/projects/{organization}/{project}/rules/{id}/`.
+First-seen, regression, user-feedback, uptime, cron, and metric conditions are
+mapped to Barktrace triggers. Environment and level filters are supported.
+Each rule currently has one email, HTTPS webhook, or Slack action; both match
+modes must be `all`.
