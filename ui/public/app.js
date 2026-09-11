@@ -1077,7 +1077,9 @@ function populateSelectors() {
     : '<option value="">No projects</option>';
   $('#project').value = state.projectId;
   const project = currentProject();
-  $('#project-slug').textContent = project?.slug || 'No project selected';
+  const projectSlug = $('#project-slug');
+  projectSlug.textContent = project?.slug || 'No project selected';
+  projectSlug.hidden = Boolean(project && project.slug === project.name);
   $('#project-avatar').textContent = (project?.platform || project?.name || '–').slice(0, 2).toUpperCase();
 }
 

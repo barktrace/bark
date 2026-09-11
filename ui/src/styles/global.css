@@ -90,7 +90,9 @@ svg { width: 1.1rem; height: 1.1rem; fill: none; stroke: currentColor; stroke-li
 .select-wrap select { width: 100%; height: 35px; padding: 0 2rem 0 .65rem; border: 1px solid var(--border); border-radius: .45rem; outline: 0; background: var(--surface); appearance: none; font-size: .82rem; font-weight: 650; }
 .select-wrap > span { position: absolute; right: .7rem; top: .35rem; pointer-events: none; color: var(--muted); }
 .select-wrap:has(bark-select) > span { display: none; }
-.project-picker { display: grid; grid-template-columns: 32px minmax(0, 1fr); align-items: center; padding: .48rem; gap: .55rem; border: 1px solid var(--border); border-radius: .55rem; background: var(--surface); }
+.project-picker { position: relative; display: grid; grid-template-columns: 32px minmax(0, 1fr); align-items: center; padding: .48rem; gap: .55rem; border: 1px solid var(--border); border-radius: .55rem; background: var(--surface); transition: border-color .15s ease, box-shadow .15s ease, background .15s ease; }
+.project-picker:hover { border-color: var(--border-strong); background: var(--surface-raised); }
+.project-picker:has(bark-select[open]), .project-picker:has(.custom-select-trigger:focus-visible) { border-color: var(--primary-hover); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 18%, transparent); }
 .project-avatar, .platform-icon { display: grid; place-items: center; border-radius: .4rem; background: var(--primary); color: var(--primary-ink); font-size: .66rem; font-weight: 900; }
 .project-avatar { width: 32px; height: 32px; }
 .project-picker > div { display: grid; min-width: 0; }
@@ -109,9 +111,10 @@ bark-select[open] .custom-select-menu { display: grid; }
 .custom-select-option.selected { background: color-mix(in srgb, var(--primary) 16%, var(--surface)); color: var(--foreground); font-weight: 750; }
 .custom-select-option:disabled { color: var(--faint); cursor: not-allowed; }
 .select-wrap .custom-select-trigger { height: 35px; background: var(--surface); font-size: .82rem; font-weight: 650; }
-.project-picker .custom-select-trigger { height: auto; padding: 0; border: 0; background: transparent; box-shadow: none; font-size: .82rem; font-weight: 700; }
+.project-picker bark-select { position: static; }
+.project-picker .custom-select-trigger, .project-picker bark-select[open] .custom-select-trigger { height: auto; padding: 0; border: 0; background: transparent; box-shadow: none; font-size: .82rem; font-weight: 700; }
 .project-picker .custom-select-trigger:hover { background: transparent; }
-.project-picker .custom-select-menu { left: -.5rem; min-width: calc(100% + .5rem); }
+.project-picker .custom-select-menu { top: calc(100% + .3rem); left: 0; width: 100%; min-width: 100%; }
 .project-picker small { overflow: hidden; color: var(--muted); font-family: monospace; font-size: .66rem; text-overflow: ellipsis; white-space: nowrap; }
 .primary-nav { padding: .8rem; overflow-y: auto; }
 .nav-label { padding: .75rem .7rem .25rem; }

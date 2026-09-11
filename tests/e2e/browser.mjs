@@ -44,6 +44,17 @@ try {
   const dsn = await page.locator('.setup-main .copy-field code').textContent();
   if (!dsn) throw new Error('project setup did not expose a DSN');
 
+  const projectPicker = page.locator('.project-picker');
+  const projectPickerBox = await projectPicker.boundingBox();
+  await projectPicker.locator('.custom-select-trigger').click();
+  const projectMenuBox = await projectPicker.locator('.custom-select-menu').boundingBox();
+  if (!projectPickerBox || !projectMenuBox
+    || Math.abs(projectPickerBox.x - projectMenuBox.x) > 2
+    || Math.abs(projectPickerBox.width - projectMenuBox.width) > 2) {
+    throw new Error(`project dropdown is not aligned with its picker: picker=${JSON.stringify(projectPickerBox)} menu=${JSON.stringify(projectMenuBox)}`);
+  }
+  await projectPicker.locator('.custom-select-trigger').click();
+
   const parsed = new URL(dsn);
   const projectID = parsed.pathname.slice(1);
   const organizationsResponse = await page.request.get('/organizations');
