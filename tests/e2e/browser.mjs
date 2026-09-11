@@ -31,6 +31,24 @@ try {
   const accountEmail = await page.locator('#account-email').textContent();
   if (accountEmail !== 'e2e@barktrace.test') throw new Error(`unexpected auto-provisioned account: ${accountEmail}`);
 
+  await page.getByRole('button', { name: 'Collapse navigation' }).click();
+  await page.locator('#app.sidebar-collapsed').waitFor();
+  await page.waitForTimeout(250);
+  const collapsedSidebarWidth = await page.locator('#sidebar').evaluate((element) => element.getBoundingClientRect().width);
+  if (Math.abs(collapsedSidebarWidth - 72) > 1) throw new Error(`collapsed sidebar width = ${collapsedSidebarWidth}, want 72`);
+  await page.reload();
+  await page.locator('#app.sidebar-collapsed').waitFor();
+  await page.getByRole('button', { name: 'Expand navigation' }).click();
+  await page.locator('#app:not(.sidebar-collapsed)').waitFor();
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole('button', { name: 'Open navigation' }).click();
+  await page.locator('#sidebar.open').waitFor();
+  await page.locator('#sidebar-backdrop').click({ position: { x: 350, y: 80 } });
+  await page.locator('#sidebar:not(.open)').waitFor();
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.getByRole('button', { name: 'Collapse navigation' }).waitFor();
+
   await page.getByRole('button', { name: 'Create project' }).click();
   await page.locator('#create-project input[name="name"]').fill('Checkout E2E');
   await page.locator('#create-project select[name="platform"]').selectOption('javascript');

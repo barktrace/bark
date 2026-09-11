@@ -24,8 +24,10 @@ import Layout from '../layouts/Layout.astro';
 
   <div class="app-shell" id="app" aria-busy="true">
     <header class="app-header">
-      <button class="icon-button mobile-menu" id="mobile-menu" aria-label="Open navigation"><svg><use href="#i-menu"></use></svg></button>
-      <a class="wordmark" href="/ui/" data-route="overview" aria-label="Barktrace overview"><img src="/ui/brand-mark.svg" alt="" /><span class="wordmark-text">barktrace<b>.</b></span></a>
+      <div class="header-brand">
+        <button class="icon-button sidebar-toggle" id="sidebar-toggle" aria-label="Collapse navigation" aria-controls="sidebar" aria-expanded="true"><svg><use href="#i-menu"></use></svg></button>
+        <a class="wordmark" href="/ui/" data-route="overview" aria-label="Barktrace overview"><img src="/ui/brand-mark.svg" alt="" /><span class="wordmark-text">barktrace<b>.</b></span></a>
+      </div>
       <div class="header-tools">
         <label class="global-search"><svg><use href="#i-search"></use></svg><input id="global-search" placeholder="Filter this view" autocomplete="off" /><kbd>/</kbd></label>
         <button class="icon-button" id="theme-toggle" aria-label="Toggle color theme"><svg><use href="#i-moon"></use></svg></button>
@@ -59,6 +61,7 @@ import Layout from '../layouts/Layout.astro';
       </nav>
       <div class="sidebar-foot"><span class="status-dot"></span> All systems operational</div>
     </aside>
+    <button class="sidebar-backdrop" id="sidebar-backdrop" type="button" aria-label="Close navigation"></button>
 
     <main class="workspace">
       <div class="loading-state" id="loading-state"><span class="spinner"></span> Loading workspace…</div>
