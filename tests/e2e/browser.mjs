@@ -135,21 +135,23 @@ try {
   }));
 
   const replayID = '12121212121212121212121212121212';
+  const replayStartedAt = new Date(Date.now() - 60_000);
+  const replayStartedMillis = replayStartedAt.getTime();
   await ingestEnvelope({ replay_id: replayID }, 'replay_event', JSON.stringify({
     replay_id: replayID,
     segment_id: 0,
-    timestamp: '2026-08-29T10:00:01Z',
-    replay_start_timestamp: '2026-08-29T10:00:00Z',
+    timestamp: new Date(replayStartedMillis + 1_000).toISOString(),
+    replay_start_timestamp: replayStartedAt.toISOString(),
     environment: 'e2e',
     release: 'checkout@1.0.0',
     urls: ['https://shop.example/checkout'],
     error_ids: [eventID],
   }));
   await ingestEnvelope({ replay_id: replayID }, 'replay_recording', JSON.stringify([
-    { type: 4, timestamp: 1787997600000, data: { href: 'https://shop.example/checkout', width: 800, height: 600 } },
+    { type: 4, timestamp: replayStartedMillis, data: { href: 'https://shop.example/checkout', width: 800, height: 600 } },
     {
       type: 2,
-      timestamp: 1787997600010,
+      timestamp: replayStartedMillis + 10,
       data: {
         node: {
           type: 0,
@@ -180,10 +182,10 @@ try {
         initialOffset: { top: 0, left: 0 },
       },
     },
-    { type: 3, timestamp: 1787997600200, data: { source: 2, type: 2, id: 5, x: 20, y: 12 } },
-    { type: 3, timestamp: 1787997600500, data: { source: 2, type: 2, id: 5, x: 20, y: 12 } },
-    { type: 3, timestamp: 1787997600900, data: { source: 2, type: 2, id: 5, x: 20, y: 12 } },
-    { type: 3, timestamp: 1787997601000, data: { source: 0, adds: [], removes: [], texts: [], attributes: [] } },
+    { type: 3, timestamp: replayStartedMillis + 200, data: { source: 2, type: 2, id: 5, x: 20, y: 12 } },
+    { type: 3, timestamp: replayStartedMillis + 500, data: { source: 2, type: 2, id: 5, x: 20, y: 12 } },
+    { type: 3, timestamp: replayStartedMillis + 900, data: { source: 2, type: 2, id: 5, x: 20, y: 12 } },
+    { type: 3, timestamp: replayStartedMillis + 1_000, data: { source: 0, adds: [], removes: [], texts: [], attributes: [] } },
   ]));
   await ingestEnvelope({}, 'profile', JSON.stringify({
     profile_id: 'profile-e2e',
@@ -563,7 +565,12 @@ try {
   await page.getByRole('heading', { name: 'Teams' }).waitFor();
   await page.getByText('E2E Responders', { exact: true }).waitFor();
 
-  const deleteJobResponse = await page.request.post(`/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/replays/jobs/delete/`, { data: { data: { rangeStart: '2026-08-29T00:00:00Z', rangeEnd: '2026-08-30T00:00:00Z', environments: ['e2e'], query: 'checkout' } } });
+  const deleteJobResponse = await page.request.post(`/api/0/projects/e2e/${encodeURIComponent(sentryProject.slug)}/replays/jobs/delete/`, { data: { data: {
+    rangeStart: new Date(replayStartedMillis - 3_600_000).toISOString(),
+    rangeEnd: new Date(replayStartedMillis + 3_600_000).toISOString(),
+    environments: ['e2e'],
+    query: 'checkout',
+  } } });
   const deleteJob = await deleteJobResponse.json();
   if (!deleteJobResponse.ok() || !deleteJob.data?.id) throw new Error(`create Replay deletion job failed: ${JSON.stringify(deleteJob)}`);
   let deletionComplete = false;
